@@ -1,0 +1,114 @@
+# ============================================================
+# Cron設定例 - データベース自動バックアップ
+# ============================================================
+#
+# このファイルを crontab に追加する方法:
+#   crontab -e
+#   以下の行をコピー＆ペースト
+#
+# ============================================================
+
+# 環境変数（必要に応じて調整）
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+PROJECT_DIR=/path/to/catchup-feed
+
+# ──────────────────────────────────────────────────────────
+# バックアップスケジュール
+# ──────────────────────────────────────────────────────────
+
+# 毎日午前2時にバックアップ（7日間保持、圧縮）
+0 2 * * * cd $PROJECT_DIR && ./scripts/backup-db.sh --compress --retention 7 >> /var/log/catchup-backup.log 2>&1
+
+# 毎週日曜日午前3時に週次バックアップ（30日間保持、圧縮）
+0 3 * * 0 cd $PROJECT_DIR && ./scripts/backup-db.sh --compress --retention 30 --output ./backups/weekly >> /var/log/catchup-backup-weekly.log 2>&1
+
+# 毎月1日午前4時に月次バックアップ（365日間保持、圧縮）
+0 4 1 * * cd $PROJECT_DIR && ./scripts/backup-db.sh --compress --retention 365 --output ./backups/monthly >> /var/log/catchup-backup-monthly.log 2>&1
+
+# ──────────────────────────────────────────────────────────
+# ログローテーション用
+# ──────────────────────────────────────────────────────────
+
+# 毎週日曜日午前5時にログを圧縮・古いログを削除
+0 5 * * 0 gzip /var/log/catchup-backup*.log 2>/dev/null; find /var/log -name "catchup-backup*.log.gz" -mtime +30 -delete
+
+# ──────────────────────────────────────────────────────────
+# スケジュール早見表
+# ──────────────────────────────────────────────────────────
+#
+# Cron フォーマット:
+#   分 時 日 月 曜日 コマンド
+#   *  *  *  *  *
+#   |  |  |  |  |
+#   |  |  |  |  +--- 曜日 (0-7, 0または7=日曜日)
+#   |  |  |  +------ 月 (1-12)
+#   |  |  +--------- 日 (1-31)
+#   |  +------------ 時 (0-23)
+#   +--------------- 分 (0-59)
+#
+# よく使うパターン:
+#   0 2 * * *       毎日午前2時
+#   0 */6 * * *     6時間ごと
+#   0 2 * * 0       毎週日曜日午前2時
+#   0 2 1 * *       毎月1日午前2時
+#   */30 * * * *    30分ごと
+#
+# ──────────────────────────────────────────────────────────
+# 本番環境での推奨設定
+# ──────────────────────────────────────────────────────────
+#
+# 1. 複数世代のバックアップ
+#    - 日次: 7日間保持
+#    - 週次: 4週間保持
+#    - 月次: 1年間保持
+#
+# 2. バックアップの検証
+#    - 定期的にリストアテストを実施
+#    - バックアップファイルのサイズ・整合性チェック
+#
+# 3. オフサイトバックアップ
+#    - AWS S3, Google Cloud Storage等にアップロード
+#    - rsync で別サーバーにコピー
+#
+# 4. アラート設定
+#    - バックアップ失敗時の通知
+#    - ディスク容量監視
+#
+# ──────────────────────────────────────────────────────────
+# systemd timer を使う場合（代替案）
+# ──────────────────────────────────────────────────────────
+#
+# /etc/systemd/system/catchup-backup.service:
+#
+# [Unit]
+# Description=Catchup Feed Database Backup
+#
+# [Service]
+# Type=oneshot
+# ExecStart=/path/to/catchup-feed/scripts/backup-db.sh --compress
+# User=youruser
+# WorkingDirectory=/path/to/catchup-feed
+#
+# ───────────────────────────────────
+#
+# /etc/systemd/system/catchup-backup.timer:
+#
+# [Unit]
+# Description=Daily Catchup Feed Backup
+#
+# [Timer]
+# OnCalendar=daily
+# OnCalendar=02:00
+# Persistent=true
+#
+# [Install]
+# WantedBy=timers.target
+#
+# ───────────────────────────────────
+#
+# 有効化:
+#   sudo systemctl enable catchup-backup.timer
+#   sudo systemctl start catchup-backup.timer
+#   sudo systemctl status catchup-backup.timer
+#

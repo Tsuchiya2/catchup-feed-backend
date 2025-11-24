@@ -1,0 +1,76 @@
+# Git関連
+.git
+.gitignore
+.gitattributes
+
+# CI/CD
+.github
+.gitlab-ci.yml
+.travis.yml
+
+# ドキュメント
+*.md
+!README.md
+docs/
+.claude/
+
+# 環境設定ファイル
+.env
+.env.*
+!.env.example
+.envrc
+
+# エディタ・IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# テスト・開発関連
+test/
+*_test.go
+coverage.*
+*.out
+.codecov.yml
+testdata/
+
+# データベースファイル
+*.db
+*.db-shm
+*.db-wal
+test_*.db
+
+# ビルド成果物
+bin/
+dist/
+*.exe
+api
+api-worker
+
+# ログファイル
+*.log
+logs/
+
+# 一時ファイル
+tmp/
+temp/
+*.tmp
+
+# Docker関連
+Dockerfile*
+!Dockerfile
+compose*.yml
+!compose.yml
+.dockerignore
+
+# Node.js（フロントエンドがある場合）
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# その他
+*.pem
+*.key
+*.crt

@@ -1,0 +1,125 @@
+# Environment variables
+.env
+.env.dev
+.env.local
+.env.*.local
+
+# Build outputs
+/api
+/worker
+/bin
+
+# Test coverage and outputs
+coverage*.out
+coverage.html
+test_output.txt
+test-output.json
+*.test
+__debug_bin*
+
+# Agent-generated documents (EDAF outputs)
+# Phase 1: Design
+docs/designs/*.md
+!docs/designs/README.md
+
+# Phase 2: Planning
+docs/plans/*.md
+!docs/plans/README.md
+
+# Phase 3: Code Review
+docs/reviews/*.md
+!docs/reviews/README.md
+docs/evaluations/
+docs/evaluation/
+
+# Implementation artifacts
+docs/reports/
+docs/baselines/
+docs/deployment/
+docs/implementation/
+docs/research/
+docs/testing/
+docs/performance/
+docs/migrations/
+docs/guides/
+docs/observability/
+docs/operations/
+docs/runbooks/
+docs/security/
+
+# Generated evaluation reports
+docs/security-evaluation-*.md
+docs/test-report.md
+docs/TEST_COMPLETION_REPORT.md
+
+# Development and deployment documentation (non-EDAF)
+docs/DEPLOYMENT_GUIDE.md
+docs/DEVELOPMENT.md
+docs/DOCKER_MIGRATION.md
+docs/MIGRATION_GUIDE.md
+
+# Screenshots (EDAF Phase 3)
+docs/screenshots/
+
+# CHANGELOG (auto-generated)
+CHANGELOG.md
+
+# Swagger generated files
+docs/docs.go
+docs/swagger.json
+docs/swagger.yaml
+
+# Claude Code
+.claude/scripts/*
+!.claude/scripts/.keep
+.claude/sounds/*
+!.claude/sounds/.keep
+
+# OS-specific
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+
+# Editor backups
+*.swp
+*.swo
+*~
+*.bak
+
+# VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Go
+vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Air hot reload
+tmp/
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp

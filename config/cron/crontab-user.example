@@ -1,0 +1,18 @@
+# CatchUp Feed - User Crontab Example
+# Installation: crontab -e, then paste these lines
+# Modify PROJECT_DIR to match your installation path
+
+# Database backup - Daily at 3:00 AM
+0 3 * * * /home/admin/catchup-feed/scripts/backup.sh
+
+# Health check - Every hour
+0 * * * * /home/admin/catchup-feed/scripts/health-check.sh
+
+# Prometheus monitoring - Every 6 hours
+0 */6 * * * /home/admin/catchup-feed/scripts/cleanup-prometheus.sh
+
+# Docker cleanup - Weekly (Sunday 2 AM)
+0 2 * * 0 /home/admin/catchup-feed/scripts/docker-cleanup.sh
+
+# Disk usage check - Every hour
+0 * * * * /home/admin/catchup-feed/scripts/disk-usage-check.sh

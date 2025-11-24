@@ -1,0 +1,142 @@
+# ============================================================
+# catchup-feed - 開発環境用 Docker Compose Configuration
+# ============================================================
+# 本番環境（compose.yml）をオーバーライドして開発体験を向上
+#
+# 使用方法:
+#   docker compose -f compose.yml -f compose.dev.yml up
+#
+# または .env に以下を追加:
+#   COMPOSE_FILE=compose.yml:compose.dev.yml
+#
+# 主な特徴:
+#   - ホットリロード対応（Air使用）
+#   - デバッグポート公開
+#   - リソース制限緩和
+#   - 詳細ログ出力
+#   - ソースコードマウント
+# ============================================================
+
+services:
+  # ──────────────────────────────────────────────────────────
+  # PostgreSQL（開発環境設定）
+  # ──────────────────────────────────────────────────────────
+  postgres:
+    # 開発用ポート公開（本番では不要）
+    ports:
+      - "5432:5432"
+
+    # リソース制限を緩和
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 2G
+
+    # 開発用環境変数
+    environment:
+      # クエリログ有効化
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+      # ログ設定
+      POSTGRES_HOST_AUTH_METHOD: trust  # 開発環境のみ！
+
+  # ──────────────────────────────────────────────────────────
+  # API サーバー（開発環境設定）
+  # ──────────────────────────────────────────────────────────
+  app:
+    # ソースコードマウント（ホットリロード用）
+    volumes:
+      - .:/app:cached
+      - /app/vendor  # vendor ディレクトリは除外
+
+    # 開発用ビルド引数
+    build:
+      target: build  # ビルドステージで停止（デバッグシンボル保持）
+      args:
+        LDFLAGS: ""  # デバッグ情報保持（-s -w を削除）
+
+    # 開発用環境変数
+    environment:
+      LOG_LEVEL: debug
+      GIN_MODE: debug  # Gin使用時
+
+    # デバッグポート公開（Delve等）
+    ports:
+      - "8080:8080"
+      - "2345:2345"  # Delve デバッガ
+
+    # リソース制限を緩和
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+
+    # コマンドオーバーライド（Air でホットリロード）
+    # 注意: Air を使う場合は Dockerfile に追加インストール必要
+    # command: air -c .air.toml
+
+  # ──────────────────────────────────────────────────────────
+  # Worker（開発環境設定）
+  # ──────────────────────────────────────────────────────────
+  worker:
+    # ソースコードマウント
+    volumes:
+      - .:/app:cached
+      - /app/vendor
+
+    # 開発用環境変数
+    environment:
+      LOG_LEVEL: debug
+      # クロール間隔を短縮（開発用）
+      CRON_SCHEDULE: "*/2 * * * *"  # 2分ごと
+
+    # リソース制限を緩和
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 2G
+
+  # ──────────────────────────────────────────────────────────
+  # 開発ツール: Adminer（データベースGUI）
+  # ──────────────────────────────────────────────────────────
+  adminer:
+    image: adminer:latest
+    restart: unless-stopped
+    networks:
+      - backend
+    ports:
+      - "8081:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DESIGN: nette
+    depends_on:
+      - postgres
+
+  # ──────────────────────────────────────────────────────────
+  # 開発ツール: MailHog（メールテスト）※将来のメール機能用
+  # ──────────────────────────────────────────────────────────
+  # mailhog:
+  #   image: mailhog/mailhog:latest
+  #   restart: unless-stopped
+  #   networks:
+  #     - backend
+  #   ports:
+  #     - "1025:1025"  # SMTP
+  #     - "8025:8025"  # Web UI
+
+  # ──────────────────────────────────────────────────────────
+  # 開発ツール: Prometheus（メトリクス収集）
+  # ──────────────────────────────────────────────────────────
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   restart: unless-stopped
+  #   networks:
+  #     - backend
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #   command:
+  #     - '--config.file=/etc/prometheus/prometheus.yml'

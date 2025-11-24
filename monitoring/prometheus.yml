@@ -1,0 +1,80 @@
+# ============================================================
+# Prometheus 設定ファイル
+# ============================================================
+# catchup-feed プロジェクトのメトリクス収集設定
+
+global:
+  # スクレイプ間隔（デフォルト）
+  scrape_interval: 15s
+
+  # 評価間隔（アラート評価）
+  evaluation_interval: 15s
+
+  # 外部ラベル（Alertmanager や Federation で使用）
+  external_labels:
+    cluster: 'catchup-feed'
+    environment: 'production'
+
+# アラートマネージャー設定（オプション）
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - 'alertmanager:9093'
+
+# アラートルール設定（オプション）
+rule_files:
+  - 'alerts/*.yml'
+
+# スクレイプ設定
+scrape_configs:
+  # ──────────────────────────────────────────────────────────
+  # Prometheus 自身のメトリクス
+  # ──────────────────────────────────────────────────────────
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # ──────────────────────────────────────────────────────────
+  # catchup-feed API サーバー
+  # ──────────────────────────────────────────────────────────
+  - job_name: 'catchup-api'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['app:8080']
+        labels:
+          service: 'api'
+          component: 'backend'
+
+  # ──────────────────────────────────────────────────────────
+  # PostgreSQL Exporter（オプション）
+  # ──────────────────────────────────────────────────────────
+  # - job_name: 'postgres'
+  #   static_configs:
+  #     - targets: ['postgres-exporter:9187']
+  #       labels:
+  #         service: 'postgres'
+  #         component: 'database'
+
+  # ──────────────────────────────────────────────────────────
+  # Node Exporter（オプション - ホストメトリクス）
+  # ──────────────────────────────────────────────────────────
+  # - job_name: 'node'
+  #   static_configs:
+  #     - targets: ['node-exporter:9100']
+  #       labels:
+  #         service: 'node'
+  #         component: 'infrastructure'
+
+  # ──────────────────────────────────────────────────────────
+  # cAdvisor（オプション - コンテナメトリクス）
+  # ──────────────────────────────────────────────────────────
+  # - job_name: 'cadvisor'
+  #   static_configs:
+  #     - targets: ['cadvisor:8080']
+  #       labels:
+  #         service: 'cadvisor'
+  #         component: 'infrastructure'

@@ -1,0 +1,265 @@
+# ============================================================
+# Email System Alert Rules
+# ============================================================
+# Prometheus alert rules for monitoring email delivery system
+#
+# Reload alerts:
+#   curl -X POST http://localhost:9090/-/reload
+#
+# Test alerts:
+#   docker compose exec prometheus promtool check rules /etc/prometheus/alerts/email-alerts.yml
+# ============================================================
+
+groups:
+  # ──────────────────────────────────────────────────────────
+  # Email System Alerts
+  # ──────────────────────────────────────────────────────────
+  - name: email_alerts
+    interval: 30s
+    rules:
+      # ────────────────────────────────────────────────────────
+      # Alert 1: High Email Delivery Failure Rate
+      # ────────────────────────────────────────────────────────
+      # Triggers when email failure rate exceeds 10% over 1 hour
+      # This indicates potential SMTP configuration issues or
+      # Gmail authentication problems
+      # ────────────────────────────────────────────────────────
+      - alert: EmailDeliveryFailureRate
+        expr: |
+          (
+            rate(catchup_email_sent_total{status="failure"}[1h])
+            /
+            rate(catchup_email_sent_total[1h])
+          ) > 0.10
+        for: 10m
+        labels:
+          severity: warning
+          component: email
+        annotations:
+          summary: "High email delivery failure rate (>10%)"
+          description: |
+            Email failure rate is {{ $value | humanizePercentage }} over the last hour.
+            Check msmtp configuration and SMTP connectivity.
+
+            Troubleshooting steps:
+            1. Check email logs: tail -f /var/log/catchup/email.log
+            2. Test msmtp manually: echo "test" | msmtp -t
+            3. Verify Gmail App Password in ~/.msmtprc
+            4. Check Gmail account security settings
+            5. Verify network connectivity to smtp.gmail.com:587
+
+      # ────────────────────────────────────────────────────────
+      # Alert 2: Consecutive Email Failures
+      # ────────────────────────────────────────────────────────
+      # Triggers when 3+ consecutive failures occur with no
+      # successes in 15 minutes. This indicates a systemic
+      # issue requiring immediate attention
+      # ────────────────────────────────────────────────────────
+      - alert: EmailConsecutiveFailures
+        expr: |
+          increase(catchup_email_sent_total{status="failure"}[15m]) >= 3
+          and
+          increase(catchup_email_sent_total{status="success"}[15m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: email
+        annotations:
+          summary: "3+ consecutive email failures detected"
+          description: |
+            Email system has failed {{ $value }} times in last 15 minutes with no successes.
+            This indicates a systemic issue requiring immediate attention.
+
+            Possible causes:
+            - SMTP server unreachable
+            - Invalid authentication credentials
+            - Gmail App Password revoked
+            - Network connectivity issue
+            - msmtp binary not found or misconfigured
+
+            Immediate actions:
+            1. Check system logs: journalctl -u catchup-feed -n 50
+            2. Test SMTP connection: telnet smtp.gmail.com 587
+            3. Verify msmtp config: msmtp --serverinfo --host=smtp.gmail.com
+            4. Check fallback alerting: tail -f /var/log/catchup/ALERT
+
+      # ────────────────────────────────────────────────────────
+      # Alert 3: Email Rate Limit Nearly Exceeded
+      # ────────────────────────────────────────────────────────
+      # Triggers when hourly email count reaches 80% of limit
+      # (8 out of 10). This is a warning to prevent hitting the
+      # hard limit and delaying critical emails
+      # ────────────────────────────────────────────────────────
+      - alert: EmailRateLimitNearExceeded
+        expr: catchup_email_rate_limit_hourly_current >= 8
+        for: 5m
+        labels:
+          severity: warning
+          component: email
+        annotations:
+          summary: "Email rate limit nearly exceeded (80%)"
+          description: |
+            Sent {{ $value }} emails in current hour (limit: 10).
+            High-priority emails will still send but normal priority may be delayed.
+
+            Current status:
+            - Hourly limit: 10 emails
+            - Current count: {{ $value }}
+            - Remaining slots available
+
+            Rate limit policy:
+            - High priority: Always sent immediately
+            - Normal priority: Delayed if limit exceeded
+            - Limit resets: Every hour (on the hour)
+
+            If this alert fires frequently, consider:
+            1. Reviewing email sending patterns
+            2. Increasing the rate limit in configuration
+            3. Implementing email batching for non-critical notifications
+
+      # ────────────────────────────────────────────────────────
+      # Alert 4: Email System Down
+      # ────────────────────────────────────────────────────────
+      # Triggers when no emails have been sent in 24+ hours
+      # during active hours (after 4 AM). This suggests the
+      # email system or related scripts are not running
+      # ────────────────────────────────────────────────────────
+      - alert: EmailSystemDown
+        expr: |
+          (time() - max(timestamp(catchup_email_sent_total)) > 86400)
+          and
+          (hour() > 3)
+        for: 1h
+        labels:
+          severity: critical
+          component: email
+        annotations:
+          summary: "No emails sent in 24+ hours"
+          description: |
+            Email system appears down. No emails sent since backup job should have run.
+            Check if scripts are running and email-functions.sh is working.
+
+            Expected email sources:
+            - Daily backup reports (3 AM)
+            - Error notifications (as needed)
+            - System health reports (if enabled)
+
+            Troubleshooting:
+            1. Check if cron jobs are running: crontab -l
+            2. Verify backup script status: systemctl status catchup-backup
+            3. Check email function library: test -f /usr/local/lib/email-functions.sh
+            4. Review system logs: journalctl -u catchup-* --since "24 hours ago"
+            5. Manually trigger test email: /usr/local/bin/send-test-email.sh
+
+            Note: This alert only fires between 4 AM - 11:59 PM to avoid
+            false positives during the quiet hours (12 AM - 3 AM).
+
+      # ────────────────────────────────────────────────────────
+      # Alert 5: Email Fallback Mechanism Active
+      # ────────────────────────────────────────────────────────
+      # Triggers when fallback alerting is used (syslog/file)
+      # This means email delivery failed and backup notification
+      # methods were activated
+      # ────────────────────────────────────────────────────────
+      - alert: EmailFallbackActive
+        expr: increase(catchup_email_fallback_total[1h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: email
+        annotations:
+          summary: "Email fallback mechanism triggered"
+          description: |
+            Fallback alerting has been activated {{ $value }} times in the last hour.
+            Reason: {{ $labels.reason }}
+
+            Fallback mechanisms used:
+            - Syslog: Messages logged to /var/log/syslog
+            - Local file: /var/log/catchup/ALERT
+            - Logger command: Available via journalctl
+
+            Check fallback logs:
+            1. System log: tail -f /var/log/syslog | grep catchup
+            2. Alert log: tail -f /var/log/catchup/ALERT
+            3. Journal: journalctl -t catchup-alert -n 50
+
+            Common reasons for fallback:
+            - msmtp command not found
+            - ~/.msmtprc missing or invalid
+            - SMTP authentication failure
+            - Network timeout to SMTP server
+            - Email rate limit exceeded
+
+            Fix the primary email delivery issue to disable fallback mode.
+
+      # ────────────────────────────────────────────────────────
+      # Alert 6: Email Queue Backlog
+      # ────────────────────────────────────────────────────────
+      # Triggers when email queue has pending items for too long
+      # This may indicate rate limiting or processing issues
+      # ────────────────────────────────────────────────────────
+      - alert: EmailQueueBacklog
+        expr: catchup_email_queue_pending > 5
+        for: 30m
+        labels:
+          severity: warning
+          component: email
+        annotations:
+          summary: "Email queue has {{ $value }} pending items"
+          description: |
+            Email queue has been backed up with {{ $value }} pending emails for 30+ minutes.
+
+            Queue metrics:
+            - Pending: {{ $value }}
+            - Priority breakdown: {{ $labels.priority }}
+
+            Possible causes:
+            1. Rate limit reached (check EmailRateLimitNearExceeded alert)
+            2. Slow SMTP server response
+            3. Email processing script not running
+            4. High volume of email requests
+
+            Actions:
+            1. Check rate limit status: Check Prometheus metrics
+            2. Review queue: tail -f /var/log/catchup/email-queue.log
+            3. Verify processing: ps aux | grep email-processor
+
+            The queue will automatically process when rate limit window resets.
+
+      # ────────────────────────────────────────────────────────
+      # Alert 7: Email Delivery Latency High
+      # ────────────────────────────────────────────────────────
+      # Triggers when email sending takes too long (>30 seconds)
+      # This may indicate SMTP server issues or network problems
+      # ────────────────────────────────────────────────────────
+      - alert: EmailDeliveryLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(catchup_email_send_duration_seconds_bucket[10m])) by (le)
+          ) > 30
+        for: 10m
+        labels:
+          severity: warning
+          component: email
+        annotations:
+          summary: "High email delivery latency"
+          description: |
+            95th percentile email delivery time is {{ $value }}s (threshold: 30s).
+
+            Expected delivery times:
+            - Normal: 1-5 seconds
+            - Acceptable: 5-15 seconds
+            - Slow: 15-30 seconds
+            - Critical: >30 seconds
+
+            Possible causes:
+            - SMTP server congestion
+            - Network latency to smtp.gmail.com
+            - DNS resolution delays
+            - TLS handshake slowness
+
+            Troubleshooting:
+            1. Test SMTP latency: time echo "test" | msmtp -t
+            2. Check network: ping smtp.gmail.com
+            3. Test DNS: nslookup smtp.gmail.com
+            4. Review msmtp logs: tail -f ~/.msmtp.log

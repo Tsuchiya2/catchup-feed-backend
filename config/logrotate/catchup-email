@@ -1,0 +1,21 @@
+# Logrotate configuration for CatchUp Feed email notification logs
+# Installation: sudo cp config/logrotate/catchup-email /etc/logrotate.d/
+# Test: sudo logrotate -d /etc/logrotate.d/catchup-email
+# Force rotate: sudo logrotate -f /etc/logrotate.d/catchup-email
+
+/var/log/catchup/email.log
+/var/log/catchup/operations.log
+/var/log/catchup/email-fallback.log
+{
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 root root
+    sharedscripts
+    postrotate
+        # No service restart needed (scripts write directly to log files)
+    endscript
+}

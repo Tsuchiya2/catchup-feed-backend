@@ -1,0 +1,107 @@
+groups:
+  - name: worker_config_alerts
+    interval: 30s
+    rules:
+      # Configuration validation failures
+      - alert: WorkerConfigValidationErrors
+        expr: increase(worker_config_validation_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: worker
+          category: configuration
+        annotations:
+          summary: "Worker configuration validation errors detected"
+          description: "Worker {{ $labels.instance }} has validation errors for field {{ $labels.field }}. Check logs for details."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/worker-configuration.md#issue-configuration-fallback-active"
+
+      # Configuration fallbacks active
+      - alert: WorkerConfigFallbackActive
+        expr: worker_config_fallback_active > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: worker
+          category: configuration
+        annotations:
+          summary: "Worker using fallback configuration"
+          description: "Worker {{ $labels.instance }} is using fallback configuration for over 10 minutes. Invalid config detected."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/worker-configuration.md#issue-configuration-fallback-active"
+
+      # Cron job failures
+      - alert: WorkerCronJobFailures
+        expr: rate(worker_cron_job_runs_total{status="failed"}[15m]) > 0.1
+        for: 15m
+        labels:
+          severity: critical
+          component: worker
+          category: execution
+        annotations:
+          summary: "Worker cron job failure rate high"
+          description: "Worker {{ $labels.instance }} has {{ $value }} failures per second in the last 15 minutes."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/worker-configuration.md#issue-no-successful-jobs"
+
+      # Cron job not running
+      - alert: WorkerCronJobNotRunning
+        expr: time() - worker_cron_job_last_success_timestamp > 86400
+        for: 1h
+        labels:
+          severity: critical
+          component: worker
+          category: execution
+        annotations:
+          summary: "Worker cron job has not succeeded recently"
+          description: "Worker {{ $labels.instance }} has not successfully completed a job in over 24 hours."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/worker-configuration.md#issue-no-successful-jobs"
+
+      # Health check failures
+      - alert: WorkerHealthCheckFailing
+        expr: up{job="worker"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: worker
+          category: health
+        annotations:
+          summary: "Worker health check failing"
+          description: "Worker {{ $labels.instance }} is not responding to health checks."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/worker-configuration.md#health-checks"
+
+      # Job execution duration is too long
+      - alert: WorkerJobDurationHigh
+        expr: histogram_quantile(0.95, rate(worker_cron_job_duration_seconds_bucket[30m])) > 1800
+        for: 10m
+        labels:
+          severity: warning
+          component: worker
+          category: performance
+        annotations:
+          summary: "Worker job duration is high"
+          description: "95th percentile of worker job duration is above 30 minutes ({{ $value }}s)."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/worker-configuration.md#issue-job-timeouts"
+
+      # Job timeout rate is high
+      - alert: WorkerJobTimeoutRateHigh
+        expr: rate(worker_cron_job_runs_total{status="timeout"}[30m]) > 0.02
+        for: 10m
+        labels:
+          severity: warning
+          component: worker
+          category: performance
+        annotations:
+          summary: "Worker job timeout rate is high"
+          description: "Worker {{ $labels.instance }} job timeout rate is above 2% over the last 30 minutes."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/worker-configuration.md#issue-job-timeouts"
+
+      # Feed processing failure rate is high
+      - alert: WorkerFeedFailureRateHigh
+        expr: rate(worker_cron_job_feeds_processed_total{status="failure"}[30m]) / rate(worker_cron_job_feeds_processed_total[30m]) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          component: worker
+          category: execution
+        annotations:
+          summary: "Worker feed processing failure rate is high"
+          description: "Worker {{ $labels.instance }} has over 10% feed processing failures in the last 30 minutes."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/worker-configuration.md#troubleshooting"

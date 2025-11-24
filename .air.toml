@@ -1,0 +1,84 @@
+# ============================================================
+# Air - ホットリロード設定（開発環境用）
+# ============================================================
+# Go製のホットリロードツール Air の設定ファイル
+# https://github.com/cosmtrek/air
+#
+# インストール:
+#   go install github.com/cosmtrek/air@latest
+#
+# 使用方法:
+#   air
+#   または
+#   air -c .air.toml
+# ============================================================
+
+root = "."
+testdata_dir = "testdata"
+tmp_dir = "tmp"
+
+[build]
+  # ビルドするメインファイル
+  cmd = "go build -o ./tmp/api ./cmd/api"
+
+  # ビルド成果物
+  bin = "tmp/api"
+
+  # ビルド完了後に実行
+  full_bin = "./tmp/api"
+
+  # 監視対象の拡張子
+  include_ext = ["go", "tpl", "tmpl", "html"]
+
+  # 除外する拡張子
+  exclude_ext = ["_test.go"]
+
+  # 除外するディレクトリ
+  exclude_dir = ["vendor", "tmp", "test", "testdata", ".git", ".github", "docs"]
+
+  # 除外するファイル
+  exclude_file = []
+
+  # 未変更ファイルもビルド（遅くなる）
+  exclude_unchanged = true
+
+  # サブディレクトリも監視
+  follow_symlink = false
+
+  # ログ出力
+  log = "build-errors.log"
+
+  # デバッグビルド（-gcflags=all="-N -l"）
+  args_bin = []
+
+  # ビルド遅延（ミリ秒）
+  delay = 1000
+
+  # ビルド失敗時も実行を継続
+  stop_on_error = false
+
+  # 起動コマンド
+  send_interrupt = false
+
+  # プロセスkill遅延
+  kill_delay = "0s"
+
+[color]
+  # カラー出力
+  main = "magenta"
+  watcher = "cyan"
+  build = "yellow"
+  runner = "green"
+
+[log]
+  # ログ出力
+  time = true
+
+[misc]
+  # アプリ再起動時にクリア
+  clean_on_exit = true
+
+# ワーカー用の設定（別途起動する場合）
+# [build]
+#   cmd = "go build -o ./tmp/worker ./cmd/worker"
+#   bin = "tmp/worker"

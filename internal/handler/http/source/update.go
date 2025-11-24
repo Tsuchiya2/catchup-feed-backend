@@ -1,0 +1,45 @@
+package source
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+
+	"catchup-feed/internal/handler/http/pathutil"
+	"catchup-feed/internal/handler/http/respond"
+	srcUC "catchup-feed/internal/usecase/source"
+)
+
+type UpdateHandler struct{ Svc srcUC.Service }
+
+func (h UpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	id, err := pathutil.ExtractID(r.URL.Path, "/sources/")
+	if err != nil {
+		respond.SafeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req struct {
+		Name   string `json:"name"`
+		Feed   string `json:"feedURL"`
+		Active *bool  `json:"active"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respond.SafeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	err = h.Svc.Update(r.Context(), srcUC.UpdateInput{
+		ID: id, Name: req.Name, FeedURL: req.Feed,
+		Active: req.Active,
+	})
+	if err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, srcUC.ErrSourceNotFound) {
+			code = http.StatusNotFound
+		}
+		respond.SafeError(w, code, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

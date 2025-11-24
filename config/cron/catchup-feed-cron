@@ -1,0 +1,21 @@
+# CatchUp Feed - Maintenance and Monitoring Cron Jobs
+# Installation: crontab -e, then add these lines
+# Or: sudo cp config/cron/catchup-feed-cron /etc/cron.d/catchup-feed
+
+# Set project directory
+PROJECT_DIR=/home/admin/catchup-feed
+
+# Database backup - Daily at 3:00 AM
+0 3 * * * cd $PROJECT_DIR && ./scripts/backup.sh >> /tmp/backup-cron.log 2>&1
+
+# Health check - Every hour
+0 * * * * cd $PROJECT_DIR && ./scripts/health-check.sh >> /tmp/health-check-cron.log 2>&1
+
+# Prometheus data check - Every 6 hours
+0 */6 * * * cd $PROJECT_DIR && ./scripts/cleanup-prometheus.sh >> /tmp/prometheus-cron.log 2>&1
+
+# Docker cleanup - Every Sunday at 2:00 AM
+0 2 * * 0 cd $PROJECT_DIR && ./scripts/docker-cleanup.sh >> /tmp/docker-cleanup-cron.log 2>&1
+
+# Disk usage check - Every hour
+0 * * * * cd $PROJECT_DIR && ./scripts/disk-usage-check.sh >> /tmp/disk-usage-cron.log 2>&1

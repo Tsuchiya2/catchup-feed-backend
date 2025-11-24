@@ -1,0 +1,75 @@
+# Dependabot configuration for catchup-feed
+# Automatically checks for dependency updates and security patches
+# Documentation: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  # Go modules
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    # Group updates by type
+    groups:
+      production-dependencies:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "golang.org/x/tools"
+          - "golang.org/x/mod"
+      development-dependencies:
+        patterns:
+          - "golang.org/x/tools"
+          - "golang.org/x/mod"
+    # Allow up to 10 open pull requests
+    open-pull-requests-limit: 10
+    # Add reviewers (update with your GitHub username)
+    # reviewers:
+    #   - "your-github-username"
+    # Add labels
+    labels:
+      - "dependencies"
+      - "go"
+    # Commit message prefix
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    # Rebase strategy
+    rebase-strategy: "auto"
+    # Allow only security updates (comment out to allow all updates)
+    # open-pull-requests-limit: 0
+
+  # Docker
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Tokyo"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"

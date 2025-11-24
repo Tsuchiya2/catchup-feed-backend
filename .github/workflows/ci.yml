@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  GO_VERSION: '1.25.4'
+
+jobs:
+  # ──────────────────────────────────────────────────────────
+  # テスト実行
+  # ──────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: catchup_test
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: catchup_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Generate Swagger docs
+        run: |
+          go install github.com/swaggo/swag/cmd/swag@latest
+          $(go env GOPATH)/bin/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://catchup_test:test_password@localhost:5432/catchup_test?sslmode=disable
+          JWT_SECRET: test_secret_at_least_32_characters_long
+        run: |
+          go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.out
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  # ──────────────────────────────────────────────────────────
+  # Lint（静的解析）
+  # ──────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Generate Swagger docs
+        run: |
+          go install github.com/swaggo/swag/cmd/swag@latest
+          $(go env GOPATH)/bin/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.6.1
+          args: --timeout=5m
+
+  # ──────────────────────────────────────────────────────────
+  # ビルド検証
+  # ──────────────────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Generate Swagger docs
+        run: |
+          go install github.com/swaggo/swag/cmd/swag@latest
+          $(go env GOPATH)/bin/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal
+
+      - name: Build API
+        run: go build -v -o api ./cmd/api
+
+      - name: Build Worker
+        run: go build -v -o worker ./cmd/worker
+
+      - name: Check binary size
+        run: |
+          ls -lh api worker
+          API_SIZE=$(stat -c%s api)
+          WORKER_SIZE=$(stat -c%s worker)
+          echo "API binary size: $(($API_SIZE / 1024 / 1024)) MB"
+          echo "Worker binary size: $(($WORKER_SIZE / 1024 / 1024)) MB"
+
+  # ──────────────────────────────────────────────────────────
+  # セキュリティスキャン
+  # ──────────────────────────────────────────────────────────
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Run Gosec Security Scanner
+        uses: securego/gosec@master
+        with:
+          args: '-no-fail -fmt sarif -out results.sarif ./...'
+
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v4
+        continue-on-error: true  # Code scanning未有効時もCIを継続
+        with:
+          sarif_file: results.sarif

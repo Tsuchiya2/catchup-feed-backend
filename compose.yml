@@ -1,0 +1,458 @@
+# ============================================================
+# catchup-feed - Docker Compose Configuration
+# ============================================================
+# セキュリティ・パフォーマンス・運用性を最適化した構成
+# - Docker Secrets による機密情報管理
+# - リソース制限でホスト保護
+# - ログローテーション設定
+# - ネットワーク分離
+# - ヘルスチェック実装
+# ============================================================
+
+# ────────────────────────────────────────────────────────────
+# ネットワーク定義（分離）
+# ────────────────────────────────────────────────────────────
+networks:
+  backend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+
+# ────────────────────────────────────────────────────────────
+# ボリューム定義
+# ────────────────────────────────────────────────────────────
+volumes:
+  db-data:
+    driver: local
+  db-backup:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  # 開発用キャッシュ
+  go-mod-cache:
+    driver: local
+  go-build-cache:
+    driver: local
+
+# ────────────────────────────────────────────────────────────
+# Secrets 定義（機密情報の安全な管理）
+# ────────────────────────────────────────────────────────────
+# 注意: 現在は .env ファイルで環境変数として管理しています
+# Docker Secrets は将来の本番環境デプロイ時に有効化できます
+# secrets:
+#   jwt_secret:
+#     file: ./secrets/jwt_secret.txt
+#   anthropic_api_key:
+#     file: ./secrets/anthropic_api_key.txt
+#   openai_api_key:
+#     file: ./secrets/openai_api_key.txt
+#   postgres_password:
+#     file: ./secrets/postgres_password.txt
+#   admin_password:
+#     file: ./secrets/admin_password.txt
+
+# ────────────────────────────────────────────────────────────
+# サービス定義
+# ────────────────────────────────────────────────────────────
+services:
+  # ──────────────────────────────────────────────────────────
+  # PostgreSQL データベース
+  # ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:18-alpine
+    container_name: catchup-postgres
+    restart: unless-stopped
+
+    networks:
+      - backend
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-catchup}
+      POSTGRES_DB: ${POSTGRES_DB:-catchup}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+      # パフォーマンスチューニング
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+
+    # ヘルスチェック
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - db-backup:/backup
+
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+    # リソース制限
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # ログ設定
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=postgres"
+
+  # ──────────────────────────────────────────────────────────
+  # 開発環境（Lint、テスト用）
+  # ──────────────────────────────────────────────────────────
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+
+    container_name: catchup-dev
+
+    networks:
+      - backend
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    environment:
+      # データベース接続
+      DATABASE_URL: postgresql://${POSTGRES_USER:-catchup}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-catchup}?sslmode=disable
+
+      # 認証設定
+      JWT_SECRET: ${JWT_SECRET}
+
+      # アプリケーション設定
+      TZ: ${TZ:-Asia/Tokyo}
+
+    volumes:
+      # ソースコードをマウント（ホットリロード対応）
+      - .:/app
+      # Go モジュールキャッシュ
+      - go-mod-cache:/go/pkg/mod
+      # Go ビルドキャッシュ
+      - go-build-cache:/root/.cache/go-build
+
+    # デフォルトでは起動しない（明示的に起動が必要）
+    profiles:
+      - dev
+
+    # シェルを起動したまま維持
+    stdin_open: true
+    tty: true
+
+    # リソース制限
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # ログ設定
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=dev"
+
+  # ──────────────────────────────────────────────────────────
+  # API サーバー
+  # ──────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_DATE: ${BUILD_DATE}
+
+    container_name: catchup-api
+    restart: unless-stopped
+
+    networks:
+      - backend
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    environment:
+      # データベース接続
+      DATABASE_URL: postgresql://${POSTGRES_USER:-catchup}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-catchup}?sslmode=disable
+
+      # 認証設定
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_USER_PASSWORD: ${ADMIN_USER_PASSWORD}
+
+      # AI 要約設定
+      SUMMARIZER_TYPE: ${SUMMARIZER_TYPE:-claude}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+
+      # アプリケーション設定
+      TZ: ${TZ:-Asia/Tokyo}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+    ports:
+      - "${API_PORT:-8080}:8080"
+
+    # ヘルスチェック（Dockerfileで定義済み）
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # リソース制限
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+    # ログ設定
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service,environment"
+        tag: "{{.Name}}/{{.ID}}"
+
+    # セキュリティ設定
+    security_opt:
+      - no-new-privileges:true
+    read_only: false  # SQLiteファイル書き込みのためfalse
+    tmpfs:
+      - /tmp:size=100M,mode=1777
+
+  # ──────────────────────────────────────────────────────────
+  # Worker（クローラー）
+  # ──────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_DATE: ${BUILD_DATE}
+
+    container_name: catchup-worker
+    restart: unless-stopped
+
+    entrypoint: ["/usr/local/bin/api-worker"]
+    command: []
+
+    networks:
+      - backend
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+
+    environment:
+      # データベース接続
+      DATABASE_URL: postgresql://${POSTGRES_USER:-catchup}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-catchup}?sslmode=disable
+
+      # AI 要約設定
+      SUMMARIZER_TYPE: ${SUMMARIZER_TYPE:-claude}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+
+      # Discord通知設定
+      DISCORD_ENABLED: ${DISCORD_ENABLED:-false}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
+
+      # Slack通知設定
+      SLACK_ENABLED: ${SLACK_ENABLED:-false}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+
+      # アプリケーション設定
+      TZ: ${TZ:-Asia/Tokyo}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+      # Worker Configuration
+      CRON_SCHEDULE: ${CRON_SCHEDULE:-30 5 * * *}
+      WORKER_TIMEZONE: ${WORKER_TIMEZONE:-Asia/Tokyo}
+      NOTIFY_MAX_CONCURRENT: ${NOTIFY_MAX_CONCURRENT:-10}
+      CRAWL_TIMEOUT: ${CRAWL_TIMEOUT:-30m}
+      WORKER_HEALTH_PORT: ${WORKER_HEALTH_PORT:-9091}
+
+    ports:
+      - "${WORKER_HEALTH_PORT:-9091}:9091"
+
+    # ヘルスチェック
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9091/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    # リソース制限（Workerは並列処理が多い）
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+    # ログ設定
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels: "service=worker"
+
+    # セキュリティ設定
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    tmpfs:
+      - /tmp:size=200M,mode=1777
+
+  # ──────────────────────────────────────────────────────────
+  # Prometheus（メトリクス収集）
+  # ──────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v3.2.0
+    container_name: catchup-prometheus
+    restart: unless-stopped
+
+    networks:
+      - backend
+
+    depends_on:
+      app:
+        condition: service_healthy
+
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts:/etc/prometheus/alerts:ro
+      - prometheus-data:/prometheus
+
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+
+    # リソース制限
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+    # ログ設定
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+        labels: "service=prometheus"
+
+    # セキュリティ設定
+    security_opt:
+      - no-new-privileges:true
+    user: "65534:65534"  # nobody:nobody
+
+  # ──────────────────────────────────────────────────────────
+  # Grafana（可視化ダッシュボード）
+  # ──────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.5.2
+    container_name: catchup-grafana
+    restart: unless-stopped
+
+    networks:
+      - backend
+
+    depends_on:
+      - prometheus
+
+    environment:
+      # 管理者設定
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+
+      # 匿名アクセス無効化
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+
+      # データソース自動設定
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+
+    # ヘルスチェック
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    # リソース制限
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+    # ログ設定
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+        labels: "service=grafana"
+
+    # セキュリティ設定
+    security_opt:
+      - no-new-privileges:true
+    user: "472:472"  # grafana:grafana

@@ -1,0 +1,233 @@
+# ============================================================
+# Prometheus アラートルール
+# ============================================================
+# catchup-feed プロジェクトのアラート定義
+
+groups:
+  # ──────────────────────────────────────────────────────────
+  # API サーバーのアラート
+  # ──────────────────────────────────────────────────────────
+  - name: api_alerts
+    interval: 30s
+    rules:
+      # API サーバーがダウン
+      - alert: APIServerDown
+        expr: up{job="catchup-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API server is down"
+          description: "API server ({{ $labels.instance }}) has been down for more than 1 minute."
+
+      # 高いエラー率
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{job="catchup-api",status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="catchup-api"}[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP error rate"
+          description: "Error rate is above 5% (current: {{ $value | humanizePercentage }})"
+
+      # 高いレスポンスタイム
+      - alert: HighResponseTime
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="catchup-api"}[5m])) by (le)
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API response time"
+          description: "95th percentile response time is above 1s (current: {{ $value }}s)"
+
+      # アクティブ接続数が多い
+      - alert: HighActiveConnections
+        expr: http_active_connections{job="catchup-api"} > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High number of active connections"
+          description: "Active connections are above 100 (current: {{ $value }})"
+
+  # ──────────────────────────────────────────────────────────
+  # ビジネスメトリクスのアラート
+  # ──────────────────────────────────────────────────────────
+  - name: business_alerts
+    interval: 1m
+    rules:
+      # 要約失敗率が高い
+      - alert: HighSummarizationFailureRate
+        expr: |
+          (
+            sum(rate(articles_summarized_total{status="failure"}[10m]))
+            /
+            sum(rate(articles_summarized_total[10m]))
+          ) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High article summarization failure rate"
+          description: "Summarization failure rate is above 20% (current: {{ $value | humanizePercentage }})"
+
+      # 記事取得が停止
+      - alert: ArticleFetchStalled
+        expr: |
+          rate(articles_fetched_total[30m]) == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Article fetching has stalled"
+          description: "No articles have been fetched in the last 30 minutes from source {{ $labels.source }}"
+
+      # 要約処理時間が長い
+      - alert: SlowSummarization
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(summarization_duration_seconds_bucket[10m])) by (le)
+          ) > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow article summarization"
+          description: "95th percentile summarization time is above 30s (current: {{ $value }}s)"
+
+  # ──────────────────────────────────────────────────────────
+  # データベースのアラート
+  # ──────────────────────────────────────────────────────────
+  - name: database_alerts
+    interval: 30s
+    rules:
+      # データベースクエリが遅い
+      - alert: SlowDatabaseQueries
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(db_query_duration_seconds_bucket[5m])) by (le, operation)
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow database queries"
+          description: "95th percentile query time for {{ $labels.operation }} is above 1s (current: {{ $value }}s)"
+
+  # ──────────────────────────────────────────────────────────
+  # 通知システムのアラート
+  # ──────────────────────────────────────────────────────────
+  - name: notification_alerts
+    interval: 30s
+    rules:
+      # 通知失敗率が高い
+      - alert: HighNotificationFailureRate
+        expr: |
+          (
+            sum(rate(notification_sent_total{status="failure"}[5m]))
+            /
+            sum(rate(notification_sent_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High notification failure rate"
+          description: "Notification failure rate is above 5% for channel {{ $labels.channel }} (current: {{ $value | humanizePercentage }})"
+
+      # 通知レイテンシが高い
+      - alert: HighNotificationLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(notification_duration_seconds_bucket[5m])) by (le, channel)
+          ) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High notification latency"
+          description: "95th percentile notification latency for {{ $labels.channel }} is above 30s (current: {{ $value }}s)"
+
+      # レート制限の頻繁なヒット
+      - alert: RateLimitExhaustion
+        expr: |
+          rate(notification_rate_limit_hits_total[1m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Frequent rate limit hits"
+          description: "Channel {{ $labels.channel }} is hitting rate limits more than 10 times per minute (current: {{ $value }})"
+
+      # サーキットブレーカーが開いた
+      - alert: CircuitBreakerOpen
+        expr: |
+          increase(notification_circuit_breaker_open_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Notification circuit breaker opened"
+          description: "Circuit breaker for channel {{ $labels.channel }} has opened due to repeated failures"
+
+      # 通知のドロップが多い
+      - alert: HighNotificationDropRate
+        expr: |
+          rate(notification_dropped_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High notification drop rate"
+          description: "Notifications are being dropped at {{ $value }} per second for channel {{ $labels.channel }} (reason: {{ $labels.reason }})"
+
+      # アクティブゴルーチン数が異常
+      - alert: HighActiveGoroutines
+        expr: |
+          notification_active_goroutines > 50
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High number of active notification goroutines"
+          description: "Active notification goroutines are above 50 (current: {{ $value }}), possible goroutine leak"
+
+  # ──────────────────────────────────────────────────────────
+  # インフラストラクチャのアラート
+  # ──────────────────────────────────────────────────────────
+  - name: infrastructure_alerts
+    interval: 1m
+    rules:
+      # メモリ使用率が高い
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            container_memory_usage_bytes{name="catchup-api"}
+            /
+            container_spec_memory_limit_bytes{name="catchup-api"}
+          ) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Container memory usage is above 90% (current: {{ $value | humanizePercentage }})"
+
+      # CPU使用率が高い
+      - alert: HighCPUUsage
+        expr: |
+          rate(container_cpu_usage_seconds_total{name="catchup-api"}[5m]) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage"
+          description: "Container CPU usage is above 90% (current: {{ $value | humanizePercentage }})"

@@ -1,0 +1,23 @@
+security:
+  auth:
+    provider: "basic"
+    basic:
+      min_password_length: 12
+      weak_passwords:
+        - "admin"
+        - "password"
+        - "123456"
+        - "secret"
+        - "qwerty"
+
+  public_endpoints:
+    - "/health"
+    - "/ready"
+    - "/live"
+    - "/metrics"
+    - "/swagger/"
+    - "/auth/token"
+
+  jwt:
+    secret_env: "JWT_SECRET"
+    expiry_hours: 24
