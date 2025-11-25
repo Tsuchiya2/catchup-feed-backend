@@ -19,9 +19,11 @@ func row(src *entity.Source) *sqlmock.Rows {
 	return sqlmock.NewRows([]string{
 		"id", "name", "feed_url",
 		"last_crawled_at", "active",
+		"source_type", "scraper_config",
 	}).AddRow(
 		src.ID, src.Name, src.FeedURL,
 		src.LastCrawledAt, src.Active,
+		src.SourceType, nil,
 	)
 }
 
@@ -34,6 +36,7 @@ func TestSourceRepo_Get(t *testing.T) {
 	want := &entity.Source{
 		ID: 1, Name: "Qiita", FeedURL: "https://qiita.com/feed",
 		LastCrawledAt: &[]time.Time{time.Now()}[0], Active: true,
+		SourceType: "RSS",
 	}
 
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id`)).
@@ -64,6 +67,7 @@ func TestSourceRepo_List(t *testing.T) {
 		WillReturnRows(row(&entity.Source{
 			ID: 1, Name: "Qiita", FeedURL: "https://qiita.com/feed",
 			LastCrawledAt: &now, Active: true,
+			SourceType: "RSS",
 		}))
 
 	repo := postgres.NewSourceRepo(db)
@@ -86,6 +90,7 @@ func TestSourceRepo_Search(t *testing.T) {
 		WithArgs("%go%").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "name", "feed_url", "last_crawled_at", "active",
+			"source_type", "scraper_config",
 		})) // empty set OK
 
 	repo := postgres.NewSourceRepo(db)
@@ -106,13 +111,14 @@ func TestSourceRepo_Create(t *testing.T) {
 	now := time.Now()
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO sources`)).
 		WithArgs("Qiita", "https://qiita.com/feed",
-			now, true).
+			&now, true, "RSS", []byte(nil)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	repo := postgres.NewSourceRepo(db)
 	err := repo.Create(context.Background(), &entity.Source{
 		Name: "Qiita", FeedURL: "https://qiita.com/feed",
 		LastCrawledAt: &now, Active: true,
+		SourceType: "RSS",
 	})
 	if err != nil {
 		t.Fatalf("Create err=%v", err)
@@ -131,13 +137,14 @@ func TestSourceRepo_Update(t *testing.T) {
 	now := time.Now()
 	mock.ExpectExec(`UPDATE sources`).
 		WithArgs("Qiita", "https://qiita.com/feed",
-			now, true, int64(1)).
+			&now, true, "RSS", []byte(nil), int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	repo := postgres.NewSourceRepo(db)
 	err := repo.Update(context.Background(), &entity.Source{
 		ID: 1, Name: "Qiita", FeedURL: "https://qiita.com/feed",
 		LastCrawledAt: &now, Active: true,
+		SourceType: "RSS",
 	})
 	if err != nil {
 		t.Fatalf("Update err=%v", err)
@@ -175,9 +182,10 @@ func TestSourceRepo_ListActive(t *testing.T) {
 	now := time.Now()
 	rows := sqlmock.NewRows([]string{
 		"id", "name", "feed_url", "last_crawled_at", "active",
+		"source_type", "scraper_config",
 	}).
-		AddRow(1, "Qiita", "https://qiita.com/feed", now, true).
-		AddRow(2, "Zenn", "https://zenn.dev/feed", now, true)
+		AddRow(1, "Qiita", "https://qiita.com/feed", now, true, "RSS", nil).
+		AddRow(2, "Zenn", "https://zenn.dev/feed", now, true, "RSS", nil)
 
 	mock.ExpectQuery(`FROM sources`).
 		WillReturnRows(rows)
@@ -204,6 +212,7 @@ func TestSourceRepo_ListActive_Empty(t *testing.T) {
 
 	rows := sqlmock.NewRows([]string{
 		"id", "name", "feed_url", "last_crawled_at", "active",
+		"source_type", "scraper_config",
 	})
 
 	mock.ExpectQuery(`FROM sources`).
@@ -272,13 +281,14 @@ func TestSourceRepo_Update_NoRowsAffected(t *testing.T) {
 	now := time.Now()
 	mock.ExpectExec(`UPDATE sources`).
 		WithArgs("Qiita", "https://qiita.com/feed",
-			now, true, int64(999)).
+			&now, true, "RSS", []byte(nil), int64(999)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	repo := postgres.NewSourceRepo(db)
 	err := repo.Update(context.Background(), &entity.Source{
 		ID: 999, Name: "Qiita", FeedURL: "https://qiita.com/feed",
 		LastCrawledAt: &now, Active: true,
+		SourceType: "RSS",
 	})
 	if err == nil {
 		t.Fatal("Update should fail when no rows affected")
