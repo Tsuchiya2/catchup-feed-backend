@@ -65,7 +65,7 @@ func TestTokenHandler_Success(t *testing.T) {
 	handler := TokenHandler(authSvc)
 
 	// Create request
-	body := `{"username":"admin","password":"password123"}`
+	body := `{"email":"admin","password":"password123"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/token", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -112,13 +112,13 @@ func TestTokenHandler_Success(t *testing.T) {
 	}
 }
 
-func TestTokenHandler_InvalidCredentials_Username(t *testing.T) {
+func TestTokenHandler_InvalidCredentials_Email(t *testing.T) {
 	_ = os.Setenv("JWT_SECRET", "test-secret-key-with-at-least-32-characters")
 	defer func() {
 		_ = os.Unsetenv("JWT_SECRET")
 	}()
 
-	// Create mock provider that rejects wrong username
+	// Create mock provider that rejects wrong email
 	mockProvider := &mockAuthProvider{
 		validateFunc: func(ctx context.Context, creds authservice.Credentials) error {
 			if creds.Username == "admin" && creds.Password == "password123" {
@@ -132,8 +132,8 @@ func TestTokenHandler_InvalidCredentials_Username(t *testing.T) {
 	authSvc := authservice.NewAuthService(mockProvider, []string{"/health"})
 	handler := TokenHandler(authSvc)
 
-	// Wrong username
-	body := `{"username":"wrong","password":"password123"}`
+	// Wrong email
+	body := `{"email":"wrong","password":"password123"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/token", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -166,7 +166,7 @@ func TestTokenHandler_InvalidCredentials_Password(t *testing.T) {
 	handler := TokenHandler(authSvc)
 
 	// Wrong password
-	body := `{"username":"admin","password":"wrongpassword"}`
+	body := `{"email":"admin","password":"wrongpassword"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/token", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -195,7 +195,7 @@ func TestTokenHandler_InvalidJSON(t *testing.T) {
 	handler := TokenHandler(authSvc)
 
 	// Invalid JSON
-	body := `{"username":"admin","password":}`
+	body := `{"email":"admin","password":}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/token", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -228,7 +228,7 @@ func TestTokenHandler_EmptyCredentials(t *testing.T) {
 	handler := TokenHandler(authSvc)
 
 	// Empty credentials
-	body := `{"username":"","password":""}`
+	body := `{"email":"","password":""}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/token", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -257,7 +257,7 @@ func TestTokenHandler_ServiceValidationError(t *testing.T) {
 	authSvc := authservice.NewAuthService(mockProvider, []string{"/health"})
 	handler := TokenHandler(authSvc)
 
-	body := `{"username":"admin","password":"password123"}`
+	body := `{"email":"admin","password":"password123"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/token", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 

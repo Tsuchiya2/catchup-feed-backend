@@ -13,7 +13,7 @@ import (
 )
 
 type loginRequest struct {
-	Username string `json:"username" example:"admin"`
+	Email    string `json:"email" example:"admin@example.com"`
 	Password string `json:"password" example:"your_password"`
 }
 
@@ -45,7 +45,7 @@ func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
 
 		// Validate credentials using AuthService
 		creds := authservice.Credentials{
-			Username: req.Username,
+			Username: req.Email, // Use Email field, map to Username internally
 			Password: req.Password,
 		}
 
@@ -58,7 +58,7 @@ func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
 		secret := []byte(os.Getenv("JWT_SECRET"))
 
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-			"sub":  req.Username,
+			"sub":  req.Email, // Use email in subject claim
 			"role": "admin",
 			"exp":  time.Now().Add(1 * time.Hour).Unix(),
 		})
