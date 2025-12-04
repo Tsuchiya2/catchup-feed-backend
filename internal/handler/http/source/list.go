@@ -9,6 +9,17 @@ import (
 
 type ListHandler struct{ Svc srcUC.Service }
 
+// ServeHTTP ソース一覧取得
+// @Summary      ソース一覧取得
+// @Description  登録されているすべてのソースを取得します
+// @Tags         sources
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200 {array} DTO "ソース一覧"
+// @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
+// @Failure      403 {string} string "Forbidden - insufficient permissions"
+// @Failure      500 {string} string "サーバーエラー"
+// @Router       /sources [get]
 func (h ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	list, err := h.Svc.List(r.Context())
 	if err != nil {

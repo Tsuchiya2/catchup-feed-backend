@@ -10,6 +10,19 @@ import (
 
 type SearchHandler struct{ Svc artUC.Service }
 
+// ServeHTTP 記事検索
+// @Summary      記事検索
+// @Description  キーワードで記事を検索します
+// @Tags         articles
+// @Security     BearerAuth
+// @Produce      json
+// @Param        keyword query string true "検索キーワード"
+// @Success      200 {array} DTO "検索結果"
+// @Failure      400 {string} string "Bad request - keyword query param required"
+// @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
+// @Failure      403 {string} string "Forbidden - insufficient permissions"
+// @Failure      500 {string} string "サーバーエラー"
+// @Router       /articles/search [get]
 func (h SearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	kw := r.URL.Query().Get("keyword")
 	if kw == "" {

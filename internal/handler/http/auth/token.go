@@ -2,12 +2,13 @@ package auth
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
 	authservice "catchup-feed/internal/service/auth"
+	"catchup-feed/internal/handler/http/requestid"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -37,8 +38,22 @@ type tokenResponse struct {
 // @Router       /auth/token [post]
 func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// Get request ID from context
+		requestID := requestid.FromContext(r.Context())
+		logger := slog.With(slog.String("request_id", requestID))
+
+		logger.Info("authentication attempt started")
+
 		var req loginRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			logger.Warn("authentication failed",
+				slog.String("reason", "invalid_request"),
+				slog.Int64("duration_ms", time.Since(start).Milliseconds()))
+			// Record metrics
+			RecordAuthRequest("unknown", "failure")
+			RecordAuthDuration("unknown", time.Since(start).Seconds())
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
@@ -50,6 +65,25 @@ func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
 		}
 
 		if err := authService.ValidateCredentials(r.Context(), creds); err != nil {
+			logger.Warn("authentication failed",
+				slog.String("reason", "invalid_credentials"),
+				slog.Int64("duration_ms", time.Since(start).Milliseconds()))
+			// Record metrics
+			RecordAuthRequest("unknown", "failure")
+			RecordAuthDuration("unknown", time.Since(start).Seconds())
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Get user role
+		role, err := authService.GetProvider().IdentifyUser(r.Context(), req.Email)
+		if err != nil {
+			logger.Warn("authentication failed",
+				slog.String("reason", "role_identification_failed"),
+				slog.Int64("duration_ms", time.Since(start).Milliseconds()))
+			// Record metrics
+			RecordAuthRequest("unknown", "failure")
+			RecordAuthDuration("unknown", time.Since(start).Seconds())
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -59,19 +93,35 @@ func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
 
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 			"sub":  req.Email, // Use email in subject claim
-			"role": "admin",
+			"role": role,      // Use role from IdentifyUser instead of hardcoded "admin"
 			"exp":  time.Now().Add(1 * time.Hour).Unix(),
 		})
 
 		signed, err := token.SignedString(secret)
 		if err != nil {
+			logger.Error("token generation failed",
+				slog.String("error", err.Error()),
+				slog.Int64("duration_ms", time.Since(start).Milliseconds()))
+			// Record metrics
+			RecordAuthRequest(role, "failure")
+			RecordAuthDuration(role, time.Since(start).Seconds())
 			http.Error(w, "token generation failed", http.StatusInternalServerError)
 			return
 		}
 
+		logger.Info("authentication successful",
+			slog.String("user_email", req.Email),
+			slog.String("role", role),
+			slog.Int64("duration_ms", time.Since(start).Milliseconds()))
+
+		// Record metrics
+		RecordAuthRequest(role, "success")
+		RecordAuthDuration(role, time.Since(start).Seconds())
+
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(tokenResponse{Token: signed}); err != nil {
-			log.Printf("auth: failed to encode token response: %v", err)
+			logger.Error("failed to encode token response",
+				slog.String("error", err.Error()))
 		}
 	}
 }

@@ -235,6 +235,83 @@ func TestAuthz_ProtectedEndpoints_WithNonAdminRole(t *testing.T) {
 	}
 }
 
+// TestAuthz_RoleBasedAuthorization verifies role-based authorization
+// with both admin and viewer roles.
+func TestAuthz_RoleBasedAuthorization(t *testing.T) {
+	// Setup
+	secret := "test-secret-key-at-least-32-characters-long-for-testing"
+	if err := os.Setenv("JWT_SECRET", secret); err != nil {
+		t.Fatalf("Failed to set JWT_SECRET: %v", err)
+	}
+	defer func() {
+		if err := os.Unsetenv("JWT_SECRET"); err != nil {
+			t.Errorf("Failed to unset JWT_SECRET: %v", err)
+		}
+	}()
+
+	tests := []struct {
+		name         string
+		role         string
+		method       string
+		path         string
+		expectedCode int
+	}{
+		// Admin role - should have full access
+		{"admin can GET articles", "admin", "GET", "/articles", http.StatusOK},
+		{"admin can POST articles", "admin", "POST", "/articles", http.StatusOK},
+		{"admin can PUT articles", "admin", "PUT", "/articles/1", http.StatusOK},
+		{"admin can DELETE articles", "admin", "DELETE", "/articles/1", http.StatusOK},
+		{"admin can GET sources", "admin", "GET", "/sources", http.StatusOK},
+		{"admin can POST sources", "admin", "POST", "/sources", http.StatusOK},
+
+		// Viewer role - read-only access to articles and sources
+		{"viewer can GET articles", "viewer", "GET", "/articles", http.StatusOK},
+		{"viewer can GET articles/1", "viewer", "GET", "/articles/1", http.StatusOK},
+		{"viewer can GET sources", "viewer", "GET", "/sources", http.StatusOK},
+		{"viewer can GET sources/1", "viewer", "GET", "/sources/1", http.StatusOK},
+		{"viewer CANNOT POST articles", "viewer", "POST", "/articles", http.StatusForbidden},
+		{"viewer CANNOT PUT articles", "viewer", "PUT", "/articles/1", http.StatusForbidden},
+		{"viewer CANNOT DELETE articles", "viewer", "DELETE", "/articles/1", http.StatusForbidden},
+		{"viewer CANNOT POST sources", "viewer", "POST", "/sources", http.StatusForbidden},
+
+		// Viewer role - cannot access other endpoints
+		{"viewer CANNOT access users", "viewer", "GET", "/users", http.StatusForbidden},
+		{"viewer CANNOT access admin", "viewer", "GET", "/admin", http.StatusForbidden},
+
+		// Unknown role - should be denied
+		{"unknown role denied", "unknown", "GET", "/articles", http.StatusForbidden},
+	}
+
+	middleware := Authz(testSuccessHandler(t))
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create token with specified role
+			claims := jwt.MapClaims{
+				"sub":  "user",
+				"role": tt.role,
+				"exp":  time.Now().Add(1 * time.Hour).Unix(),
+			}
+			token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+			tokenString, err := token.SignedString([]byte(secret))
+			if err != nil {
+				t.Fatalf("Failed to create test token: %v", err)
+			}
+
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req.Header.Set("Authorization", "Bearer "+tokenString)
+			rec := httptest.NewRecorder()
+
+			middleware.ServeHTTP(rec, req)
+
+			if rec.Code != tt.expectedCode {
+				t.Errorf("Expected status %d for %s %s %s, got %d",
+					tt.expectedCode, tt.role, tt.method, tt.path, rec.Code)
+			}
+		})
+	}
+}
+
 // TestAuthz_ProtectedEndpoints_WithValidToken verifies that protected endpoints
 // are accessible with a valid JWT token.
 func TestAuthz_ProtectedEndpoints_WithValidToken(t *testing.T) {

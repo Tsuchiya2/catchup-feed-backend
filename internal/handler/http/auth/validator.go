@@ -192,3 +192,68 @@ func reverse(s string) string {
 	}
 	return string(runes)
 }
+
+// ValidateViewerCredentials validates viewer credentials at startup.
+// It implements graceful degradation: if viewer credentials are misconfigured,
+// the viewer role is disabled but the application continues to run in admin-only mode.
+//
+// Validation Logic:
+//  1. If DEMO_USER is empty → log INFO "viewer role not configured - running in admin-only mode", return nil
+//  2. If DEMO_USER is set but DEMO_USER_PASSWORD is empty → log WARN "DEMO_USER_PASSWORD is empty - disabling viewer role", unset DEMO_USER, return nil
+//  3. If DEMO_USER == ADMIN_USER → log WARN "DEMO_USER cannot be the same as ADMIN_USER - disabling viewer role", unset DEMO_USER, return nil
+//  4. If DEMO_USER_PASSWORD < 12 chars → log WARN "DEMO_USER_PASSWORD must be at least 12 characters - disabling viewer role", unset both, return nil
+//  5. If DEMO_USER_PASSWORD is a weak password → log WARN with message, unset both, return nil
+//  6. Otherwise → log INFO "viewer role configured successfully for {DEMO_USER}", return nil
+//
+// Graceful Degradation: NEVER fails startup (always returns nil), just disables viewer role on misconfiguration.
+func ValidateViewerCredentials(logger interface{ Info(msg string, args ...any); Warn(msg string, args ...any) }) error {
+	demoUser := os.Getenv("DEMO_USER")
+	demoPass := os.Getenv("DEMO_USER_PASSWORD")
+	adminUser := os.Getenv("ADMIN_USER")
+
+	// Case 1: DEMO_USER not configured - admin-only mode
+	if demoUser == "" {
+		logger.Info("viewer role not configured - running in admin-only mode")
+		return nil
+	}
+
+	// Case 2: DEMO_USER set but password empty
+	if demoPass == "" {
+		logger.Warn("DEMO_USER_PASSWORD is empty - disabling viewer role")
+		_ = os.Unsetenv("DEMO_USER")
+		return nil
+	}
+
+	// Case 3: DEMO_USER same as ADMIN_USER
+	if demoUser == adminUser {
+		logger.Warn("DEMO_USER cannot be the same as ADMIN_USER - disabling viewer role")
+		_ = os.Unsetenv("DEMO_USER")
+		_ = os.Unsetenv("DEMO_USER_PASSWORD")
+		return nil
+	}
+
+	// Case 4: Password too short
+	if len(demoPass) < minPasswordLength {
+		logger.Warn("DEMO_USER_PASSWORD must be at least 12 characters - disabling viewer role")
+		_ = os.Unsetenv("DEMO_USER")
+		_ = os.Unsetenv("DEMO_USER_PASSWORD")
+		return nil
+	}
+
+	// Case 5: Weak password check
+	lowerPass := strings.ToLower(demoPass)
+	for _, weak := range weakPasswordList {
+		// Exact match or starts with weak password
+		if lowerPass == weak || strings.HasPrefix(lowerPass, weak) {
+			logger.Warn("DEMO_USER_PASSWORD is a weak password - disabling viewer role",
+				"hint", "avoid common passwords")
+			_ = os.Unsetenv("DEMO_USER")
+			_ = os.Unsetenv("DEMO_USER_PASSWORD")
+			return nil
+		}
+	}
+
+	// Success: viewer role configured
+	logger.Info("viewer role configured successfully", "user", demoUser)
+	return nil
+}

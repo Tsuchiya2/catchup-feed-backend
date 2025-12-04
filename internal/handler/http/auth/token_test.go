@@ -19,6 +19,7 @@ import (
 type mockAuthProvider struct {
 	validateFunc     func(ctx context.Context, creds authservice.Credentials) error
 	requirementsFunc func() authservice.CredentialRequirements
+	identifyUserFunc func(ctx context.Context, email string) (string, error)
 	name             string
 }
 
@@ -34,6 +35,13 @@ func (m *mockAuthProvider) GetRequirements() authservice.CredentialRequirements 
 		return m.requirementsFunc()
 	}
 	return authservice.CredentialRequirements{}
+}
+
+func (m *mockAuthProvider) IdentifyUser(ctx context.Context, email string) (string, error) {
+	if m.identifyUserFunc != nil {
+		return m.identifyUserFunc(ctx, email)
+	}
+	return "admin", nil
 }
 
 func (m *mockAuthProvider) Name() string {
@@ -54,6 +62,12 @@ func TestTokenHandler_Success(t *testing.T) {
 				return nil
 			}
 			return fmt.Errorf("invalid credentials")
+		},
+		identifyUserFunc: func(ctx context.Context, email string) (string, error) {
+			if email == "admin" {
+				return "admin", nil
+			}
+			return "", fmt.Errorf("user not found")
 		},
 		name: "mock",
 	}
@@ -264,6 +278,167 @@ func TestTokenHandler_ServiceValidationError(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler(rr, req)
 
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestTokenHandler_AdminRole(t *testing.T) {
+	_ = os.Setenv("JWT_SECRET", "test-secret-key-with-at-least-32-characters")
+	defer func() {
+		_ = os.Unsetenv("JWT_SECRET")
+	}()
+
+	// Create mock provider that returns admin role
+	mockProvider := &mockAuthProvider{
+		validateFunc: func(ctx context.Context, creds authservice.Credentials) error {
+			if creds.Username == "admin@example.com" && creds.Password == "adminpass" {
+				return nil
+			}
+			return fmt.Errorf("invalid credentials")
+		},
+		identifyUserFunc: func(ctx context.Context, email string) (string, error) {
+			if email == "admin@example.com" {
+				return "admin", nil
+			}
+			return "", fmt.Errorf("user not found")
+		},
+		name: "mock",
+	}
+
+	authSvc := authservice.NewAuthService(mockProvider, []string{"/health"})
+	handler := TokenHandler(authSvc)
+
+	body := `{"email":"admin@example.com","password":"adminpass"}`
+	req := httptest.NewRequest(http.MethodPost, "/auth/token", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var resp tokenResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify token
+	token, err := jwt.Parse(resp.Token, func(t *jwt.Token) (interface{}, error) {
+		return []byte("test-secret-key-with-at-least-32-characters"), nil
+	})
+	if err != nil {
+		t.Fatalf("failed to parse token: %v", err)
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		t.Fatal("claims type assertion failed")
+	}
+
+	if claims["role"] != "admin" {
+		t.Errorf("role claim = %v, want admin", claims["role"])
+	}
+	if claims["sub"] != "admin@example.com" {
+		t.Errorf("sub claim = %v, want admin@example.com", claims["sub"])
+	}
+}
+
+func TestTokenHandler_ViewerRole(t *testing.T) {
+	_ = os.Setenv("JWT_SECRET", "test-secret-key-with-at-least-32-characters")
+	defer func() {
+		_ = os.Unsetenv("JWT_SECRET")
+	}()
+
+	// Create mock provider that returns viewer role
+	mockProvider := &mockAuthProvider{
+		validateFunc: func(ctx context.Context, creds authservice.Credentials) error {
+			if creds.Username == "viewer@example.com" && creds.Password == "viewerpass" {
+				return nil
+			}
+			return fmt.Errorf("invalid credentials")
+		},
+		identifyUserFunc: func(ctx context.Context, email string) (string, error) {
+			if email == "viewer@example.com" {
+				return "viewer", nil
+			}
+			return "", fmt.Errorf("user not found")
+		},
+		name: "mock",
+	}
+
+	authSvc := authservice.NewAuthService(mockProvider, []string{"/health"})
+	handler := TokenHandler(authSvc)
+
+	body := `{"email":"viewer@example.com","password":"viewerpass"}`
+	req := httptest.NewRequest(http.MethodPost, "/auth/token", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var resp tokenResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify token
+	token, err := jwt.Parse(resp.Token, func(t *jwt.Token) (interface{}, error) {
+		return []byte("test-secret-key-with-at-least-32-characters"), nil
+	})
+	if err != nil {
+		t.Fatalf("failed to parse token: %v", err)
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		t.Fatal("claims type assertion failed")
+	}
+
+	if claims["role"] != "viewer" {
+		t.Errorf("role claim = %v, want viewer", claims["role"])
+	}
+	if claims["sub"] != "viewer@example.com" {
+		t.Errorf("sub claim = %v, want viewer@example.com", claims["sub"])
+	}
+}
+
+func TestTokenHandler_IdentifyUserError(t *testing.T) {
+	_ = os.Setenv("JWT_SECRET", "test-secret-key-with-at-least-32-characters")
+	defer func() {
+		_ = os.Unsetenv("JWT_SECRET")
+	}()
+
+	// Create mock provider where IdentifyUser fails
+	mockProvider := &mockAuthProvider{
+		validateFunc: func(ctx context.Context, creds authservice.Credentials) error {
+			// Credentials are valid
+			return nil
+		},
+		identifyUserFunc: func(ctx context.Context, email string) (string, error) {
+			// IdentifyUser fails
+			return "", fmt.Errorf("role identification failed")
+		},
+		name: "mock",
+	}
+
+	authSvc := authservice.NewAuthService(mockProvider, []string{"/health"})
+	handler := TokenHandler(authSvc)
+
+	body := `{"email":"test@example.com","password":"password"}`
+	req := httptest.NewRequest(http.MethodPost, "/auth/token", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	// Should return unauthorized when IdentifyUser fails
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusUnauthorized)
 	}

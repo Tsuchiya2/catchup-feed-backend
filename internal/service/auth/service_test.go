@@ -25,6 +25,10 @@ func (m *mockAuthProvider) Name() string {
 	return m.name
 }
 
+func (m *mockAuthProvider) IdentifyUser(ctx context.Context, email string) (string, error) {
+	return "admin", nil
+}
+
 func TestNewAuthService(t *testing.T) {
 	provider := &mockAuthProvider{name: "mock"}
 	publicEndpoints := []string{"/health", "/metrics"}
@@ -259,6 +263,10 @@ func (m *mockAuthProviderWithContext) GetRequirements() CredentialRequirements {
 
 func (m *mockAuthProviderWithContext) Name() string {
 	return m.name
+}
+
+func (m *mockAuthProviderWithContext) IdentifyUser(ctx context.Context, email string) (string, error) {
+	return "admin", nil
 }
 
 func TestAuthService_ContextPropagation(t *testing.T) {

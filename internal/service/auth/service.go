@@ -28,6 +28,10 @@ type AuthProvider interface {
 
 	// Name returns the name of this provider.
 	Name() string
+
+	// IdentifyUser returns the role for a given email address.
+	// Returns "admin", "viewer", or error if email not recognized.
+	IdentifyUser(ctx context.Context, email string) (role string, err error)
 }
 
 // AuthService handles authentication business logic.
@@ -64,4 +68,9 @@ func (s *AuthService) IsPublicEndpoint(path string) bool {
 // GetProvider returns the current authentication provider.
 func (s *AuthService) GetProvider() AuthProvider {
 	return s.provider
+}
+
+// IdentifyUser identifies the role of a user by their email.
+func (s *AuthService) IdentifyUser(ctx context.Context, email string) (string, error) {
+	return s.provider.IdentifyUser(ctx, email)
 }

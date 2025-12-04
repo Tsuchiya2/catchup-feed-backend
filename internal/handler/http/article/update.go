@@ -13,6 +13,21 @@ import (
 
 type UpdateHandler struct{ Svc artUC.Service }
 
+// ServeHTTP 記事更新
+// @Summary      記事更新
+// @Description  既存の記事を更新します
+// @Tags         articles
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id path int true "記事ID"
+// @Param        article body object true "更新する記事情報"
+// @Success      204 "No Content"
+// @Failure      400 {string} string "Bad request - invalid input"
+// @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
+// @Failure      403 {string} string "Forbidden - admin role required"
+// @Failure      404 {string} string "Not found - article not found"
+// @Router       /articles/{id} [put]
 func (h UpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := pathutil.ExtractID(r.URL.Path, "/articles/")
 	if err != nil {

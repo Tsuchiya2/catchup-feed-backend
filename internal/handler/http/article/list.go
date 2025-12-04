@@ -13,8 +13,11 @@ type ListHandler struct{ Svc artUC.Service }
 // @Summary      記事一覧取得
 // @Description  登録されているすべての記事を取得します
 // @Tags         articles
+// @Security     BearerAuth
 // @Produce      json
 // @Success      200 {array} DTO "記事一覧"
+// @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
+// @Failure      403 {string} string "Forbidden - insufficient permissions"
 // @Failure      500 {string} string "サーバーエラー"
 // @Router       /articles [get]
 func (h ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

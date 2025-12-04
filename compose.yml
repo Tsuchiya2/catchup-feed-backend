@@ -201,6 +201,8 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_USER_PASSWORD: ${ADMIN_USER_PASSWORD}
+      DEMO_USER: ${DEMO_USER:-}
+      DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:-}
 
       # AI 要約設定
       SUMMARIZER_TYPE: ${SUMMARIZER_TYPE:-claude}
@@ -210,6 +212,9 @@ services:
       # アプリケーション設定
       TZ: ${TZ:-Asia/Tokyo}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+
+      # CORS設定
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
 
     ports:
       - "${API_PORT:-8080}:8080"

@@ -12,6 +12,19 @@ import (
 
 type CreateHandler struct{ Svc artUC.Service }
 
+// ServeHTTP 記事作成
+// @Summary      記事作成
+// @Description  新しい記事を作成します
+// @Tags         articles
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        article body object true "記事情報"
+// @Success      201 "Created"
+// @Failure      400 {string} string "Bad request - invalid input"
+// @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
+// @Failure      403 {string} string "Forbidden - admin role required"
+// @Router       /articles [post]
 func (h CreateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		SourceID    int64  `json:"source_id"`

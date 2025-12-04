@@ -55,6 +55,7 @@ import (
 func main() {
 	logger := initLogger()
 	validateAdminCredentials(logger)
+	validateViewerCredentials(logger)
 	validateJWTSecret(logger)
 	database := initDatabase(logger)
 	defer func() {
@@ -89,6 +90,14 @@ func validateAdminCredentials(logger *slog.Logger) {
 		logger.Error("admin credentials validation failed", slog.Any("error", err))
 		os.Exit(1)
 	}
+}
+
+// validateViewerCredentials validates the viewer credentials at startup.
+// Unlike admin validation, this implements graceful degradation:
+// if viewer credentials are misconfigured, the viewer role is disabled
+// but the application continues to run in admin-only mode.
+func validateViewerCredentials(logger *slog.Logger) {
+	_ = hauth.ValidateViewerCredentials(logger)
 }
 
 // validateJWTSecret validates the JWT_SECRET environment variable for security requirements.
@@ -164,9 +173,9 @@ func setupRoutes(database *sql.DB, version string, srcSvc srcUC.Service, artSvc 
 	// レート制限: 認証エンドポイントは1分間に5リクエストまで
 	authRateLimiter := middleware.NewRateLimiter(5, 1*time.Minute, ipExtractor)
 
-	// Initialize AuthService with BasicAuthProvider
+	// Initialize AuthService with MultiUserAuthProvider
 	weakPasswords := []string{"password", "123456", "admin", "test", "secret"}
-	authProvider := hauth.NewBasicAuthProvider(12, weakPasswords)
+	authProvider := hauth.NewMultiUserAuthProvider(12, weakPasswords)
 	publicEndpoints := []string{"/auth/token", "/health", "/ready", "/live", "/metrics", "/swagger/"}
 	authService := authservice.NewAuthService(authProvider, publicEndpoints)
 
@@ -202,12 +211,31 @@ func setupRoutes(database *sql.DB, version string, srcSvc srcUC.Service, artSvc 
 
 // applyMiddleware wraps the handler with middleware chain.
 func applyMiddleware(logger *slog.Logger, handler http.Handler) http.Handler {
-	// ミドルウェアの適用: リクエストID → リカバリ → ロギング → ボディサイズ制限(1MB) → メトリクス
-	return requestid.Middleware(
-		hhttp.Recover(logger)(
-			hhttp.Logging(logger)(
-				hhttp.LimitRequestBody(1 << 20)(
-					hhttp.MetricsMiddleware(handler)))))
+	// Load CORS configuration from environment variables
+	corsConfig, err := middleware.LoadCORSConfig()
+	if err != nil {
+		logger.Error("failed to load CORS configuration", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	// Inject SlogAdapter for logging
+	corsConfig.Logger = &middleware.SlogAdapter{Logger: logger}
+
+	// Log CORS startup configuration
+	logger.Info("CORS enabled",
+		slog.Int("allowed_origins_count", len(corsConfig.Validator.GetAllowedOrigins())),
+		slog.Any("allowed_origins", corsConfig.Validator.GetAllowedOrigins()),
+		slog.Any("allowed_methods", corsConfig.AllowedMethods),
+		slog.Any("allowed_headers", corsConfig.AllowedHeaders),
+		slog.Int("max_age", corsConfig.MaxAge))
+
+	// ミドルウェアの適用: CORS（最外層） → リクエストID → リカバリ → ロギング → ボディサイズ制限(1MB) → メトリクス
+	return middleware.CORS(*corsConfig)(
+		requestid.Middleware(
+			hhttp.Recover(logger)(
+				hhttp.Logging(logger)(
+					hhttp.LimitRequestBody(1 << 20)(
+						hhttp.MetricsMiddleware(handler))))))
 }
 
 // runServer starts the HTTP server and handles graceful shutdown.

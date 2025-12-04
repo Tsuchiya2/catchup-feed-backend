@@ -30,7 +30,8 @@
 
 ```bash
 # 1. 環境変数を設定
-cp .env.dev.example .env
+cp .env.example .env
+# エディタで .env を開き、必要な値を設定
 
 # 2. 初回セットアップ
 make setup
@@ -65,45 +66,19 @@ psql --version
 
 ### 2. 環境変数設定
 
-プロジェクトには2つの環境変数サンプルファイルが用意されています：
-
-```bash
-.env.example         # 本番環境用サンプル
-.env.dev.example     # 開発環境用サンプル
-```
-
-**ファイルの使い分け:**
-- **本番環境**: `.env.example` をコピーして `.env` を作成
-- **開発環境**: `.env.dev.example` をコピーして `.env.dev` を作成（Docker Compose使用時）
-- **ローカル開発**: `.env.example` をコピーして `.env.local` を作成（Go直接実行時）
-
-#### 初回セットアップ
-
-**本番環境の場合:**
-
 ```bash
 # サンプルファイルをコピー
 cp .env.example .env
 
 # エディタで .env を開き、必要な値を設定
-# 必須項目:
-# - JWT_SECRET: openssl rand -base64 64 で生成（32文字以上）
-# - ANTHROPIC_API_KEY: 実際のAPIキーを設定（claude使用時）
-# - OPENAI_API_KEY: 実際のAPIキーを設定（openai使用時）
-# - ADMIN_USER_PASSWORD: 強力なパスワードに変更
 ```
 
-**開発環境の場合（Docker使用）:**
-
-```bash
-# 開発用サンプルファイルをコピー
-cp .env.dev.example .env.dev
-
-# エディタで .env.dev を開き、APIキーを設定
-# 開発環境では OpenAI 推奨（コスト削減）:
-# - SUMMARIZER_TYPE=openai
-# - OPENAI_API_KEY: 実際のAPIキーを設定
-```
+**必須項目:**
+- `JWT_SECRET`: `openssl rand -base64 64` で生成（32文字以上）
+- `ANTHROPIC_API_KEY`: 実際のAPIキーを設定（claude使用時）
+- `OPENAI_API_KEY`: 実際のAPIキーを設定（openai使用時）
+- `ADMIN_USER_PASSWORD`: 強力なパスワードに変更
+- `CORS_ALLOWED_ORIGINS`: 許可するオリジン（開発時: `http://localhost:3000,http://localhost:3001`）
 
 #### 環境変数の主要項目
 
@@ -117,6 +92,8 @@ cp .env.dev.example .env.dev
 | `ANTHROPIC_API_KEY` | Anthropic APIキー | `sk-ant-...` |
 | `ADMIN_USER` | 管理者ユーザー名 | `admin` |
 | `ADMIN_USER_PASSWORD` | 管理者パスワード | 強力なパスワード |
+| `DEMO_USER` | ビューワーロールのユーザー名（オプション） | `demo` |
+| `DEMO_USER_PASSWORD` | ビューワーロールのパスワード（オプション） | `demo123` |
 | `LOG_LEVEL` | ログレベル (`debug`, `info`) | `info` |
 | `DISCORD_ENABLED` | Discord通知の有効化 | `true` or `false` (デフォルト: `false`) |
 | `DISCORD_WEBHOOK_URL` | Discord Webhook URL | `https://discord.com/api/webhooks/...` (DISCORD_ENABLED=true時に必須) |
@@ -226,30 +203,18 @@ histogram_quantile(0.95, rate(content_fetch_size_bytes_bucket[5m]))
 
 **無効化方法:**
 ```bash
-# .env または .env.dev に追加
+# .env に追加
 CONTENT_FETCH_ENABLED=false
 ```
 
 ### 3. Docker Composeで実行（推奨）
 
-#### 本番環境用
-
 ```bash
-# .env を使用（デフォルト）
+# コンテナを起動
 docker compose up -d --build
 
 # ログ確認
 docker compose logs -f app
-```
-
-#### 開発環境用
-
-```bash
-# .env.dev を使用
-docker compose --env-file .env.dev up -d --build
-
-# ログ確認
-docker compose --env-file .env.dev logs -f app
 ```
 
 #### コンテナの管理
@@ -320,6 +285,16 @@ go run ./cmd/worker
 - 並列処理によるフィード取得の最適化
 - マルチチャネル通知システム（Discord、Slack、将来的にEmail、Telegram対応）
 - Prometheus メトリクス収集とヘルスチェックエンドポイント
+
+### ロールベースアクセス制御（RBAC）
+
+APIは2つのユーザーロールをサポートしています：
+
+- **Admin**: すべてのエンドポイントへのフルアクセス（作成、参照、更新、削除）
+- **Viewer**: デモや監視用途向けの読み取り専用アクセス
+
+ビューワーアクセスを設定するには、`.env` ファイルで `DEMO_USER` と `DEMO_USER_PASSWORD` を設定してください。
+詳細な設定方法については、[RBAC Operations Guide](docs/operations/rbac-viewer-role.md) を参照してください。
 
 ---
 

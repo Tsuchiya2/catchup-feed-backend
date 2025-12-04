@@ -12,6 +12,21 @@ import (
 
 type UpdateHandler struct{ Svc srcUC.Service }
 
+// ServeHTTP ソース更新
+// @Summary      ソース更新
+// @Description  既存のソースを更新します
+// @Tags         sources
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        id path int true "ソースID"
+// @Param        source body object true "更新するソース情報"
+// @Success      204 "No Content"
+// @Failure      400 {string} string "Bad request - invalid input"
+// @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
+// @Failure      403 {string} string "Forbidden - admin role required"
+// @Failure      404 {string} string "Not found - source not found"
+// @Router       /sources/{id} [put]
 func (h UpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := pathutil.ExtractID(r.URL.Path, "/sources/")
 	if err != nil {

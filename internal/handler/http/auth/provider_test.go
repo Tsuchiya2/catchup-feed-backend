@@ -329,3 +329,75 @@ func TestBasicAuthProvider_EmptyWeakPasswords(t *testing.T) {
 		t.Errorf("expected no error with empty weak passwords, got: %v", err)
 	}
 }
+
+func TestBasicAuthProvider_IdentifyUser(t *testing.T) {
+	originalUser := os.Getenv("ADMIN_USER")
+	defer func() {
+		_ = os.Setenv("ADMIN_USER", originalUser)
+	}()
+
+	_ = os.Setenv("ADMIN_USER", "admin@example.com")
+
+	provider := NewBasicAuthProvider(12, nil)
+	ctx := context.Background()
+
+	tests := []struct {
+		name         string
+		email        string
+		expectedRole string
+		expectError  bool
+		errorMsg     string
+	}{
+		{
+			name:         "admin email returns admin role",
+			email:        "admin@example.com",
+			expectedRole: RoleAdmin,
+			expectError:  false,
+		},
+		{
+			name:        "unknown email returns error",
+			email:       "unknown@example.com",
+			expectError: true,
+			errorMsg:    "user not found",
+		},
+		{
+			name:        "empty email returns error",
+			email:       "",
+			expectError: true,
+			errorMsg:    "email must not be empty",
+		},
+		{
+			name:        "case sensitive - wrong case",
+			email:       "ADMIN@example.com",
+			expectError: true,
+			errorMsg:    "user not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			role, err := provider.IdentifyUser(ctx, tt.email)
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error but got nil")
+					return
+				}
+				if err.Error() != tt.errorMsg {
+					t.Errorf("expected error message '%s', got '%s'", tt.errorMsg, err.Error())
+				}
+				if role != "" {
+					t.Errorf("expected empty role on error, got '%s'", role)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error but got: %v", err)
+					return
+				}
+				if role != tt.expectedRole {
+					t.Errorf("expected role '%s', got '%s'", tt.expectedRole, role)
+				}
+			}
+		})
+	}
+}

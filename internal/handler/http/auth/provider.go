@@ -69,3 +69,21 @@ func (p *BasicAuthProvider) GetRequirements() authservice.CredentialRequirements
 func (p *BasicAuthProvider) Name() string {
 	return "basic"
 }
+
+// IdentifyUser returns the role for a given email address.
+// For BasicAuthProvider, only admin role is supported.
+// Returns "admin" if email matches ADMIN_USER, otherwise returns error.
+func (p *BasicAuthProvider) IdentifyUser(ctx context.Context, email string) (string, error) {
+	if email == "" {
+		return "", fmt.Errorf("email must not be empty")
+	}
+
+	adminUser := os.Getenv("ADMIN_USER")
+
+	// Use constant-time comparison to prevent timing attacks
+	if subtle.ConstantTimeCompare([]byte(email), []byte(adminUser)) == 1 {
+		return RoleAdmin, nil
+	}
+
+	return "", fmt.Errorf("user not found")
+}

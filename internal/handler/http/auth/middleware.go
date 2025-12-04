@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"catchup-feed/internal/handler/http/requestid"
 	"catchup-feed/internal/handler/http/respond"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -27,8 +29,13 @@ const ctxUser ctxKey = "user"
 //
 // 2. If protected: Require valid JWT token for ALL methods (GET, POST, PUT, DELETE, etc.)
 //   - Extract and validate JWT from Authorization header
-//   - Verify admin role
+//   - Verify role-based permissions using checkRolePermission
 //   - Add user to request context
+//
+// Role-Based Authorization:
+// - Admin: Full access to all endpoints and methods (GET, POST, PUT, DELETE, etc.)
+// - Viewer: Read-only access (GET) to articles, sources, and swagger endpoints
+// - Permission checks use role + method + path combination
 //
 // Security Note:
 // This middleware fixes CVE-CATCHUP-2024-002 (Authorization Bypass for GET Requests).
@@ -54,10 +61,41 @@ func Authz(next http.Handler) http.Handler {
 			respond.SafeError(w, http.StatusUnauthorized, fmt.Errorf("unauthorized: %w", err))
 			return
 		}
-		if role != "admin" {
-			respond.SafeError(w, http.StatusForbidden, errors.New("forbidden"))
+
+		// Get request ID for logging
+		requestID := requestid.FromContext(r.Context())
+		logger := slog.With(
+			slog.String("request_id", requestID),
+			slog.String("method", r.Method),
+			slog.String("path", r.URL.Path),
+		)
+
+		// Log authorization check started
+		logger.Debug("authorization check started", slog.String("role", role))
+
+		// Step 3: Check if user has permission for this request
+		// Track authorization check duration
+		authzStart := time.Now()
+		hasPermission := checkRolePermission(role, r.Method, r.URL.Path)
+		RecordAuthzCheckDuration(time.Since(authzStart).Seconds())
+
+		if !hasPermission {
+			// Record forbidden access attempt
+			RecordForbiddenAttempt(role, r.Method)
+
+			logger.Warn("authorization denied",
+				slog.String("user_email", user),
+				slog.String("role", role),
+				slog.String("reason", "insufficient_permissions"))
+			respond.SafeError(w, http.StatusForbidden, fmt.Errorf("forbidden: %s role cannot perform %s operations", role, r.Method))
 			return
 		}
+
+		// Log successful authorization
+		logger.Info("authorization granted",
+			slog.String("user_email", user),
+			slog.String("role", role))
+
 		ctx := context.WithValue(r.Context(), ctxUser, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

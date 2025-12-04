@@ -494,3 +494,160 @@ func TestRealWorldStrongPasswords(t *testing.T) {
 		})
 	}
 }
+
+// mockLogger implements the logger interface for testing
+type mockLogger struct {
+	infoMessages []logMessage
+	warnMessages []logMessage
+}
+
+type logMessage struct {
+	msg  string
+	args []any
+}
+
+func (m *mockLogger) Info(msg string, args ...any) {
+	m.infoMessages = append(m.infoMessages, logMessage{msg: msg, args: args})
+}
+
+func (m *mockLogger) Warn(msg string, args ...any) {
+	m.warnMessages = append(m.warnMessages, logMessage{msg: msg, args: args})
+}
+
+func TestValidateViewerCredentials(t *testing.T) {
+	tests := []struct {
+		name            string
+		demoUser        string
+		demoPass        string
+		adminUser       string
+		expectInfoMsg   string
+		expectWarnMsg   string
+		expectUnsetDemo bool
+		expectUnsetPass bool
+	}{
+		{
+			name:          "demo user not configured - admin only mode",
+			demoUser:      "",
+			demoPass:      "",
+			adminUser:     "admin",
+			expectInfoMsg: "viewer role not configured - running in admin-only mode",
+		},
+		{
+			name:            "demo user set but password empty",
+			demoUser:        "demo",
+			demoPass:        "",
+			adminUser:       "admin",
+			expectWarnMsg:   "DEMO_USER_PASSWORD is empty - disabling viewer role",
+			expectUnsetDemo: true,
+		},
+		{
+			name:            "demo user same as admin user",
+			demoUser:        "admin",
+			demoPass:        "StrongPassword123!",
+			adminUser:       "admin",
+			expectWarnMsg:   "DEMO_USER cannot be the same as ADMIN_USER - disabling viewer role",
+			expectUnsetDemo: true,
+			expectUnsetPass: true,
+		},
+		{
+			name:            "password too short",
+			demoUser:        "demo",
+			demoPass:        "Short123!",
+			adminUser:       "admin",
+			expectWarnMsg:   "DEMO_USER_PASSWORD must be at least 12 characters - disabling viewer role",
+			expectUnsetDemo: true,
+			expectUnsetPass: true,
+		},
+		{
+			name:            "weak password - exact match",
+			demoUser:        "demo",
+			demoPass:        "password123456",
+			adminUser:       "admin",
+			expectWarnMsg:   "DEMO_USER_PASSWORD is a weak password - disabling viewer role",
+			expectUnsetDemo: true,
+			expectUnsetPass: true,
+		},
+		{
+			name:            "weak password - prefix match",
+			demoUser:        "demo",
+			demoPass:        "admin1234567",
+			adminUser:       "admin",
+			expectWarnMsg:   "DEMO_USER_PASSWORD is a weak password - disabling viewer role",
+			expectUnsetDemo: true,
+			expectUnsetPass: true,
+		},
+		{
+			name:          "valid viewer credentials",
+			demoUser:      "demo@example.com",
+			demoPass:      "StrongPassword123!",
+			adminUser:     "admin",
+			expectInfoMsg: "viewer role configured successfully",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Setup environment
+			_ = os.Setenv("DEMO_USER", tt.demoUser)
+			_ = os.Setenv("DEMO_USER_PASSWORD", tt.demoPass)
+			_ = os.Setenv("ADMIN_USER", tt.adminUser)
+			defer func() {
+				_ = os.Unsetenv("DEMO_USER")
+				_ = os.Unsetenv("DEMO_USER_PASSWORD")
+				_ = os.Unsetenv("ADMIN_USER")
+			}()
+
+			// Create mock logger
+			logger := &mockLogger{}
+
+			// Execute validation
+			err := ValidateViewerCredentials(logger)
+
+			// Validate that error is always nil (graceful degradation)
+			if err != nil {
+				t.Errorf("ValidateViewerCredentials() should always return nil, got error: %v", err)
+			}
+
+			// Check INFO messages
+			if tt.expectInfoMsg != "" {
+				found := false
+				for _, msg := range logger.infoMessages {
+					if strings.Contains(msg.msg, tt.expectInfoMsg) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected INFO message containing %q, got messages: %v", tt.expectInfoMsg, logger.infoMessages)
+				}
+			}
+
+			// Check WARN messages
+			if tt.expectWarnMsg != "" {
+				found := false
+				for _, msg := range logger.warnMessages {
+					if strings.Contains(msg.msg, tt.expectWarnMsg) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected WARN message containing %q, got messages: %v", tt.expectWarnMsg, logger.warnMessages)
+				}
+			}
+
+			// Check environment variable unset behavior
+			if tt.expectUnsetDemo {
+				if os.Getenv("DEMO_USER") != "" {
+					t.Errorf("Expected DEMO_USER to be unset, but got: %q", os.Getenv("DEMO_USER"))
+				}
+			}
+
+			if tt.expectUnsetPass {
+				if os.Getenv("DEMO_USER_PASSWORD") != "" {
+					t.Errorf("Expected DEMO_USER_PASSWORD to be unset, but got non-empty value")
+				}
+			}
+		})
+	}
+}
