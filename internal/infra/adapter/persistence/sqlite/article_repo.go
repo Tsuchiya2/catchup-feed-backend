@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"catchup-feed/internal/domain/entity"
+	"catchup-feed/internal/pkg/search"
 	"catchup-feed/internal/repository"
 )
 
@@ -172,6 +173,72 @@ ORDER BY published_at DESC
 	}
 
 	return articles, nil
+}
+
+// SearchWithFilters searches articles with multi-keyword AND logic and optional filters.
+// Note: SQLite uses LIKE instead of ILIKE (case-insensitive by default for ASCII).
+func (repo *ArticleRepo) SearchWithFilters(ctx context.Context, keywords []string, filters repository.ArticleSearchFilters) ([]*entity.Article, error) {
+	// Empty keywords -> return empty result
+	if len(keywords) == 0 {
+		return []*entity.Article{}, nil
+	}
+
+	// Apply search timeout to prevent long-running queries
+	ctx, cancel := context.WithTimeout(ctx, search.DefaultSearchTimeout)
+	defer cancel()
+
+	// Build dynamic query with placeholders
+	var whereClauses []string
+	var args []interface{}
+
+	// Add keyword conditions (AND logic)
+	for _, keyword := range keywords {
+		// SQLite uses LIKE with % wildcards (case-insensitive for ASCII by default)
+		pattern := "%" + keyword + "%"
+		whereClauses = append(whereClauses, "(title LIKE ? OR summary LIKE ?)")
+		args = append(args, pattern, pattern)
+	}
+
+	// Add optional filters
+	if filters.SourceID != nil {
+		whereClauses = append(whereClauses, "source_id = ?")
+		args = append(args, *filters.SourceID)
+	}
+
+	if filters.From != nil {
+		whereClauses = append(whereClauses, "published_at >= ?")
+		args = append(args, *filters.From)
+	}
+
+	if filters.To != nil {
+		whereClauses = append(whereClauses, "published_at <= ?")
+		args = append(args, *filters.To)
+	}
+
+	// Construct final query
+	query := `
+SELECT id, source_id, title, url, summary, published_at, created_at
+FROM articles
+WHERE ` + strings.Join(whereClauses, " AND ") + `
+ORDER BY published_at DESC`
+
+	rows, err := repo.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("SearchWithFilters: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	// パフォーマンス最適化: メモリ再割り当てを削減するため事前割り当て
+	articles := make([]*entity.Article, 0, 100)
+	for rows.Next() {
+		var article entity.Article
+		if err := rows.Scan(&article.ID, &article.SourceID, &article.Title,
+			&article.URL, &article.Summary, &article.PublishedAt, &article.CreatedAt); err != nil {
+			return nil, fmt.Errorf("SearchWithFilters: Scan: %w", err)
+		}
+		articles = append(articles, &article)
+	}
+	return articles, rows.Err()
 }
 
 func (repo *ArticleRepo) Create(ctx context.Context, article *entity.Article) error {

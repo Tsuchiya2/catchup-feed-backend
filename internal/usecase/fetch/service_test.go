@@ -77,6 +77,9 @@ func (s *stubSourceRepo) Update(_ context.Context, _ *entity.Source) error {
 func (s *stubSourceRepo) Delete(_ context.Context, _ int64) error {
 	return nil
 }
+func (s *stubSourceRepo) SearchWithFilters(_ context.Context, _ []string, _ repository.SourceSearchFilters) ([]*entity.Source, error) {
+	return nil, nil
+}
 
 // stubArticleRepo はArticleRepositoryのモック実装
 type stubArticleRepo struct {
@@ -136,6 +139,9 @@ func (s *stubArticleRepo) GetWithSource(_ context.Context, _ int64) (*entity.Art
 	return nil, "", nil
 }
 func (s *stubArticleRepo) ListWithSource(_ context.Context) ([]repository.ArticleWithSource, error) {
+	return nil, nil
+}
+func (s *stubArticleRepo) SearchWithFilters(_ context.Context, _ []string, _ repository.ArticleSearchFilters) ([]*entity.Article, error) {
 	return nil, nil
 }
 
