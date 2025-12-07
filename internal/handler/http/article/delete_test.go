@@ -59,6 +59,12 @@ func (s *stubDeleteRepo) GetWithSource(_ context.Context, _ int64) (*entity.Arti
 func (s *stubDeleteRepo) ListWithSource(_ context.Context) ([]repository.ArticleWithSource, error) {
 	return nil, nil
 }
+func (s *stubDeleteRepo) ListWithSourcePaginated(_ context.Context, _, _ int) ([]repository.ArticleWithSource, error) {
+	return nil, nil
+}
+func (s *stubDeleteRepo) CountArticles(_ context.Context) (int64, error) {
+	return 0, nil
+}
 
 func TestDeleteHandler_Success(t *testing.T) {
 	stub := &stubDeleteRepo{}

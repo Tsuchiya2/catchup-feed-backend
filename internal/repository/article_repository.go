@@ -25,6 +25,16 @@ type ArticleRepository interface {
 	// ListWithSource retrieves all articles with their source names.
 	// Returns a slice of ArticleWithSource containing article and source name pairs.
 	ListWithSource(ctx context.Context) ([]ArticleWithSource, error)
+	// ListWithSourcePaginated retrieves paginated articles with their source names.
+	// Uses LIMIT and OFFSET for efficient pagination.
+	// Parameters:
+	//   - offset: Number of rows to skip (calculated from page number)
+	//   - limit: Maximum number of rows to return
+	// Returns articles ordered by published_at DESC.
+	ListWithSourcePaginated(ctx context.Context, offset, limit int) ([]ArticleWithSource, error)
+	// CountArticles returns the total number of articles in the database.
+	// This is used for calculating pagination metadata (total pages, etc.).
+	CountArticles(ctx context.Context) (int64, error)
 	Get(ctx context.Context, id int64) (*entity.Article, error)
 	// GetWithSource retrieves an article by ID and includes the source name.
 	// Returns the article entity, source name, and error.

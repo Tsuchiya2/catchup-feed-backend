@@ -133,6 +133,37 @@ func (s *stubRepo) ListWithSource(_ context.Context) ([]repository.ArticleWithSo
 	return out, nil
 }
 
+// ListWithSourcePaginated retrieves paginated articles with source names.
+func (s *stubRepo) ListWithSourcePaginated(_ context.Context, offset, limit int) ([]repository.ArticleWithSource, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	var all []repository.ArticleWithSource
+	for _, v := range s.data {
+		all = append(all, repository.ArticleWithSource{
+			Article:    v,
+			SourceName: "Test Source",
+		})
+	}
+	// Apply offset and limit
+	if offset >= len(all) {
+		return []repository.ArticleWithSource{}, nil
+	}
+	end := offset + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[offset:end], nil
+}
+
+// CountArticles returns the total number of articles.
+func (s *stubRepo) CountArticles(_ context.Context) (int64, error) {
+	if s.err != nil {
+		return 0, s.err
+	}
+	return int64(len(s.data)), nil
+}
+
 /* ───────── 1. Create のバリデーション ───────── */
 
 func TestService_Create_validation(t *testing.T) {

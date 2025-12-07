@@ -144,6 +144,12 @@ func (s *stubArticleRepo) ListWithSource(_ context.Context) ([]repository.Articl
 func (s *stubArticleRepo) SearchWithFilters(_ context.Context, _ []string, _ repository.ArticleSearchFilters) ([]*entity.Article, error) {
 	return nil, nil
 }
+func (s *stubArticleRepo) CountArticles(_ context.Context) (int64, error) {
+	return 0, nil
+}
+func (s *stubArticleRepo) ListWithSourcePaginated(_ context.Context, _, _ int) ([]repository.ArticleWithSource, error) {
+	return nil, nil
+}
 
 // stubFeedFetcher はFeedFetcherのモック実装
 type stubFeedFetcher struct {

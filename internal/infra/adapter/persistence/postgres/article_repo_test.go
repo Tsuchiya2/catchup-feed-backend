@@ -636,3 +636,192 @@ func TestArticleRepo_SearchWithFilters_SpecialCharacters(t *testing.T) {
 		t.Fatalf("SearchWithFilters len=%d, want 1", len(result))
 	}
 }
+
+/* ──────────────────────────── ListWithSourcePaginated ──────────────────────────── */
+
+func TestArticleRepo_ListWithSourcePaginated(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+
+	// Mock data: 2 articles (PostgreSQL uses $1, $2 placeholders)
+	mock.ExpectQuery("SELECT.*FROM articles.*INNER JOIN sources.*LIMIT.*OFFSET").
+		WithArgs(2, 0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}).
+			AddRow(1, 10, "Article 1", "https://example.com/1", "Summary 1", now, now, "Test Source").
+			AddRow(2, 10, "Article 2", "https://example.com/2", "Summary 2", now, now, "Test Source"))
+
+	repo := pg.NewArticleRepo(db)
+	result, err := repo.ListWithSourcePaginated(context.Background(), 0, 2)
+	if err != nil {
+		t.Fatalf("ListWithSourcePaginated err=%v", err)
+	}
+
+	if len(result) != 2 {
+		t.Fatalf("ListWithSourcePaginated result length = %d, want 2", len(result))
+	}
+
+	if result[0].Article.ID != 1 {
+		t.Errorf("result[0].Article.ID = %d, want 1", result[0].Article.ID)
+	}
+	if result[0].SourceName != "Test Source" {
+		t.Errorf("result[0].SourceName = %q, want %q", result[0].SourceName, "Test Source")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_ListWithSourcePaginated_SecondPage(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+
+	// Mock second page (offset=20, limit=20)
+	mock.ExpectQuery("SELECT.*FROM articles.*INNER JOIN sources.*LIMIT.*OFFSET").
+		WithArgs(20, 20).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}).
+			AddRow(21, 10, "Article 21", "https://example.com/21", "Summary 21", now, now, "Test Source").
+			AddRow(22, 10, "Article 22", "https://example.com/22", "Summary 22", now, now, "Test Source"))
+
+	repo := pg.NewArticleRepo(db)
+	result, err := repo.ListWithSourcePaginated(context.Background(), 20, 20)
+	if err != nil {
+		t.Fatalf("ListWithSourcePaginated err=%v", err)
+	}
+
+	if len(result) != 2 {
+		t.Fatalf("ListWithSourcePaginated result length = %d, want 2", len(result))
+	}
+
+	if result[0].Article.ID != 21 {
+		t.Errorf("result[0].Article.ID = %d, want 21", result[0].Article.ID)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_ListWithSourcePaginated_EmptyResult(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock empty result (page beyond available data)
+	mock.ExpectQuery("SELECT.*FROM articles.*INNER JOIN sources.*LIMIT.*OFFSET").
+		WithArgs(20, 1000).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}))
+
+	repo := pg.NewArticleRepo(db)
+	result, err := repo.ListWithSourcePaginated(context.Background(), 1000, 20)
+	if err != nil {
+		t.Fatalf("ListWithSourcePaginated err=%v", err)
+	}
+
+	if len(result) != 0 {
+		t.Fatalf("ListWithSourcePaginated result length = %d, want 0", len(result))
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_ListWithSourcePaginated_LargeOffset(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock large offset
+	mock.ExpectQuery("SELECT.*FROM articles.*INNER JOIN sources.*LIMIT.*OFFSET").
+		WithArgs(10, 9900).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}))
+
+	repo := pg.NewArticleRepo(db)
+	result, err := repo.ListWithSourcePaginated(context.Background(), 9900, 10)
+	if err != nil {
+		t.Fatalf("ListWithSourcePaginated err=%v", err)
+	}
+
+	if len(result) != 0 {
+		t.Fatalf("ListWithSourcePaginated result length = %d, want 0", len(result))
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+/* ──────────────────────────── CountArticles ──────────────────────────── */
+
+func TestArticleRepo_CountArticles(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock count result
+	mock.ExpectQuery("SELECT COUNT.*FROM articles").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(150))
+
+	repo := pg.NewArticleRepo(db)
+	count, err := repo.CountArticles(context.Background())
+	if err != nil {
+		t.Fatalf("CountArticles err=%v", err)
+	}
+
+	if count != 150 {
+		t.Fatalf("CountArticles count = %d, want 150", count)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_CountArticles_Zero(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock zero count
+	mock.ExpectQuery("SELECT COUNT.*FROM articles").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	repo := pg.NewArticleRepo(db)
+	count, err := repo.CountArticles(context.Background())
+	if err != nil {
+		t.Fatalf("CountArticles err=%v", err)
+	}
+
+	if count != 0 {
+		t.Fatalf("CountArticles count = %d, want 0", count)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

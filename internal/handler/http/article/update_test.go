@@ -66,6 +66,12 @@ func (s *stubUpdateRepo) GetWithSource(_ context.Context, _ int64) (*entity.Arti
 func (s *stubUpdateRepo) ListWithSource(_ context.Context) ([]repository.ArticleWithSource, error) {
 	return nil, nil
 }
+func (s *stubUpdateRepo) ListWithSourcePaginated(_ context.Context, _, _ int) ([]repository.ArticleWithSource, error) {
+	return nil, nil
+}
+func (s *stubUpdateRepo) CountArticles(_ context.Context) (int64, error) {
+	return 0, nil
+}
 
 func TestUpdateHandler_Success(t *testing.T) {
 	stub := &stubUpdateRepo{

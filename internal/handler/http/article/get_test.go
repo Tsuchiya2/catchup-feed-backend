@@ -65,6 +65,12 @@ func (s *stubGetRepo) ExistsByURLBatch(_ context.Context, _ []string) (map[strin
 func (s *stubGetRepo) ListWithSource(_ context.Context) ([]repository.ArticleWithSource, error) {
 	return nil, nil
 }
+func (s *stubGetRepo) ListWithSourcePaginated(_ context.Context, _, _ int) ([]repository.ArticleWithSource, error) {
+	return nil, nil
+}
+func (s *stubGetRepo) CountArticles(_ context.Context) (int64, error) {
+	return 0, nil
+}
 
 /* ───────── テストケース ───────── */
 

@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/scripts/notification.sh 'Input needed / 入力が必要です' WarblerSong"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/notification.sh\" 'Input needed' WarblerSong"
           }
         ]
       }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/scripts/notification.sh 'Task completed / タスクが完了しました' CatMeow"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/notification.sh\" 'Task completed' CatMeow"
           }
         ]
       }

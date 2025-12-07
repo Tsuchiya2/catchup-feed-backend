@@ -81,6 +81,29 @@ func (b *benchListRepo) ListWithSource(_ context.Context) ([]repository.ArticleW
 	}
 	return result, nil
 }
+func (b *benchListRepo) ListWithSourcePaginated(_ context.Context, offset, limit int) ([]repository.ArticleWithSource, error) {
+	// 100件の記事から指定された範囲を返すシミュレーション
+	result := make([]repository.ArticleWithSource, 0, limit)
+	now := time.Now()
+	for i := offset; i < offset+limit && i < 100; i++ {
+		result = append(result, repository.ArticleWithSource{
+			Article: &entity.Article{
+				ID:          int64(i + 1),
+				SourceID:    1,
+				Title:       "Benchmark Article Title",
+				URL:         "https://example.com/article",
+				Summary:     "This is a test summary for benchmark",
+				PublishedAt: now,
+				CreatedAt:   now,
+			},
+			SourceName: "Benchmark Source",
+		})
+	}
+	return result, nil
+}
+func (b *benchListRepo) CountArticles(_ context.Context) (int64, error) {
+	return 100, nil
+}
 
 // BenchmarkListHandler_100Articles は100件の記事一覧取得の性能を測定
 func BenchmarkListHandler_100Articles(b *testing.B) {

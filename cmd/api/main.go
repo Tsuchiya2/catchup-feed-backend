@@ -15,6 +15,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 
+	"catchup-feed/internal/common/pagination"
 	pgRepo "catchup-feed/internal/infra/adapter/persistence/postgres"
 	"catchup-feed/internal/infra/db"
 
@@ -164,12 +165,12 @@ func setupServer(logger *slog.Logger, database *sql.DB, version string) http.Han
 		logger.Info("rate limiting: using RemoteAddr (secure mode, proxy headers ignored)")
 	}
 
-	rootMux := setupRoutes(database, version, srcSvc, artSvc, ipExtractor)
+	rootMux := setupRoutes(database, version, srcSvc, artSvc, ipExtractor, logger)
 	return applyMiddleware(logger, rootMux)
 }
 
 // setupRoutes registers all HTTP routes (public and protected).
-func setupRoutes(database *sql.DB, version string, srcSvc srcUC.Service, artSvc artUC.Service, ipExtractor middleware.IPExtractor) *http.ServeMux {
+func setupRoutes(database *sql.DB, version string, srcSvc srcUC.Service, artSvc artUC.Service, ipExtractor middleware.IPExtractor, logger *slog.Logger) *http.ServeMux {
 	// レート制限: 認証エンドポイントは1分間に5リクエストまで
 	authRateLimiter := middleware.NewRateLimiter(5, 1*time.Minute, ipExtractor)
 
@@ -191,9 +192,12 @@ func setupRoutes(database *sql.DB, version string, srcSvc srcUC.Service, artSvc 
 	// Swagger UI（認証不要）
 	publicMux.Handle("/swagger/", httpSwagger.WrapHandler)
 
+	// Load pagination configuration
+	paginationCfg := pagination.LoadFromEnv()
+
 	privateMux := http.NewServeMux()
 	hsrc.Register(privateMux, srcSvc)
-	harticle.Register(privateMux, artSvc)
+	harticle.Register(privateMux, artSvc, paginationCfg, logger)
 
 	protected := hauth.Authz(privateMux)
 

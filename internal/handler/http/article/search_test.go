@@ -56,6 +56,12 @@ func (s *stubSearchRepo) GetWithSource(_ context.Context, _ int64) (*entity.Arti
 func (s *stubSearchRepo) ListWithSource(_ context.Context) ([]repository.ArticleWithSource, error) {
 	return nil, nil
 }
+func (s *stubSearchRepo) ListWithSourcePaginated(_ context.Context, _, _ int) ([]repository.ArticleWithSource, error) {
+	return nil, nil
+}
+func (s *stubSearchRepo) CountArticles(_ context.Context) (int64, error) {
+	return 0, nil
+}
 
 func TestSearchHandler_Success(t *testing.T) {
 	now := time.Now()

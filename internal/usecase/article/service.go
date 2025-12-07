@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"catchup-feed/internal/common/pagination"
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/repository"
 )
@@ -35,6 +36,13 @@ type Service struct {
 	Repo repository.ArticleRepository
 }
 
+// PaginatedResult represents the result of a paginated query.
+// It contains both the data and pagination metadata.
+type PaginatedResult struct {
+	Data       []repository.ArticleWithSource
+	Pagination pagination.Metadata
+}
+
 // List retrieves all articles from the repository.
 // Returns an error if the repository operation fails.
 func (s *Service) List(ctx context.Context) ([]*entity.Article, error) {
@@ -53,6 +61,39 @@ func (s *Service) ListWithSource(ctx context.Context) ([]repository.ArticleWithS
 		return nil, fmt.Errorf("list articles with source: %w", err)
 	}
 	return articles, nil
+}
+
+// ListWithSourcePaginated retrieves articles with pagination support.
+// It calculates the appropriate offset, retrieves the data and total count,
+// and returns a PaginatedResult with both data and metadata.
+func (s *Service) ListWithSourcePaginated(ctx context.Context, params pagination.Params) (*PaginatedResult, error) {
+	// Calculate offset using pagination utilities
+	offset := pagination.CalculateOffset(params.Page, params.Limit)
+
+	// Get total count for metadata
+	total, err := s.Repo.CountArticles(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("count articles: %w", err)
+	}
+
+	// Get paginated data
+	articles, err := s.Repo.ListWithSourcePaginated(ctx, offset, params.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list articles with source paginated: %w", err)
+	}
+
+	// Calculate total pages using pagination utilities
+	totalPages := pagination.CalculateTotalPages(total, params.Limit)
+
+	return &PaginatedResult{
+		Data: articles,
+		Pagination: pagination.Metadata{
+			Total:      total,
+			Page:       params.Page,
+			Limit:      params.Limit,
+			TotalPages: totalPages,
+		},
+	}, nil
 }
 
 // Get retrieves a single article by its ID.

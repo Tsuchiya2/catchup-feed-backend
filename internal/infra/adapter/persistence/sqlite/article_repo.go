@@ -96,6 +96,58 @@ ORDER BY a.published_at DESC
 	return result, nil
 }
 
+// ListWithSourcePaginated retrieves paginated articles with source names.
+// Uses LIMIT and OFFSET for efficient pagination.
+func (repo *ArticleRepo) ListWithSourcePaginated(ctx context.Context, offset, limit int) ([]repository.ArticleWithSource, error) {
+	const query = `
+SELECT a.id, a.source_id, a.title, a.url, a.summary, a.published_at, a.created_at, s.name AS source_name
+FROM articles a
+INNER JOIN sources s ON a.source_id = s.id
+ORDER BY a.published_at DESC
+LIMIT ? OFFSET ?
+`
+
+	rows, err := repo.db.QueryContext(ctx, query, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("ListWithSourcePaginated: QueryContext: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make([]repository.ArticleWithSource, 0, limit)
+	for rows.Next() {
+		var article entity.Article
+		var sourceName string
+		err := rows.Scan(&article.ID,
+			&article.SourceID, &article.Title,
+			&article.URL, &article.Summary,
+			&article.PublishedAt, &article.CreatedAt, &sourceName)
+		if err != nil {
+			return nil, fmt.Errorf("ListWithSourcePaginated: Scan: %w", err)
+		}
+		result = append(result, repository.ArticleWithSource{
+			Article:    &article,
+			SourceName: sourceName,
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ListWithSourcePaginated: rows.Err: %w", err)
+	}
+
+	return result, nil
+}
+
+// CountArticles returns the total number of articles in the database.
+func (repo *ArticleRepo) CountArticles(ctx context.Context) (int64, error) {
+	const query = `SELECT COUNT(*) FROM articles`
+	var count int64
+	err := repo.db.QueryRowContext(ctx, query).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("CountArticles: QueryRowContext: %w", err)
+	}
+	return count, nil
+}
+
 func (repo *ArticleRepo) Get(ctx context.Context, id int64) (*entity.Article, error) {
 	const query = `
 SELECT id, source_id, title, url, summary, published_at, created_at
