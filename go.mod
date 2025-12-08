@@ -4,7 +4,7 @@ go 1.25.4
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/PuerkitoBio/goquery v1.10.3
+	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/anthropics/anthropic-sdk-go v1.19.0
 	github.com/go-shiori/go-readability v0.0.0-20250217085726-9f5bf5ca7612
 	github.com/golang-jwt/jwt/v5 v5.3.0
