@@ -53,6 +53,7 @@ func (h GetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Summary:     article.Summary,
 		PublishedAt: article.PublishedAt,
 		CreatedAt:   article.CreatedAt,
+		UpdatedAt:   article.CreatedAt, // Database schema doesn't have updated_at column
 	}
 
 	respond.JSON(w, http.StatusOK, out)

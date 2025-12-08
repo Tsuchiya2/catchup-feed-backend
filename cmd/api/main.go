@@ -174,6 +174,11 @@ func setupRoutes(database *sql.DB, version string, srcSvc srcUC.Service, artSvc 
 	// レート制限: 認証エンドポイントは1分間に5リクエストまで
 	authRateLimiter := middleware.NewRateLimiter(5, 1*time.Minute, ipExtractor)
 
+	// レート制限: 検索エンドポイントは1分間に100リクエストまで（バースト10）
+	// Note: Current implementation uses sliding window without explicit burst size,
+	// but limit of 100 req/min allows bursts naturally within the time window
+	searchRateLimiter := middleware.NewRateLimiter(100, 1*time.Minute, ipExtractor)
+
 	// Initialize AuthService with MultiUserAuthProvider
 	weakPasswords := []string{"password", "123456", "admin", "test", "secret"}
 	authProvider := hauth.NewMultiUserAuthProvider(12, weakPasswords)
@@ -196,8 +201,8 @@ func setupRoutes(database *sql.DB, version string, srcSvc srcUC.Service, artSvc 
 	paginationCfg := pagination.LoadFromEnv()
 
 	privateMux := http.NewServeMux()
-	hsrc.Register(privateMux, srcSvc)
-	harticle.Register(privateMux, artSvc, paginationCfg, logger)
+	hsrc.Register(privateMux, srcSvc, searchRateLimiter)
+	harticle.Register(privateMux, artSvc, paginationCfg, logger, searchRateLimiter)
 
 	protected := hauth.Authz(privateMux)
 

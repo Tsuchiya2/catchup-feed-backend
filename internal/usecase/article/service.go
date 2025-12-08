@@ -155,6 +155,62 @@ func (s *Service) SearchWithFilters(ctx context.Context, keywords []string, filt
 	return articles, nil
 }
 
+// SearchWithFiltersPaginated searches articles with pagination support.
+// It retrieves the total count and paginated data, then returns a PaginatedResult with both data and metadata.
+// If count query fails, it returns data with total=-1 for graceful degradation.
+//
+// Note: COUNT and SELECT queries are not executed in a transaction due to repository interface limitations.
+// For high-consistency requirements, consider adding transaction support to the repository interface.
+func (s *Service) SearchWithFiltersPaginated(ctx context.Context, keywords []string, filters repository.ArticleSearchFilters, page, limit int) (*PaginatedResult, error) {
+	// Validate page parameter
+	if page < 1 {
+		page = 1 // Default to page 1 if invalid
+	}
+
+	// Set default limit if not specified
+	if limit <= 0 {
+		limit = 10 // Default limit
+	}
+
+	// Calculate offset using pagination utilities
+	offset := pagination.CalculateOffset(page, limit)
+
+	// Get total count for metadata
+	// Note: This is not in a transaction with the data query.
+	// In high-concurrency scenarios, the count may be slightly inconsistent with the data.
+	total, err := s.Repo.CountArticlesWithFilters(ctx, keywords, filters)
+	if err != nil {
+		// Graceful degradation: If count fails, continue with data query
+		// but return total=-1 to indicate metadata unavailable
+		total = -1
+	}
+
+	// Get paginated data
+	articles, err := s.Repo.SearchWithFiltersPaginated(ctx, keywords, filters, offset, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search articles with filters paginated: %w", err)
+	}
+
+	// Calculate total pages using pagination utilities
+	// If total is -1 (count failed), totalPages will be 0
+	var totalPages int
+	if total >= 0 {
+		totalPages = pagination.CalculateTotalPages(total, limit)
+	} else {
+		totalPages = 0 // Unknown total pages
+	}
+
+	return &PaginatedResult{
+		Data: articles,
+		Pagination: pagination.Metadata{
+			Total:      total,
+			Page:       page,
+			Limit:      limit,
+			TotalPages: totalPages,
+		},
+	}, nil
+}
+
 // Create creates a new article with the provided input.
 // It validates the input data including URL format before creating the article.
 // Returns a ValidationError if any input field is invalid.

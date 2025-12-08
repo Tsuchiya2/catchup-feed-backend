@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"time"
 
 	"catchup-feed/internal/handler/http/respond"
 	"catchup-feed/internal/pkg/search"
@@ -83,8 +84,12 @@ func (h SearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ID:            e.ID,
 			Name:          e.Name,
 			FeedURL:       e.FeedURL,
+			URL:           e.FeedURL, // Map FeedURL to URL for frontend compatibility
+			SourceType:    e.SourceType,
 			LastCrawledAt: e.LastCrawledAt,
 			Active:        e.Active,
+			CreatedAt:     time.Time{}, // Database schema doesn't have created_at column for sources
+			UpdatedAt:     time.Time{}, // Database schema doesn't have updated_at column for sources
 		})
 	}
 	respond.JSON(w, http.StatusOK, out)

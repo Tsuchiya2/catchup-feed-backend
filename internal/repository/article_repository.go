@@ -43,6 +43,13 @@ type ArticleRepository interface {
 	Search(ctx context.Context, keyword string) ([]*entity.Article, error)
 	// SearchWithFilters searches articles with multi-keyword AND logic and optional filters
 	SearchWithFilters(ctx context.Context, keywords []string, filters ArticleSearchFilters) ([]*entity.Article, error)
+	// CountArticlesWithFilters returns the total number of articles matching the search criteria.
+	// Uses the same filters as SearchWithFilters for consistency.
+	CountArticlesWithFilters(ctx context.Context, keywords []string, filters ArticleSearchFilters) (int64, error)
+	// SearchWithFiltersPaginated searches articles with pagination support.
+	// Returns articles matching the criteria with LIMIT and OFFSET applied.
+	// Includes source_name from JOIN with sources table.
+	SearchWithFiltersPaginated(ctx context.Context, keywords []string, filters ArticleSearchFilters, offset, limit int) ([]ArticleWithSource, error)
 	Create(ctx context.Context, article *entity.Article) error
 	Update(ctx context.Context, article *entity.Article) error
 	Delete(ctx context.Context, id int64) error

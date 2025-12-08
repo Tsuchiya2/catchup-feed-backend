@@ -61,6 +61,12 @@ func (s *stubCreateRepo) ListWithSourcePaginated(_ context.Context, _, _ int) ([
 func (s *stubCreateRepo) CountArticles(_ context.Context) (int64, error) {
 	return 0, nil
 }
+func (s *stubCreateRepo) CountArticlesWithFilters(_ context.Context, _ []string, _ repository.ArticleSearchFilters) (int64, error) {
+	return 0, nil
+}
+func (s *stubCreateRepo) SearchWithFiltersPaginated(_ context.Context, _ []string, _ repository.ArticleSearchFilters, _, _ int) ([]repository.ArticleWithSource, error) {
+	return nil, nil
+}
 
 func TestCreateHandler_Success(t *testing.T) {
 	stub := &stubCreateRepo{}

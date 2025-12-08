@@ -11,6 +11,7 @@ import (
 
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/infra/adapter/persistence/sqlite"
+	"catchup-feed/internal/repository"
 )
 
 /* ────────────────────────────  ヘルパ  ──────────────────────────── */
@@ -504,6 +505,513 @@ func TestArticleRepo_CountArticles_Zero(t *testing.T) {
 
 	if count != 0 {
 		t.Fatalf("CountArticles count = %d, want 0", count)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+/* ──────────────────────────── 11. CountArticlesWithFilters ──────────────────────────── */
+
+func TestArticleRepo_CountArticlesWithFilters_KeywordOnly(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock count result for keyword search
+	mock.ExpectQuery("SELECT COUNT.*FROM articles WHERE").
+		WithArgs("%golang%", "%golang%").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(42))
+
+	repo := sqlite.NewArticleRepo(db)
+	count, err := repo.CountArticlesWithFilters(context.Background(), []string{"golang"}, repository.ArticleSearchFilters{})
+	if err != nil {
+		t.Fatalf("CountArticlesWithFilters err=%v", err)
+	}
+
+	if count != 42 {
+		t.Fatalf("CountArticlesWithFilters count = %d, want 42", count)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_CountArticlesWithFilters_MultipleKeywords(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock count result for multi-keyword search
+	mock.ExpectQuery("SELECT COUNT.*FROM articles WHERE").
+		WithArgs("%golang%", "%golang%", "%testing%", "%testing%").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(15))
+
+	repo := sqlite.NewArticleRepo(db)
+	count, err := repo.CountArticlesWithFilters(context.Background(), []string{"golang", "testing"}, repository.ArticleSearchFilters{})
+	if err != nil {
+		t.Fatalf("CountArticlesWithFilters err=%v", err)
+	}
+
+	if count != 15 {
+		t.Fatalf("CountArticlesWithFilters count = %d, want 15", count)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_CountArticlesWithFilters_WithSourceID(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	sourceID := int64(123)
+	filters := repository.ArticleSearchFilters{
+		SourceID: &sourceID,
+	}
+
+	// Mock count result with source_id filter
+	mock.ExpectQuery("SELECT COUNT.*FROM articles WHERE").
+		WithArgs("%golang%", "%golang%", int64(123)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(8))
+
+	repo := sqlite.NewArticleRepo(db)
+	count, err := repo.CountArticlesWithFilters(context.Background(), []string{"golang"}, filters)
+	if err != nil {
+		t.Fatalf("CountArticlesWithFilters err=%v", err)
+	}
+
+	if count != 8 {
+		t.Fatalf("CountArticlesWithFilters count = %d, want 8", count)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_CountArticlesWithFilters_WithDateRange(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	from := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)
+
+	filters := repository.ArticleSearchFilters{
+		From: &from,
+		To:   &to,
+	}
+
+	// Mock count result with date range filter
+	mock.ExpectQuery("SELECT COUNT.*FROM articles WHERE").
+		WithArgs("%golang%", "%golang%", from, to).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(25))
+
+	repo := sqlite.NewArticleRepo(db)
+	count, err := repo.CountArticlesWithFilters(context.Background(), []string{"golang"}, filters)
+	if err != nil {
+		t.Fatalf("CountArticlesWithFilters err=%v", err)
+	}
+
+	if count != 25 {
+		t.Fatalf("CountArticlesWithFilters count = %d, want 25", count)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_CountArticlesWithFilters_AllFilters(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	sourceID := int64(456)
+	from := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)
+
+	filters := repository.ArticleSearchFilters{
+		SourceID: &sourceID,
+		From:     &from,
+		To:       &to,
+	}
+
+	// Mock count result with all filters
+	mock.ExpectQuery("SELECT COUNT.*FROM articles WHERE").
+		WithArgs("%golang%", "%golang%", "%api%", "%api%", int64(456), from, to).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
+
+	repo := sqlite.NewArticleRepo(db)
+	count, err := repo.CountArticlesWithFilters(context.Background(), []string{"golang", "api"}, filters)
+	if err != nil {
+		t.Fatalf("CountArticlesWithFilters err=%v", err)
+	}
+
+	if count != 5 {
+		t.Fatalf("CountArticlesWithFilters count = %d, want 5", count)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_CountArticlesWithFilters_EmptyKeywords(t *testing.T) {
+	t.Parallel()
+
+	db, _, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	repo := sqlite.NewArticleRepo(db)
+	count, err := repo.CountArticlesWithFilters(context.Background(), []string{}, repository.ArticleSearchFilters{})
+	if err != nil {
+		t.Fatalf("CountArticlesWithFilters err=%v", err)
+	}
+
+	// Empty keywords should return 0
+	if count != 0 {
+		t.Fatalf("CountArticlesWithFilters count = %d, want 0", count)
+	}
+}
+
+func TestArticleRepo_CountArticlesWithFilters_ZeroResults(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock zero count
+	mock.ExpectQuery("SELECT COUNT.*FROM articles WHERE").
+		WithArgs("%nonexistent%", "%nonexistent%").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	repo := sqlite.NewArticleRepo(db)
+	count, err := repo.CountArticlesWithFilters(context.Background(), []string{"nonexistent"}, repository.ArticleSearchFilters{})
+	if err != nil {
+		t.Fatalf("CountArticlesWithFilters err=%v", err)
+	}
+
+	if count != 0 {
+		t.Fatalf("CountArticlesWithFilters count = %d, want 0", count)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+/* ──────────────────────────── 12. SearchWithFiltersPaginated ──────────────────────────── */
+
+func TestArticleRepo_SearchWithFiltersPaginated_KeywordOnly(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+
+	// Mock search result
+	mock.ExpectQuery("SELECT.*FROM articles.*INNER JOIN sources.*WHERE.*LIMIT.*OFFSET").
+		WithArgs("%golang%", "%golang%", 10, 0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}).
+			AddRow(1, 10, "Go 1.22 released", "https://example.com/1", "Summary 1", now, now, "Go Blog").
+			AddRow(2, 10, "Golang best practices", "https://example.com/2", "Summary 2", now, now, "Go Blog"))
+
+	repo := sqlite.NewArticleRepo(db)
+	result, err := repo.SearchWithFiltersPaginated(context.Background(), []string{"golang"}, repository.ArticleSearchFilters{}, 0, 10)
+	if err != nil {
+		t.Fatalf("SearchWithFiltersPaginated err=%v", err)
+	}
+
+	if len(result) != 2 {
+		t.Fatalf("SearchWithFiltersPaginated result length = %d, want 2", len(result))
+	}
+
+	if result[0].Article.Title != "Go 1.22 released" {
+		t.Errorf("result[0].Article.Title = %q, want %q", result[0].Article.Title, "Go 1.22 released")
+	}
+
+	if result[0].SourceName != "Go Blog" {
+		t.Errorf("result[0].SourceName = %q, want %q", result[0].SourceName, "Go Blog")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_SearchWithFiltersPaginated_MultipleKeywords(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+
+	// Mock search result with multiple keywords
+	mock.ExpectQuery("SELECT.*FROM articles.*INNER JOIN sources.*WHERE.*LIMIT.*OFFSET").
+		WithArgs("%golang%", "%golang%", "%testing%", "%testing%", 10, 0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}).
+			AddRow(1, 10, "Golang testing guide", "https://example.com/1", "Testing in Go", now, now, "Go Blog"))
+
+	repo := sqlite.NewArticleRepo(db)
+	result, err := repo.SearchWithFiltersPaginated(context.Background(), []string{"golang", "testing"}, repository.ArticleSearchFilters{}, 0, 10)
+	if err != nil {
+		t.Fatalf("SearchWithFiltersPaginated err=%v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("SearchWithFiltersPaginated result length = %d, want 1", len(result))
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_SearchWithFiltersPaginated_WithSourceID(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	sourceID := int64(123)
+
+	filters := repository.ArticleSearchFilters{
+		SourceID: &sourceID,
+	}
+
+	// Mock search result with source_id filter
+	mock.ExpectQuery("SELECT.*FROM articles.*INNER JOIN sources.*WHERE.*LIMIT.*OFFSET").
+		WithArgs("%golang%", "%golang%", int64(123), 10, 0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}).
+			AddRow(1, 123, "Go article", "https://example.com/1", "Summary", now, now, "Specific Source"))
+
+	repo := sqlite.NewArticleRepo(db)
+	result, err := repo.SearchWithFiltersPaginated(context.Background(), []string{"golang"}, filters, 0, 10)
+	if err != nil {
+		t.Fatalf("SearchWithFiltersPaginated err=%v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("SearchWithFiltersPaginated result length = %d, want 1", len(result))
+	}
+
+	if result[0].Article.SourceID != 123 {
+		t.Errorf("result[0].Article.SourceID = %d, want 123", result[0].Article.SourceID)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_SearchWithFiltersPaginated_WithDateRange(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	from := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)
+
+	filters := repository.ArticleSearchFilters{
+		From: &from,
+		To:   &to,
+	}
+
+	// Mock search result with date range filter
+	mock.ExpectQuery("SELECT.*FROM articles.*INNER JOIN sources.*WHERE.*LIMIT.*OFFSET").
+		WithArgs("%golang%", "%golang%", from, to, 10, 0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}).
+			AddRow(1, 10, "Go article", "https://example.com/1", "Summary", now, now, "Go Blog"))
+
+	repo := sqlite.NewArticleRepo(db)
+	result, err := repo.SearchWithFiltersPaginated(context.Background(), []string{"golang"}, filters, 0, 10)
+	if err != nil {
+		t.Fatalf("SearchWithFiltersPaginated err=%v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("SearchWithFiltersPaginated result length = %d, want 1", len(result))
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_SearchWithFiltersPaginated_AllFilters(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	sourceID := int64(456)
+	from := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)
+
+	filters := repository.ArticleSearchFilters{
+		SourceID: &sourceID,
+		From:     &from,
+		To:       &to,
+	}
+
+	// Mock search result with all filters
+	mock.ExpectQuery("SELECT.*FROM articles.*INNER JOIN sources.*WHERE.*LIMIT.*OFFSET").
+		WithArgs("%golang%", "%golang%", "%api%", "%api%", int64(456), from, to, 10, 0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}).
+			AddRow(1, 456, "Go API article", "https://example.com/1", "Summary", now, now, "API Source"))
+
+	repo := sqlite.NewArticleRepo(db)
+	result, err := repo.SearchWithFiltersPaginated(context.Background(), []string{"golang", "api"}, filters, 0, 10)
+	if err != nil {
+		t.Fatalf("SearchWithFiltersPaginated err=%v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("SearchWithFiltersPaginated result length = %d, want 1", len(result))
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_SearchWithFiltersPaginated_Pagination(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+
+	// Test second page (offset=20, limit=20)
+	mock.ExpectQuery("SELECT.*FROM articles.*INNER JOIN sources.*WHERE.*LIMIT.*OFFSET").
+		WithArgs("%golang%", "%golang%", 20, 20).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}).
+			AddRow(21, 10, "Article 21", "https://example.com/21", "Summary", now, now, "Go Blog"))
+
+	repo := sqlite.NewArticleRepo(db)
+	result, err := repo.SearchWithFiltersPaginated(context.Background(), []string{"golang"}, repository.ArticleSearchFilters{}, 20, 20)
+	if err != nil {
+		t.Fatalf("SearchWithFiltersPaginated err=%v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("SearchWithFiltersPaginated result length = %d, want 1", len(result))
+	}
+
+	if result[0].Article.ID != 21 {
+		t.Errorf("result[0].Article.ID = %d, want 21", result[0].Article.ID)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_SearchWithFiltersPaginated_EmptyKeywords(t *testing.T) {
+	t.Parallel()
+
+	db, _, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	repo := sqlite.NewArticleRepo(db)
+	result, err := repo.SearchWithFiltersPaginated(context.Background(), []string{}, repository.ArticleSearchFilters{}, 0, 10)
+	if err != nil {
+		t.Fatalf("SearchWithFiltersPaginated err=%v", err)
+	}
+
+	// Empty keywords should return empty result
+	if len(result) != 0 {
+		t.Fatalf("SearchWithFiltersPaginated result length = %d, want 0", len(result))
+	}
+}
+
+func TestArticleRepo_SearchWithFiltersPaginated_NoResults(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock empty result
+	mock.ExpectQuery("SELECT.*FROM articles.*INNER JOIN sources.*WHERE.*LIMIT.*OFFSET").
+		WithArgs("%nonexistent%", "%nonexistent%", 10, 0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}))
+
+	repo := sqlite.NewArticleRepo(db)
+	result, err := repo.SearchWithFiltersPaginated(context.Background(), []string{"nonexistent"}, repository.ArticleSearchFilters{}, 0, 10)
+	if err != nil {
+		t.Fatalf("SearchWithFiltersPaginated err=%v", err)
+	}
+
+	if len(result) != 0 {
+		t.Fatalf("SearchWithFiltersPaginated result length = %d, want 0", len(result))
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArticleRepo_SearchWithFiltersPaginated_LargeOffset(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock large offset (page beyond results)
+	mock.ExpectQuery("SELECT.*FROM articles.*INNER JOIN sources.*WHERE.*LIMIT.*OFFSET").
+		WithArgs("%golang%", "%golang%", 10, 1000).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}))
+
+	repo := sqlite.NewArticleRepo(db)
+	result, err := repo.SearchWithFiltersPaginated(context.Background(), []string{"golang"}, repository.ArticleSearchFilters{}, 1000, 10)
+	if err != nil {
+		t.Fatalf("SearchWithFiltersPaginated err=%v", err)
+	}
+
+	if len(result) != 0 {
+		t.Fatalf("SearchWithFiltersPaginated result length = %d, want 0", len(result))
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

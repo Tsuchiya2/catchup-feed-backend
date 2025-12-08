@@ -104,6 +104,12 @@ func (b *benchListRepo) ListWithSourcePaginated(_ context.Context, offset, limit
 func (b *benchListRepo) CountArticles(_ context.Context) (int64, error) {
 	return 100, nil
 }
+func (b *benchListRepo) CountArticlesWithFilters(_ context.Context, _ []string, _ repository.ArticleSearchFilters) (int64, error) {
+	return 0, nil
+}
+func (b *benchListRepo) SearchWithFiltersPaginated(_ context.Context, _ []string, _ repository.ArticleSearchFilters, _, _ int) ([]repository.ArticleWithSource, error) {
+	return nil, nil
+}
 
 // BenchmarkListHandler_100Articles は100件の記事一覧取得の性能を測定
 func BenchmarkListHandler_100Articles(b *testing.B) {

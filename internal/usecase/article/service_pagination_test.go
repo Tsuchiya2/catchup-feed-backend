@@ -77,6 +77,12 @@ func (m *mockArticleRepo) GetWithSource(_ context.Context, _ int64) (*entity.Art
 func (m *mockArticleRepo) ListWithSource(_ context.Context) ([]repository.ArticleWithSource, error) {
 	return nil, nil
 }
+func (m *mockArticleRepo) CountArticlesWithFilters(_ context.Context, _ []string, _ repository.ArticleSearchFilters) (int64, error) {
+	return 0, nil
+}
+func (m *mockArticleRepo) SearchWithFiltersPaginated(_ context.Context, _ []string, _ repository.ArticleSearchFilters, _, _ int) ([]repository.ArticleWithSource, error) {
+	return nil, nil
+}
 
 /* ───────── テストケース ───────── */
 

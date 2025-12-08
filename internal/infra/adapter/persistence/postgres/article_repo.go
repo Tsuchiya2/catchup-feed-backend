@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/pkg/search"
@@ -13,10 +12,16 @@ import (
 	"github.com/lib/pq"
 )
 
-type ArticleRepo struct{ db *sql.DB }
+type ArticleRepo struct {
+	db           *sql.DB
+	queryBuilder *ArticleQueryBuilder
+}
 
 func NewArticleRepo(db *sql.DB) repository.ArticleRepository {
-	return &ArticleRepo{db: db}
+	return &ArticleRepo{
+		db:           db,
+		queryBuilder: NewArticleQueryBuilder(),
+	}
 }
 
 func (repo *ArticleRepo) List(ctx context.Context) ([]*entity.Article, error) {
@@ -192,43 +197,15 @@ func (repo *ArticleRepo) SearchWithFilters(ctx context.Context, keywords []strin
 	ctx, cancel := context.WithTimeout(ctx, search.DefaultSearchTimeout)
 	defer cancel()
 
-	// Build dynamic query
-	var whereClauses []string
-	var args []interface{}
-	paramIndex := 1
-
-	// Add keyword conditions (AND logic)
-	for _, keyword := range keywords {
-		escapedKeyword := search.EscapeILIKE(keyword)
-		whereClauses = append(whereClauses, fmt.Sprintf("(title ILIKE $%d OR summary ILIKE $%d)", paramIndex, paramIndex))
-		args = append(args, escapedKeyword)
-		paramIndex++
-	}
-
-	// Add optional filters
-	if filters.SourceID != nil {
-		whereClauses = append(whereClauses, fmt.Sprintf("source_id = $%d", paramIndex))
-		args = append(args, *filters.SourceID)
-		paramIndex++
-	}
-
-	if filters.From != nil {
-		whereClauses = append(whereClauses, fmt.Sprintf("published_at >= $%d", paramIndex))
-		args = append(args, *filters.From)
-		paramIndex++
-	}
-
-	if filters.To != nil {
-		whereClauses = append(whereClauses, fmt.Sprintf("published_at <= $%d", paramIndex))
-		args = append(args, *filters.To)
-	}
+	// Build WHERE clause using QueryBuilder
+	whereClause, args := repo.queryBuilder.BuildWhereClause(keywords, filters, "")
 
 	// Construct final query
-	query := `
+	query := fmt.Sprintf(`
 SELECT id, source_id, title, url, summary, published_at, created_at
 FROM articles
-WHERE ` + strings.Join(whereClauses, " AND ") + `
-ORDER BY published_at DESC`
+%s
+ORDER BY published_at DESC`, whereClause)
 
 	rows, err := repo.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -247,6 +224,88 @@ ORDER BY published_at DESC`
 		articles = append(articles, &article)
 	}
 	return articles, rows.Err()
+}
+
+// CountArticlesWithFilters returns the total number of articles matching the search criteria.
+// Uses the same filters as SearchWithFilters for consistency.
+// Uses ArticleQueryBuilder to eliminate code duplication.
+func (repo *ArticleRepo) CountArticlesWithFilters(ctx context.Context, keywords []string, filters repository.ArticleSearchFilters) (int64, error) {
+	// Empty keywords -> return 0
+	if len(keywords) == 0 {
+		return 0, nil
+	}
+
+	// Apply search timeout to prevent long-running queries
+	ctx, cancel := context.WithTimeout(ctx, search.DefaultSearchTimeout)
+	defer cancel()
+
+	// Build WHERE clause using QueryBuilder
+	whereClause, args := repo.queryBuilder.BuildWhereClause(keywords, filters, "")
+
+	// Construct COUNT query
+	query := "SELECT COUNT(*) FROM articles " + whereClause
+
+	var count int64
+	err := repo.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("CountArticlesWithFilters: %w", err)
+	}
+
+	return count, nil
+}
+
+// SearchWithFiltersPaginated searches articles with pagination support.
+// Includes source_name from JOIN with sources table.
+// Uses ArticleQueryBuilder to eliminate code duplication.
+func (repo *ArticleRepo) SearchWithFiltersPaginated(ctx context.Context, keywords []string, filters repository.ArticleSearchFilters, offset, limit int) ([]repository.ArticleWithSource, error) {
+	// Empty keywords -> return empty result
+	if len(keywords) == 0 {
+		return []repository.ArticleWithSource{}, nil
+	}
+
+	// Apply search timeout to prevent long-running queries
+	ctx, cancel := context.WithTimeout(ctx, search.DefaultSearchTimeout)
+	defer cancel()
+
+	// Build WHERE clause using QueryBuilder with table alias 'a'
+	whereClause, args := repo.queryBuilder.BuildWhereClause(keywords, filters, "a")
+
+	// Calculate parameter index for LIMIT and OFFSET
+	paramIndex := len(args) + 1
+
+	// Add LIMIT and OFFSET to args
+	args = append(args, limit, offset)
+
+	// Construct query with JOIN
+	query := fmt.Sprintf(`
+SELECT a.id, a.source_id, a.title, a.url, a.summary, a.published_at, a.created_at, s.name AS source_name
+FROM articles a
+INNER JOIN sources s ON a.source_id = s.id
+%s
+ORDER BY a.published_at DESC
+LIMIT $%d OFFSET $%d`, whereClause, paramIndex, paramIndex+1)
+
+	rows, err := repo.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("SearchWithFiltersPaginated: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make([]repository.ArticleWithSource, 0, limit)
+	for rows.Next() {
+		var article entity.Article
+		var sourceName string
+		if err := rows.Scan(&article.ID, &article.SourceID, &article.Title,
+			&article.URL, &article.Summary, &article.PublishedAt, &article.CreatedAt, &sourceName); err != nil {
+			return nil, fmt.Errorf("SearchWithFiltersPaginated: Scan: %w", err)
+		}
+		result = append(result, repository.ArticleWithSource{
+			Article:    &article,
+			SourceName: sourceName,
+		})
+	}
+
+	return result, rows.Err()
 }
 
 func (repo *ArticleRepo) Create(ctx context.Context, article *entity.Article) error {

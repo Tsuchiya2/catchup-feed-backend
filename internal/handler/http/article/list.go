@@ -82,6 +82,7 @@ func (h ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Summary:     item.Article.Summary,
 			PublishedAt: item.Article.PublishedAt,
 			CreatedAt:   item.Article.CreatedAt,
+			UpdatedAt:   item.Article.CreatedAt, // Database schema doesn't have updated_at column
 		})
 	}
 

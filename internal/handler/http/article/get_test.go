@@ -71,6 +71,12 @@ func (s *stubGetRepo) ListWithSourcePaginated(_ context.Context, _, _ int) ([]re
 func (s *stubGetRepo) CountArticles(_ context.Context) (int64, error) {
 	return 0, nil
 }
+func (s *stubGetRepo) CountArticlesWithFilters(_ context.Context, _ []string, _ repository.ArticleSearchFilters) (int64, error) {
+	return 0, nil
+}
+func (s *stubGetRepo) SearchWithFiltersPaginated(_ context.Context, _ []string, _ repository.ArticleSearchFilters, _, _ int) ([]repository.ArticleWithSource, error) {
+	return nil, nil
+}
 
 /* ───────── テストケース ───────── */
 

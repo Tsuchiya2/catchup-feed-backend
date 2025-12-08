@@ -14,4 +14,5 @@ type DTO struct {
 	Summary     string    `json:"summary" example:"Go 1.23 がリリースされました。新機能には..."`
 	PublishedAt time.Time `json:"published_at" example:"2025-10-26T10:00:00Z"`
 	CreatedAt   time.Time `json:"created_at" example:"2025-10-26T12:00:00Z"`
+	UpdatedAt   time.Time `json:"updated_at" example:"2025-10-26T12:00:00Z"`
 }

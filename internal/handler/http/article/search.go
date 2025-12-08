@@ -111,6 +111,7 @@ func (h SearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ID: e.ID, SourceID: e.SourceID, Title: e.Title,
 			URL: e.URL, Summary: e.Summary,
 			PublishedAt: e.PublishedAt, CreatedAt: e.CreatedAt,
+			UpdatedAt: e.CreatedAt, // Database schema doesn't have updated_at column
 		})
 	}
 	respond.JSON(w, http.StatusOK, out)

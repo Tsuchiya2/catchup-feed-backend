@@ -178,7 +178,7 @@ func (repo *SourceRepo) SearchWithFilters(ctx context.Context, keywords []string
 
 	// Build final query
 	query := `
-SELECT id, name, feed_url, last_crawled_at, active
+SELECT id, name, feed_url, source_type, last_crawled_at, active
 FROM sources
 WHERE ` + strings.Join(conditions, " AND ") + `
 ORDER BY id ASC`
@@ -195,7 +195,7 @@ ORDER BY id ASC`
 	for rows.Next() {
 		var source entity.Source
 		if err := rows.Scan(&source.ID, &source.Name, &source.FeedURL,
-			&source.LastCrawledAt, &source.Active); err != nil {
+			&source.SourceType, &source.LastCrawledAt, &source.Active); err != nil {
 			return nil, fmt.Errorf("SearchWithFilters: Scan: %w", err)
 		}
 		sources = append(sources, &source)

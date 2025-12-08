@@ -14,11 +14,17 @@ import (
 )
 
 // ArticleRepo implements the ArticleRepository interface using SQLite.
-type ArticleRepo struct{ db *sql.DB }
+type ArticleRepo struct {
+	db           *sql.DB
+	queryBuilder *ArticleQueryBuilder
+}
 
 // NewArticleRepo creates a new SQLite-backed article repository.
 func NewArticleRepo(db *sql.DB) repository.ArticleRepository {
-	return &ArticleRepo{db: db}
+	return &ArticleRepo{
+		db:           db,
+		queryBuilder: NewArticleQueryBuilder(),
+	}
 }
 
 // List retrieves all articles ordered by published date (newest first).
@@ -239,39 +245,14 @@ func (repo *ArticleRepo) SearchWithFilters(ctx context.Context, keywords []strin
 	ctx, cancel := context.WithTimeout(ctx, search.DefaultSearchTimeout)
 	defer cancel()
 
-	// Build dynamic query with placeholders
-	var whereClauses []string
-	var args []interface{}
-
-	// Add keyword conditions (AND logic)
-	for _, keyword := range keywords {
-		// SQLite uses LIKE with % wildcards (case-insensitive for ASCII by default)
-		pattern := "%" + keyword + "%"
-		whereClauses = append(whereClauses, "(title LIKE ? OR summary LIKE ?)")
-		args = append(args, pattern, pattern)
-	}
-
-	// Add optional filters
-	if filters.SourceID != nil {
-		whereClauses = append(whereClauses, "source_id = ?")
-		args = append(args, *filters.SourceID)
-	}
-
-	if filters.From != nil {
-		whereClauses = append(whereClauses, "published_at >= ?")
-		args = append(args, *filters.From)
-	}
-
-	if filters.To != nil {
-		whereClauses = append(whereClauses, "published_at <= ?")
-		args = append(args, *filters.To)
-	}
+	// Build WHERE clause using shared QueryBuilder
+	whereClause, args := repo.queryBuilder.BuildWhereClause(keywords, filters)
 
 	// Construct final query
 	query := `
 SELECT id, source_id, title, url, summary, published_at, created_at
 FROM articles
-WHERE ` + strings.Join(whereClauses, " AND ") + `
+` + whereClause + `
 ORDER BY published_at DESC`
 
 	rows, err := repo.db.QueryContext(ctx, query, args...)
@@ -291,6 +272,90 @@ ORDER BY published_at DESC`
 		articles = append(articles, &article)
 	}
 	return articles, rows.Err()
+}
+
+// CountArticlesWithFilters returns the total number of articles matching the search criteria.
+// Uses the same QueryBuilder as SearchWithFilters for consistency.
+func (repo *ArticleRepo) CountArticlesWithFilters(ctx context.Context, keywords []string, filters repository.ArticleSearchFilters) (int64, error) {
+	// Empty keywords -> return 0
+	if len(keywords) == 0 {
+		return 0, nil
+	}
+
+	// Apply search timeout to prevent long-running queries
+	ctx, cancel := context.WithTimeout(ctx, search.DefaultSearchTimeout)
+	defer cancel()
+
+	// Build WHERE clause using shared QueryBuilder
+	whereClause, args := repo.queryBuilder.BuildWhereClause(keywords, filters)
+
+	// Construct COUNT query
+	query := "SELECT COUNT(*) FROM articles " + whereClause
+
+	var count int64
+	err := repo.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("CountArticlesWithFilters: %w", err)
+	}
+
+	return count, nil
+}
+
+// SearchWithFiltersPaginated searches articles with pagination support.
+// Includes source_name from JOIN with sources table.
+func (repo *ArticleRepo) SearchWithFiltersPaginated(ctx context.Context, keywords []string, filters repository.ArticleSearchFilters, offset, limit int) ([]repository.ArticleWithSource, error) {
+	// Empty keywords -> return empty result
+	if len(keywords) == 0 {
+		return []repository.ArticleWithSource{}, nil
+	}
+
+	// Apply search timeout to prevent long-running queries
+	ctx, cancel := context.WithTimeout(ctx, search.DefaultSearchTimeout)
+	defer cancel()
+
+	// Build WHERE clause using shared QueryBuilder
+	// Note: We need to prefix 'a.' to column names for JOIN query
+	whereClause, args := repo.queryBuilder.BuildWhereClause(keywords, filters)
+	// Replace column names with table alias
+	whereClause = strings.ReplaceAll(whereClause, "title LIKE", "a.title LIKE")
+	whereClause = strings.ReplaceAll(whereClause, "summary LIKE", "a.summary LIKE")
+	whereClause = strings.ReplaceAll(whereClause, "source_id =", "a.source_id =")
+	whereClause = strings.ReplaceAll(whereClause, "published_at >=", "a.published_at >=")
+	whereClause = strings.ReplaceAll(whereClause, "published_at <=", "a.published_at <=")
+
+	// Construct query with JOIN
+	query := `
+SELECT a.id, a.source_id, a.title, a.url, a.summary, a.published_at, a.created_at, s.name AS source_name
+FROM articles a
+INNER JOIN sources s ON a.source_id = s.id
+` + whereClause + `
+ORDER BY a.published_at DESC
+LIMIT ? OFFSET ?`
+
+	// Add LIMIT and OFFSET to args
+	args = append(args, limit, offset)
+
+	rows, err := repo.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("SearchWithFiltersPaginated: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make([]repository.ArticleWithSource, 0, limit)
+	for rows.Next() {
+		var article entity.Article
+		var sourceName string
+		if err := rows.Scan(&article.ID, &article.SourceID, &article.Title,
+			&article.URL, &article.Summary, &article.PublishedAt, &article.CreatedAt, &sourceName); err != nil {
+			return nil, fmt.Errorf("SearchWithFiltersPaginated: Scan: %w", err)
+		}
+		result = append(result, repository.ArticleWithSource{
+			Article:    &article,
+			SourceName: sourceName,
+		})
+	}
+
+	return result, rows.Err()
 }
 
 func (repo *ArticleRepo) Create(ctx context.Context, article *entity.Article) error {

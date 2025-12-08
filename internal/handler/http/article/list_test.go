@@ -92,6 +92,12 @@ func (s *stubArticleRepo) CountArticles(_ context.Context) (int64, error) {
 	}
 	return s.totalCount, nil
 }
+func (s *stubArticleRepo) CountArticlesWithFilters(_ context.Context, _ []string, _ repository.ArticleSearchFilters) (int64, error) {
+	return 0, nil
+}
+func (s *stubArticleRepo) SearchWithFiltersPaginated(_ context.Context, _ []string, _ repository.ArticleSearchFilters, _, _ int) ([]repository.ArticleWithSource, error) {
+	return nil, nil
+}
 
 /* ───────── テストケース ───────── */
 
