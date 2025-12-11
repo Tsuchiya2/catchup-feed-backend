@@ -152,11 +152,6 @@ func (repo *SourceRepo) SearchWithFilters(
 	keywords []string,
 	filters repository.SourceSearchFilters,
 ) ([]*entity.Source, error) {
-	// Return empty result if no keywords provided
-	if len(keywords) == 0 {
-		return []*entity.Source{}, nil
-	}
-
 	// Apply search timeout to prevent long-running queries
 	ctx, cancel := context.WithTimeout(ctx, search.DefaultSearchTimeout)
 	defer cancel()
@@ -190,14 +185,24 @@ func (repo *SourceRepo) SearchWithFilters(
 		args = append(args, *filters.Active)
 	}
 
-	// Build final query
-	query := fmt.Sprintf(`
+	// Build final query with dynamic WHERE clause
+	var query string
+	if len(conditions) > 0 {
+		// With filters or keywords
+		query = fmt.Sprintf(`
 SELECT id, name, feed_url, last_crawled_at, active, source_type, scraper_config
 FROM sources
 WHERE %s
 ORDER BY id ASC`,
-		strings.Join(conditions, "\n  AND "),
-	)
+			strings.Join(conditions, "\n  AND "),
+		)
+	} else {
+		// No keywords, no filters - return all sources (browse mode)
+		query = `
+SELECT id, name, feed_url, last_crawled_at, active, source_type, scraper_config
+FROM sources
+ORDER BY id ASC`
+	}
 
 	// Execute query
 	rows, err := repo.db.QueryContext(ctx, query, args...)

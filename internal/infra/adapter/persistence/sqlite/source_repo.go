@@ -143,11 +143,6 @@ ORDER BY id ASC
 // SearchWithFilters searches sources with multi-keyword AND logic and optional filters.
 // Note: SQLite uses LIKE instead of ILIKE (case-insensitive by default for ASCII).
 func (repo *SourceRepo) SearchWithFilters(ctx context.Context, keywords []string, filters repository.SourceSearchFilters) ([]*entity.Source, error) {
-	// Return empty result if no keywords provided
-	if len(keywords) == 0 {
-		return []*entity.Source{}, nil
-	}
-
 	// Apply search timeout to prevent long-running queries
 	ctx, cancel := context.WithTimeout(ctx, search.DefaultSearchTimeout)
 	defer cancel()
@@ -176,12 +171,22 @@ func (repo *SourceRepo) SearchWithFilters(ctx context.Context, keywords []string
 		args = append(args, *filters.Active)
 	}
 
-	// Build final query
-	query := `
+	// Build final query with dynamic WHERE clause
+	var query string
+	if len(conditions) > 0 {
+		// With filters or keywords
+		query = `
 SELECT id, name, feed_url, source_type, last_crawled_at, active
 FROM sources
 WHERE ` + strings.Join(conditions, " AND ") + `
 ORDER BY id ASC`
+	} else {
+		// No keywords, no filters - return all sources (browse mode)
+		query = `
+SELECT id, name, feed_url, source_type, last_crawled_at, active
+FROM sources
+ORDER BY id ASC`
+	}
 
 	// Execute query
 	rows, err := repo.db.QueryContext(ctx, query, args...)

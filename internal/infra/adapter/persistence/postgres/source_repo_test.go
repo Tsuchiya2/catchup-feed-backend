@@ -437,9 +437,21 @@ func TestSourceRepo_SearchWithFilters_WithAllFilters(t *testing.T) {
 	}
 }
 
+// TestSourceRepo_SearchWithFilters_EmptyKeywords is now deprecated.
+// The feature now supports filter-only searches (empty keywords with no filters returns all sources).
+// See new tests: TestSourceRepo_SearchWithFilters_EmptyKeywords_NoFilters, etc.
 func TestSourceRepo_SearchWithFilters_EmptyKeywords(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
+
+	// Updated behavior: empty keywords now executes query and returns all sources
+	rows := sqlmock.NewRows([]string{
+		"id", "name", "feed_url", "last_crawled_at", "active",
+		"source_type", "scraper_config",
+	}) // Empty result set for this test
+
+	mock.ExpectQuery(`FROM sources`).
+		WillReturnRows(rows)
 
 	repo := postgres.NewSourceRepo(db)
 	sources, err := repo.SearchWithFilters(context.Background(), []string{}, repository.SourceSearchFilters{})
@@ -449,7 +461,6 @@ func TestSourceRepo_SearchWithFilters_EmptyKeywords(t *testing.T) {
 	if len(sources) != 0 {
 		t.Fatalf("expected 0 sources, got %d", len(sources))
 	}
-	// No query should be executed for empty keywords
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
@@ -577,6 +588,193 @@ func TestSourceRepo_Delete_NoRowsAffected(t *testing.T) {
 	err := repo.Delete(context.Background(), 999)
 	if err == nil {
 		t.Fatal("Delete should fail when no rows affected")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+/* ──────────────────────────────── 11. Filter-Only Search Tests (TASK-005) ──────────────────────────────── */
+
+// TestSourceRepo_SearchWithFilters_EmptyKeywords_NoFilters verifies empty keywords with no filters returns all sources
+func TestSourceRepo_SearchWithFilters_EmptyKeywords_NoFilters(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "name", "feed_url", "last_crawled_at", "active",
+		"source_type", "scraper_config",
+	}).
+		AddRow(1, "Tech Blog", "https://example.com/feed", &now, true, "RSS", nil).
+		AddRow(2, "News Site", "https://news.example.com/feed", &now, false, "Webflow", nil)
+
+	// No WHERE clause - returns all sources
+	mock.ExpectQuery(`FROM sources`).
+		WillReturnRows(rows)
+
+	repo := postgres.NewSourceRepo(db)
+	sources, err := repo.SearchWithFilters(context.Background(), []string{}, repository.SourceSearchFilters{})
+	if err != nil {
+		t.Fatalf("SearchWithFilters err=%v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("expected 2 sources, got %d", len(sources))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSourceRepo_SearchWithFilters_EmptyKeywords_SourceTypeFilter verifies empty keywords with source_type filter
+func TestSourceRepo_SearchWithFilters_EmptyKeywords_SourceTypeFilter(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "name", "feed_url", "last_crawled_at", "active",
+		"source_type", "scraper_config",
+	}).AddRow(1, "RSS Blog", "https://example.com/feed", &now, true, "RSS", nil)
+
+	sourceType := "RSS"
+	filters := repository.SourceSearchFilters{
+		SourceType: &sourceType,
+	}
+
+	// Only source_type filter in WHERE clause
+	mock.ExpectQuery(`FROM sources`).
+		WithArgs("RSS").
+		WillReturnRows(rows)
+
+	repo := postgres.NewSourceRepo(db)
+	sources, err := repo.SearchWithFilters(context.Background(), []string{}, filters)
+	if err != nil {
+		t.Fatalf("SearchWithFilters err=%v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(sources))
+	}
+	if sources[0].SourceType != "RSS" {
+		t.Fatalf("expected RSS, got %s", sources[0].SourceType)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSourceRepo_SearchWithFilters_EmptyKeywords_ActiveFilter verifies empty keywords with active filter
+func TestSourceRepo_SearchWithFilters_EmptyKeywords_ActiveFilter(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "name", "feed_url", "last_crawled_at", "active",
+		"source_type", "scraper_config",
+	}).
+		AddRow(1, "Active Blog", "https://example.com/feed", &now, true, "RSS", nil).
+		AddRow(2, "Another Active", "https://example2.com/feed", &now, true, "Webflow", nil)
+
+	active := true
+	filters := repository.SourceSearchFilters{
+		Active: &active,
+	}
+
+	// Only active filter in WHERE clause
+	mock.ExpectQuery(`FROM sources`).
+		WithArgs(true).
+		WillReturnRows(rows)
+
+	repo := postgres.NewSourceRepo(db)
+	sources, err := repo.SearchWithFilters(context.Background(), []string{}, filters)
+	if err != nil {
+		t.Fatalf("SearchWithFilters err=%v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("expected 2 sources, got %d", len(sources))
+	}
+	for _, src := range sources {
+		if !src.Active {
+			t.Fatal("expected all sources to be active")
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSourceRepo_SearchWithFilters_EmptyKeywords_MultipleFilters verifies empty keywords with multiple filters
+func TestSourceRepo_SearchWithFilters_EmptyKeywords_MultipleFilters(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "name", "feed_url", "last_crawled_at", "active",
+		"source_type", "scraper_config",
+	}).AddRow(1, "Active RSS", "https://example.com/feed", &now, true, "RSS", nil)
+
+	sourceType := "RSS"
+	active := true
+	filters := repository.SourceSearchFilters{
+		SourceType: &sourceType,
+		Active:     &active,
+	}
+
+	// Both filters in WHERE clause
+	mock.ExpectQuery(`FROM sources`).
+		WithArgs("RSS", true).
+		WillReturnRows(rows)
+
+	repo := postgres.NewSourceRepo(db)
+	sources, err := repo.SearchWithFilters(context.Background(), []string{}, filters)
+	if err != nil {
+		t.Fatalf("SearchWithFilters err=%v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(sources))
+	}
+	if sources[0].SourceType != "RSS" {
+		t.Fatalf("expected RSS, got %s", sources[0].SourceType)
+	}
+	if !sources[0].Active {
+		t.Fatal("expected source to be active")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSourceRepo_SearchWithFilters_EmptyKeywords_EmptyResult verifies empty result returns empty slice (not nil)
+func TestSourceRepo_SearchWithFilters_EmptyKeywords_EmptyResult(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	rows := sqlmock.NewRows([]string{
+		"id", "name", "feed_url", "last_crawled_at", "active",
+		"source_type", "scraper_config",
+	}) // No rows
+
+	sourceType := "NonExistent"
+	filters := repository.SourceSearchFilters{
+		SourceType: &sourceType,
+	}
+
+	mock.ExpectQuery(`FROM sources`).
+		WithArgs("NonExistent").
+		WillReturnRows(rows)
+
+	repo := postgres.NewSourceRepo(db)
+	sources, err := repo.SearchWithFilters(context.Background(), []string{}, filters)
+	if err != nil {
+		t.Fatalf("SearchWithFilters err=%v", err)
+	}
+	if sources == nil {
+		t.Fatal("expected empty slice, got nil")
+	}
+	if len(sources) != 0 {
+		t.Fatalf("expected 0 sources, got %d", len(sources))
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

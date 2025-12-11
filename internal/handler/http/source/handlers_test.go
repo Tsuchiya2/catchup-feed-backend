@@ -407,8 +407,13 @@ func TestSearchHandler_Success(t *testing.T) {
 	}
 }
 
+// TestSearchHandler_MissingKeyword is now deprecated.
+// The feature now supports filter-only searches (empty keywords are allowed).
+// Updated to expect HTTP 200 OK instead of Bad Request.
 func TestSearchHandler_MissingKeyword(t *testing.T) {
-	stub := &stubSearchRepo{}
+	stub := &stubSearchRepo{
+		sources: []*entity.Source{}, // Return empty result
+	}
 	handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
 
 	req := httptest.NewRequest(http.MethodGet, "/sources/search", nil)
@@ -416,8 +421,9 @@ func TestSearchHandler_MissingKeyword(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusBadRequest)
+	// Updated behavior: empty keyword is now allowed (filter-only search)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
 	}
 }
 
@@ -649,5 +655,216 @@ func TestSearchHandler_ValidSourceTypes(t *testing.T) {
 				t.Fatalf("status code = %d, want %d", rr.Code, tt.wantCode)
 			}
 		})
+	}
+}
+
+/* ───────── Filter-Only Search Tests (TASK-004) ───────── */
+
+// TestSearchHandler_NoKeyword_NoFilters verifies empty keyword is accepted and returns all sources
+func TestSearchHandler_NoKeyword_NoFilters(t *testing.T) {
+	now := time.Now()
+	stub := &stubSearchRepo{
+		sources: []*entity.Source{
+			{
+				ID:            1,
+				Name:          "Tech Blog",
+				FeedURL:       "https://example.com/feed",
+				LastCrawledAt: &now,
+				Active:        true,
+			},
+			{
+				ID:            2,
+				Name:          "News Site",
+				FeedURL:       "https://news.example.com/feed",
+				LastCrawledAt: &now,
+				Active:        false,
+			},
+		},
+	}
+	handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
+
+	req := httptest.NewRequest(http.MethodGet, "/sources/search", nil)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var result []source.DTO
+	if err := json.NewDecoder(rr.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(result) != 2 {
+		t.Fatalf("result length = %d, want 2", len(result))
+	}
+}
+
+// TestSearchHandler_NoKeyword_SourceTypeFilter verifies source_type filter works without keyword
+func TestSearchHandler_NoKeyword_SourceTypeFilter(t *testing.T) {
+	now := time.Now()
+	stub := &stubSearchRepo{
+		sources: []*entity.Source{
+			{
+				ID:            1,
+				Name:          "RSS Feed",
+				FeedURL:       "https://example.com/feed",
+				SourceType:    "RSS",
+				LastCrawledAt: &now,
+				Active:        true,
+			},
+		},
+	}
+	handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
+
+	req := httptest.NewRequest(http.MethodGet, "/sources/search?source_type=RSS", nil)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var result []source.DTO
+	if err := json.NewDecoder(rr.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("result length = %d, want 1", len(result))
+	}
+	if result[0].SourceType != "RSS" {
+		t.Errorf("SourceType = %q, want %q", result[0].SourceType, "RSS")
+	}
+}
+
+// TestSearchHandler_NoKeyword_ActiveFilter verifies active filter works without keyword
+func TestSearchHandler_NoKeyword_ActiveFilter(t *testing.T) {
+	now := time.Now()
+	stub := &stubSearchRepo{
+		sources: []*entity.Source{
+			{
+				ID:            1,
+				Name:          "Active Source",
+				FeedURL:       "https://example.com/feed",
+				LastCrawledAt: &now,
+				Active:        true,
+			},
+			{
+				ID:            2,
+				Name:          "Another Active",
+				FeedURL:       "https://example2.com/feed",
+				LastCrawledAt: &now,
+				Active:        true,
+			},
+		},
+	}
+	handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
+
+	req := httptest.NewRequest(http.MethodGet, "/sources/search?active=true", nil)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var result []source.DTO
+	if err := json.NewDecoder(rr.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(result) != 2 {
+		t.Fatalf("result length = %d, want 2", len(result))
+	}
+	for i, r := range result {
+		if !r.Active {
+			t.Errorf("result[%d].Active = %v, want true", i, r.Active)
+		}
+	}
+}
+
+// TestSearchHandler_NoKeyword_MultipleFilters verifies combined filters work without keyword
+func TestSearchHandler_NoKeyword_MultipleFilters(t *testing.T) {
+	now := time.Now()
+	stub := &stubSearchRepo{
+		sources: []*entity.Source{
+			{
+				ID:            1,
+				Name:          "Active RSS Feed",
+				FeedURL:       "https://example.com/feed",
+				SourceType:    "RSS",
+				LastCrawledAt: &now,
+				Active:        true,
+			},
+		},
+	}
+	handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
+
+	req := httptest.NewRequest(http.MethodGet, "/sources/search?source_type=RSS&active=true", nil)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var result []source.DTO
+	if err := json.NewDecoder(rr.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("result length = %d, want 1", len(result))
+	}
+	if result[0].SourceType != "RSS" {
+		t.Errorf("SourceType = %q, want %q", result[0].SourceType, "RSS")
+	}
+	if !result[0].Active {
+		t.Errorf("Active = %v, want true", result[0].Active)
+	}
+}
+
+// TestSearchHandler_BackwardCompatibility verifies keyword searches still work (existing behavior)
+func TestSearchHandler_BackwardCompatibility(t *testing.T) {
+	now := time.Now()
+	stub := &stubSearchRepo{
+		sources: []*entity.Source{
+			{
+				ID:            1,
+				Name:          "GitHub Blog",
+				FeedURL:       "https://github.blog/feed",
+				SourceType:    "RSS",
+				LastCrawledAt: &now,
+				Active:        true,
+			},
+		},
+	}
+	handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
+
+	req := httptest.NewRequest(http.MethodGet, "/sources/search?keyword=github&source_type=RSS&active=true", nil)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	var result []source.DTO
+	if err := json.NewDecoder(rr.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("result length = %d, want 1", len(result))
+	}
+	if result[0].Name != "GitHub Blog" {
+		t.Errorf("Name = %q, want %q", result[0].Name, "GitHub Blog")
 	}
 }

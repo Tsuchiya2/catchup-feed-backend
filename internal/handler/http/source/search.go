@@ -1,7 +1,6 @@
 package source
 
 import (
-	"errors"
 	"net/http"
 	"net/url"
 	"time"
@@ -21,7 +20,7 @@ type SearchHandler struct{ Svc srcUC.Service }
 // @Tags         sources
 // @Security     BearerAuth
 // @Produce      json
-// @Param        keyword query string true "検索キーワード（スペース区切り）"
+// @Param        keyword query string false "検索キーワード（スペース区切り）"
 // @Param        source_type query string false "ソースタイプでフィルタ（RSS, Webflow, NextJS, Remix）"
 // @Param        active query bool false "アクティブ状態でフィルタ"
 // @Success      200 {array} DTO "検索結果"
@@ -30,19 +29,20 @@ type SearchHandler struct{ Svc srcUC.Service }
 // @Failure      500 {string} string "Server error"
 // @Router       /sources/search [get]
 func (h SearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Parse and validate keyword parameter
+	// Parse keyword parameter (optional - allows filter-only searches)
 	keywordParam := parseKeyword(r.URL)
-	if keywordParam == "" {
-		respond.SafeError(w, http.StatusBadRequest,
-			errors.New("keyword query param required"))
-		return
-	}
-
-	// Parse space-separated keywords
-	keywords, err := search.ParseKeywords(keywordParam, search.DefaultMaxKeywordCount, search.DefaultMaxKeywordLength)
-	if err != nil {
-		respond.SafeError(w, http.StatusBadRequest, err)
-		return
+	var keywords []string
+	var err error
+	if keywordParam != "" {
+		// Parse space-separated keywords
+		keywords, err = search.ParseKeywords(keywordParam, search.DefaultMaxKeywordCount, search.DefaultMaxKeywordLength)
+		if err != nil {
+			respond.SafeError(w, http.StatusBadRequest, err)
+			return
+		}
+	} else {
+		// Empty keyword - filter-only search mode
+		keywords = []string{}
 	}
 
 	// Parse optional filters

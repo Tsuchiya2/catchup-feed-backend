@@ -11,6 +11,7 @@ import (
 
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/infra/adapter/persistence/sqlite"
+	"catchup-feed/internal/repository"
 )
 
 // ─────────────────────────────────────────────
@@ -304,6 +305,190 @@ func TestSourceRepo_Delete_NoRowsAffected(t *testing.T) {
 	err := repo.Delete(context.Background(), 999)
 	if err == nil {
 		t.Fatal("Delete should fail when no rows affected")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet: %v", err)
+	}
+}
+
+// ─────────────────────────────────────────────
+// 10. Filter-Only Search Tests (TASK-006)
+// ─────────────────────────────────────────────
+
+// TestSourceRepo_SearchWithFilters_EmptyKeywords_NoFilters verifies empty keywords with no filters returns all sources
+func TestSourceRepo_SearchWithFilters_EmptyKeywords_NoFilters(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "name", "feed_url", "source_type", "last_crawled_at", "active",
+	}).
+		AddRow(1, "Tech Blog", "https://example.com/feed", "RSS", now, true).
+		AddRow(2, "News Site", "https://news.example.com/feed", "Webflow", now, false)
+
+	// No WHERE clause - returns all sources
+	mock.ExpectQuery("FROM sources").
+		WillReturnRows(rows)
+
+	repo := sqlite.NewSourceRepo(db)
+	sources, err := repo.SearchWithFilters(context.Background(), []string{}, repository.SourceSearchFilters{})
+	if err != nil {
+		t.Fatalf("SearchWithFilters err=%v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("expected 2 sources, got %d", len(sources))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet: %v", err)
+	}
+}
+
+// TestSourceRepo_SearchWithFilters_EmptyKeywords_SourceTypeFilter verifies empty keywords with source_type filter
+func TestSourceRepo_SearchWithFilters_EmptyKeywords_SourceTypeFilter(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "name", "feed_url", "source_type", "last_crawled_at", "active",
+	}).AddRow(1, "RSS Blog", "https://example.com/feed", "RSS", now, true)
+
+	sourceType := "RSS"
+	filters := repository.SourceSearchFilters{
+		SourceType: &sourceType,
+	}
+
+	// Only source_type filter in WHERE clause (SQLite uses ? placeholders)
+	mock.ExpectQuery("FROM sources").
+		WithArgs("RSS").
+		WillReturnRows(rows)
+
+	repo := sqlite.NewSourceRepo(db)
+	sources, err := repo.SearchWithFilters(context.Background(), []string{}, filters)
+	if err != nil {
+		t.Fatalf("SearchWithFilters err=%v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(sources))
+	}
+	if sources[0].SourceType != "RSS" {
+		t.Fatalf("expected RSS, got %s", sources[0].SourceType)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet: %v", err)
+	}
+}
+
+// TestSourceRepo_SearchWithFilters_EmptyKeywords_ActiveFilter verifies empty keywords with active filter
+func TestSourceRepo_SearchWithFilters_EmptyKeywords_ActiveFilter(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "name", "feed_url", "source_type", "last_crawled_at", "active",
+	}).
+		AddRow(1, "Active Blog", "https://example.com/feed", "RSS", now, true).
+		AddRow(2, "Another Active", "https://example2.com/feed", "Webflow", now, true)
+
+	active := true
+	filters := repository.SourceSearchFilters{
+		Active: &active,
+	}
+
+	// Only active filter in WHERE clause (SQLite uses ? placeholders)
+	mock.ExpectQuery("FROM sources").
+		WithArgs(true).
+		WillReturnRows(rows)
+
+	repo := sqlite.NewSourceRepo(db)
+	sources, err := repo.SearchWithFilters(context.Background(), []string{}, filters)
+	if err != nil {
+		t.Fatalf("SearchWithFilters err=%v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("expected 2 sources, got %d", len(sources))
+	}
+	for _, src := range sources {
+		if !src.Active {
+			t.Fatal("expected all sources to be active")
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet: %v", err)
+	}
+}
+
+// TestSourceRepo_SearchWithFilters_EmptyKeywords_MultipleFilters verifies empty keywords with multiple filters
+func TestSourceRepo_SearchWithFilters_EmptyKeywords_MultipleFilters(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "name", "feed_url", "source_type", "last_crawled_at", "active",
+	}).AddRow(1, "Active RSS", "https://example.com/feed", "RSS", now, true)
+
+	sourceType := "RSS"
+	active := true
+	filters := repository.SourceSearchFilters{
+		SourceType: &sourceType,
+		Active:     &active,
+	}
+
+	// Both filters in WHERE clause (SQLite uses ? placeholders)
+	mock.ExpectQuery("FROM sources").
+		WithArgs("RSS", true).
+		WillReturnRows(rows)
+
+	repo := sqlite.NewSourceRepo(db)
+	sources, err := repo.SearchWithFilters(context.Background(), []string{}, filters)
+	if err != nil {
+		t.Fatalf("SearchWithFilters err=%v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(sources))
+	}
+	if sources[0].SourceType != "RSS" {
+		t.Fatalf("expected RSS, got %s", sources[0].SourceType)
+	}
+	if !sources[0].Active {
+		t.Fatal("expected source to be active")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("ExpectationsWereMet: %v", err)
+	}
+}
+
+// TestSourceRepo_SearchWithFilters_EmptyKeywords_EmptyResult verifies empty result returns empty slice (not nil)
+func TestSourceRepo_SearchWithFilters_EmptyKeywords_EmptyResult(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	rows := sqlmock.NewRows([]string{
+		"id", "name", "feed_url", "source_type", "last_crawled_at", "active",
+	}) // No rows
+
+	sourceType := "NonExistent"
+	filters := repository.SourceSearchFilters{
+		SourceType: &sourceType,
+	}
+
+	mock.ExpectQuery("FROM sources").
+		WithArgs("NonExistent").
+		WillReturnRows(rows)
+
+	repo := sqlite.NewSourceRepo(db)
+	sources, err := repo.SearchWithFilters(context.Background(), []string{}, filters)
+	if err != nil {
+		t.Fatalf("SearchWithFilters err=%v", err)
+	}
+	if sources == nil {
+		t.Fatal("expected empty slice, got nil")
+	}
+	if len(sources) != 0 {
+		t.Fatalf("expected 0 sources, got %d", len(sources))
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("ExpectationsWereMet: %v", err)
