@@ -188,8 +188,12 @@ ORDER BY published_at DESC`
 }
 
 func (repo *ArticleRepo) SearchWithFilters(ctx context.Context, keywords []string, filters repository.ArticleSearchFilters) ([]*entity.Article, error) {
-	// Empty keywords -> return empty result
-	if len(keywords) == 0 {
+	// Check if there are any search criteria (keywords or filters)
+	hasKeywords := len(keywords) > 0
+	hasFilters := filters.SourceID != nil || filters.From != nil || filters.To != nil
+
+	// No keywords and no filters -> return empty result
+	if !hasKeywords && !hasFilters {
 		return []*entity.Article{}, nil
 	}
 
@@ -230,8 +234,12 @@ ORDER BY published_at DESC`, whereClause)
 // Uses the same filters as SearchWithFilters for consistency.
 // Uses ArticleQueryBuilder to eliminate code duplication.
 func (repo *ArticleRepo) CountArticlesWithFilters(ctx context.Context, keywords []string, filters repository.ArticleSearchFilters) (int64, error) {
-	// Empty keywords -> return 0
-	if len(keywords) == 0 {
+	// Check if there are any search criteria (keywords or filters)
+	hasKeywords := len(keywords) > 0
+	hasFilters := filters.SourceID != nil || filters.From != nil || filters.To != nil
+
+	// No keywords and no filters -> return 0
+	if !hasKeywords && !hasFilters {
 		return 0, nil
 	}
 
@@ -258,8 +266,12 @@ func (repo *ArticleRepo) CountArticlesWithFilters(ctx context.Context, keywords 
 // Includes source_name from JOIN with sources table.
 // Uses ArticleQueryBuilder to eliminate code duplication.
 func (repo *ArticleRepo) SearchWithFiltersPaginated(ctx context.Context, keywords []string, filters repository.ArticleSearchFilters, offset, limit int) ([]repository.ArticleWithSource, error) {
-	// Empty keywords -> return empty result
-	if len(keywords) == 0 {
+	// Check if there are any search criteria (keywords or filters)
+	hasKeywords := len(keywords) > 0
+	hasFilters := filters.SourceID != nil || filters.From != nil || filters.To != nil
+
+	// No keywords and no filters -> return empty result
+	if !hasKeywords && !hasFilters {
 		return []repository.ArticleWithSource{}, nil
 	}
 

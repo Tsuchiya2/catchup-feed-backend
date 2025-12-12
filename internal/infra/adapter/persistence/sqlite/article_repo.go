@@ -236,8 +236,12 @@ ORDER BY published_at DESC
 // SearchWithFilters searches articles with multi-keyword AND logic and optional filters.
 // Note: SQLite uses LIKE instead of ILIKE (case-insensitive by default for ASCII).
 func (repo *ArticleRepo) SearchWithFilters(ctx context.Context, keywords []string, filters repository.ArticleSearchFilters) ([]*entity.Article, error) {
-	// Empty keywords -> return empty result
-	if len(keywords) == 0 {
+	// Check if there are any search criteria (keywords or filters)
+	hasKeywords := len(keywords) > 0
+	hasFilters := filters.SourceID != nil || filters.From != nil || filters.To != nil
+
+	// No keywords and no filters -> return empty result
+	if !hasKeywords && !hasFilters {
 		return []*entity.Article{}, nil
 	}
 
@@ -277,8 +281,12 @@ ORDER BY published_at DESC`
 // CountArticlesWithFilters returns the total number of articles matching the search criteria.
 // Uses the same QueryBuilder as SearchWithFilters for consistency.
 func (repo *ArticleRepo) CountArticlesWithFilters(ctx context.Context, keywords []string, filters repository.ArticleSearchFilters) (int64, error) {
-	// Empty keywords -> return 0
-	if len(keywords) == 0 {
+	// Check if there are any search criteria (keywords or filters)
+	hasKeywords := len(keywords) > 0
+	hasFilters := filters.SourceID != nil || filters.From != nil || filters.To != nil
+
+	// No keywords and no filters -> return 0
+	if !hasKeywords && !hasFilters {
 		return 0, nil
 	}
 
@@ -304,8 +312,12 @@ func (repo *ArticleRepo) CountArticlesWithFilters(ctx context.Context, keywords 
 // SearchWithFiltersPaginated searches articles with pagination support.
 // Includes source_name from JOIN with sources table.
 func (repo *ArticleRepo) SearchWithFiltersPaginated(ctx context.Context, keywords []string, filters repository.ArticleSearchFilters, offset, limit int) ([]repository.ArticleWithSource, error) {
-	// Empty keywords -> return empty result
-	if len(keywords) == 0 {
+	// Check if there are any search criteria (keywords or filters)
+	hasKeywords := len(keywords) > 0
+	hasFilters := filters.SourceID != nil || filters.From != nil || filters.To != nil
+
+	// No keywords and no filters -> return empty result
+	if !hasKeywords && !hasFilters {
 		return []repository.ArticleWithSource{}, nil
 	}
 
