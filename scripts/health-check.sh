@@ -40,6 +40,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 EMAIL_FUNCTIONS="${SCRIPT_DIR}/lib/email-functions.sh"
 
+# Change to project root for docker compose commands
+cd "$PROJECT_ROOT" || { echo "ERROR: Cannot change to project directory: ${PROJECT_ROOT}" >&2; exit 1; }
+
 # Environment variables (with defaults)
 API_ENDPOINT="${API_ENDPOINT:-http://localhost:8080/health}"
 API_TIMEOUT="${API_TIMEOUT:-5}"
