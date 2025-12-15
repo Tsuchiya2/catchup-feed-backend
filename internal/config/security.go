@@ -26,7 +26,9 @@ type SecurityConfig struct {
 }
 
 // LoadSecurityConfig loads security configuration from YAML file.
+// The path parameter is expected to come from a trusted source (command-line argument or hardcoded default).
 func LoadSecurityConfig(path string) (*SecurityConfig, error) {
+	// #nosec G304 -- path is provided by trusted source (CLI arg or config), not user input
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)

@@ -250,8 +250,9 @@ func applyMiddleware(logger *slog.Logger, handler http.Handler) http.Handler {
 // runServer starts the HTTP server and handles graceful shutdown.
 func runServer(logger *slog.Logger, handler http.Handler, version string) {
 	srv := &http.Server{
-		Addr:    ":8080",
-		Handler: handler,
+		Addr:              ":8080",
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 		BaseContext: func(_ net.Listener) context.Context {
 			return context.Background()
 		},

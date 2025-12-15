@@ -310,13 +310,9 @@ func (s *Service) processFeedItems(
 					return err
 				}
 
-				// TODO(FEAT-CRAWL-RESILIENCE-001-Phase2): Replace inline error handling with ResilientProcessor.
-				// This Phase 1 implementation uses inline error handling for immediate fix.
-				// Phase 2 will extract this into a pluggable error handling strategy:
-				//   - ResilientProcessor with configurable ErrorPolicy
-				//   - Circuit breaker pattern for repeated failures
-				//   - Reusable across other services
-				// See: docs/designs/crawl-resilience-continue-on-summarization-error.md#3.3.3
+				// TODO(FEAT-CRAWL-RESILIENCE-001-Phase2): [DEFERRED 2025-12-15] Replace inline error handling with ResilientProcessor.
+				// Rationale: Current inline error handling is sufficient for current scale.
+				// See design: docs/designs/security-and-quality-improvements.md Section 3.2.5
 				atomic.AddInt64(&stats.SummarizeError, 1)
 				metrics.RecordArticleSummarized(false)
 				metrics.RecordSummarizationDuration(summaryDuration)

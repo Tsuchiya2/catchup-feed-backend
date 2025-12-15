@@ -46,36 +46,11 @@ func (s OffsetStrategy) BuildMetadata(params Params, total int64, hasMore bool) 
 	}
 }
 
-// CursorStrategy implements cursor-based pagination (future enhancement).
-// This is a placeholder for future implementation.
+// CursorStrategy is planned for future implementation.
+// Design considerations documented in:
+// - docs/designs/security-and-quality-improvements.md (Section 14)
 //
-// TODO: Implement cursor-based pagination using opaque cursors (base64-encoded).
-// Cursor format: base64(published_at + id) for stable pagination.
-// Benefits: Better performance for large offsets, consistent results even with data changes.
-type CursorStrategy struct{}
-
-// CalculateQuery is not yet implemented for cursor-based pagination.
-func (s CursorStrategy) CalculateQuery(params Params) QueryParams {
-	// TODO: Parse cursor from params and calculate query parameters
-	// Example: cursor = base64(published_at + id)
-	return QueryParams{
-		Offset: 0,
-		Limit:  params.Limit,
-		Cursor: nil, // Placeholder
-		After:  nil,
-	}
-}
-
-// BuildMetadata is not yet implemented for cursor-based pagination.
-func (s CursorStrategy) BuildMetadata(params Params, total int64, hasMore bool) Metadata {
-	// TODO: For cursor-based pagination, we don't return total count or total_pages
-	// Instead, we return next cursor and hasMore flag
-	return Metadata{
-		Total:      -1, // Not applicable for cursor-based pagination
-		Page:       -1, // Not applicable
-		Limit:      params.Limit,
-		TotalPages: -1, // Not applicable
-		// NextCursor: calculateNextCursor(), // Future field
-		// HasMore:    hasMore,
-	}
-}
+// Future implementation will use:
+// - Opaque cursors: base64(published_at + article_id)
+// - No total count (performance optimization)
+// - hasMore flag instead of total_pages
