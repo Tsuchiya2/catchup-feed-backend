@@ -62,7 +62,7 @@ services:
   # PostgreSQL データベース
   # ──────────────────────────────────────────────────────────
   postgres:
-    image: postgres:18-alpine
+    image: postgres:16-alpine
     container_name: catchup-postgres
     restart: unless-stopped
 

@@ -4,12 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/pkg/search"
 	"catchup-feed/internal/repository"
-
-	"github.com/lib/pq"
 )
 
 type ArticleRepo struct {
@@ -385,8 +384,21 @@ func (repo *ArticleRepo) ExistsByURLBatch(ctx context.Context, urls []string) (m
 		return make(map[string]bool), nil
 	}
 
-	const query = `SELECT url FROM articles WHERE url = ANY($1)`
-	rows, err := repo.db.QueryContext(ctx, query, pq.Array(urls))
+	// Build placeholders for IN clause: ($1, $2, $3, ...)
+	// This is more compatible with database/sql than ANY($1::text[])
+	placeholders := make([]string, len(urls))
+	args := make([]interface{}, len(urls))
+	for i, url := range urls {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = url
+	}
+
+	query := fmt.Sprintf(
+		`SELECT url FROM articles WHERE url IN (%s)`,
+		strings.Join(placeholders, ", "),
+	)
+
+	rows, err := repo.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("ExistsByURLBatch: QueryContext: %w", err)
 	}
