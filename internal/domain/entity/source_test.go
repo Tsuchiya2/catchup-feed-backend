@@ -265,3 +265,192 @@ func TestSource_LongNames(t *testing.T) {
 	assert.Len(t, source.Name, 1000)
 	assert.Greater(t, len(source.FeedURL), 500)
 }
+
+func TestSource_Validate(t *testing.T) {
+	tests := []struct {
+		name      string
+		source    Source
+		wantError bool
+		errorMsg  string
+	}{
+		{
+			name: "valid RSS source with empty SourceType (defaults to RSS)",
+			source: Source{
+				Name:       "RSS Feed",
+				FeedURL:    "https://example.com/rss.xml",
+				SourceType: "",
+			},
+			wantError: false,
+		},
+		{
+			name: "valid RSS source with explicit type",
+			source: Source{
+				Name:       "RSS Feed",
+				FeedURL:    "https://example.com/rss.xml",
+				SourceType: "RSS",
+			},
+			wantError: false,
+		},
+		{
+			name: "valid Webflow source with scraper config",
+			source: Source{
+				Name:       "Webflow Site",
+				FeedURL:    "https://example.webflow.io",
+				SourceType: "Webflow",
+				ScraperConfig: &ScraperConfig{
+					ItemSelector:  ".blog-item",
+					TitleSelector: "h2",
+					DateSelector:  ".date",
+					URLSelector:   "a",
+					DateFormat:    "2006-01-02",
+				},
+			},
+			wantError: false,
+		},
+		{
+			name: "valid NextJS source with scraper config",
+			source: Source{
+				Name:       "NextJS Site",
+				FeedURL:    "https://example.com/_next/data/builds.json",
+				SourceType: "NextJS",
+				ScraperConfig: &ScraperConfig{
+					DataKey:   "posts",
+					URLPrefix: "https://example.com",
+				},
+			},
+			wantError: false,
+		},
+		{
+			name: "valid Remix source with scraper config",
+			source: Source{
+				Name:       "Remix Site",
+				FeedURL:    "https://example.com/posts",
+				SourceType: "Remix",
+				ScraperConfig: &ScraperConfig{
+					ContextKey: "posts",
+					URLPrefix:  "https://example.com",
+				},
+			},
+			wantError: false,
+		},
+		{
+			name: "invalid source type",
+			source: Source{
+				Name:       "Invalid Source",
+				FeedURL:    "https://example.com",
+				SourceType: "WordPress",
+			},
+			wantError: true,
+			errorMsg:  "invalid source_type: WordPress (must be RSS, Webflow, NextJS, or Remix)",
+		},
+		{
+			name: "Webflow source without scraper config",
+			source: Source{
+				Name:          "Webflow Site",
+				FeedURL:       "https://example.webflow.io",
+				SourceType:    "Webflow",
+				ScraperConfig: nil,
+			},
+			wantError: true,
+			errorMsg:  "scraper_config is required for non-RSS sources",
+		},
+		{
+			name: "NextJS source without scraper config",
+			source: Source{
+				Name:          "NextJS Site",
+				FeedURL:       "https://example.com",
+				SourceType:    "NextJS",
+				ScraperConfig: nil,
+			},
+			wantError: true,
+			errorMsg:  "scraper_config is required for non-RSS sources",
+		},
+		{
+			name: "Remix source without scraper config",
+			source: Source{
+				Name:          "Remix Site",
+				FeedURL:       "https://example.com",
+				SourceType:    "Remix",
+				ScraperConfig: nil,
+			},
+			wantError: true,
+			errorMsg:  "scraper_config is required for non-RSS sources",
+		},
+		{
+			name: "RSS source with scraper config (should be allowed)",
+			source: Source{
+				Name:       "RSS Feed",
+				FeedURL:    "https://example.com/rss.xml",
+				SourceType: "RSS",
+				ScraperConfig: &ScraperConfig{
+					DataKey: "something",
+				},
+			},
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.source.Validate()
+
+			if tt.wantError {
+				assert.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Equal(t, tt.errorMsg, err.Error())
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestSource_Validate_SourceTypeDefault(t *testing.T) {
+	// Test that empty SourceType defaults to RSS
+	source := Source{
+		Name:       "Test Source",
+		FeedURL:    "https://example.com/feed.xml",
+		SourceType: "",
+	}
+
+	err := source.Validate()
+	assert.NoError(t, err)
+	assert.Equal(t, "RSS", source.SourceType)
+}
+
+func TestScraperConfig_WebflowFields(t *testing.T) {
+	config := &ScraperConfig{
+		ItemSelector:  ".blog-item",
+		TitleSelector: "h2.title",
+		DateSelector:  "span.date",
+		URLSelector:   "a.link",
+		DateFormat:    "2006-01-02",
+	}
+
+	assert.Equal(t, ".blog-item", config.ItemSelector)
+	assert.Equal(t, "h2.title", config.TitleSelector)
+	assert.Equal(t, "span.date", config.DateSelector)
+	assert.Equal(t, "a.link", config.URLSelector)
+	assert.Equal(t, "2006-01-02", config.DateFormat)
+}
+
+func TestScraperConfig_NextJSFields(t *testing.T) {
+	config := &ScraperConfig{
+		DataKey:   "blogPosts",
+		URLPrefix: "https://example.com/blog",
+	}
+
+	assert.Equal(t, "blogPosts", config.DataKey)
+	assert.Equal(t, "https://example.com/blog", config.URLPrefix)
+}
+
+func TestScraperConfig_RemixFields(t *testing.T) {
+	config := &ScraperConfig{
+		ContextKey: "posts",
+		URLPrefix:  "https://example.com",
+	}
+
+	assert.Equal(t, "posts", config.ContextKey)
+	assert.Equal(t, "https://example.com", config.URLPrefix)
+}

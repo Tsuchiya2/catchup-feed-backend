@@ -26,7 +26,8 @@ func NewMultiUserAuthProvider(minPasswordLength int, weakPasswords []string) *Mu
 }
 
 // ValidateCredentials validates credentials against environment variables.
-// It checks both admin and viewer credentials.
+// It checks both admin and viewer credentials using constant-time operations
+// to prevent timing attacks.
 func (p *MultiUserAuthProvider) ValidateCredentials(ctx context.Context, creds authservice.Credentials) error {
 	// Check if credentials are empty
 	if creds.Username == "" || creds.Password == "" {
@@ -49,26 +50,34 @@ func (p *MultiUserAuthProvider) ValidateCredentials(ctx context.Context, creds a
 	adminUser := os.Getenv("ADMIN_USER")
 	adminPass := os.Getenv("ADMIN_USER_PASSWORD")
 
-	// Check admin credentials using constant-time comparison
-	adminUserMatch := subtle.ConstantTimeCompare([]byte(creds.Username), []byte(adminUser)) == 1
-	adminPassMatch := subtle.ConstantTimeCompare([]byte(creds.Password), []byte(adminPass)) == 1
-
-	if adminUserMatch && adminPassMatch {
-		return nil
-	}
-
 	// Get viewer credentials (optional)
 	demoUser := os.Getenv("DEMO_USER")
 	demoPass := os.Getenv("DEMO_USER_PASSWORD")
 
-	// Only check viewer if configured
-	if demoUser != "" {
-		demoUserMatch := subtle.ConstantTimeCompare([]byte(creds.Username), []byte(demoUser)) == 1
-		demoPassMatch := subtle.ConstantTimeCompare([]byte(creds.Password), []byte(demoPass)) == 1
+	// Perform ALL comparisons regardless of results (constant-time)
+	// This prevents timing attacks from revealing which credential component is wrong
+	adminUserMatch := subtle.ConstantTimeCompare([]byte(creds.Username), []byte(adminUser)) == 1
+	adminPassMatch := subtle.ConstantTimeCompare([]byte(creds.Password), []byte(adminPass)) == 1
 
-		if demoUserMatch && demoPassMatch {
-			return nil
-		}
+	// Always perform viewer comparison (use empty strings if not configured)
+	var demoUserMatch, demoPassMatch bool
+	if demoUser != "" {
+		demoUserMatch = subtle.ConstantTimeCompare([]byte(creds.Username), []byte(demoUser)) == 1
+		demoPassMatch = subtle.ConstantTimeCompare([]byte(creds.Password), []byte(demoPass)) == 1
+	} else {
+		// Perform dummy comparisons to maintain constant time
+		_ = subtle.ConstantTimeCompare([]byte(creds.Username), []byte(""))
+		_ = subtle.ConstantTimeCompare([]byte(creds.Password), []byte(""))
+		demoUserMatch = false
+		demoPassMatch = false
+	}
+
+	// Evaluate results AFTER all comparisons
+	if adminUserMatch && adminPassMatch {
+		return nil
+	}
+	if demoUserMatch && demoPassMatch {
+		return nil
 	}
 
 	return fmt.Errorf("invalid credentials")
@@ -84,13 +93,24 @@ func (p *MultiUserAuthProvider) IdentifyUser(ctx context.Context, email string) 
 	adminUser := os.Getenv("ADMIN_USER")
 	demoUser := os.Getenv("DEMO_USER")
 
-	// Check admin using constant-time comparison
-	if subtle.ConstantTimeCompare([]byte(email), []byte(adminUser)) == 1 {
-		return RoleAdmin, nil
+	// Perform ALL comparisons regardless of results (constant-time)
+	adminMatch := subtle.ConstantTimeCompare([]byte(email), []byte(adminUser)) == 1
+
+	// Always perform viewer comparison (use empty string if not configured)
+	var demoMatch bool
+	if demoUser != "" {
+		demoMatch = subtle.ConstantTimeCompare([]byte(email), []byte(demoUser)) == 1
+	} else {
+		// Perform dummy comparison to maintain constant time
+		_ = subtle.ConstantTimeCompare([]byte(email), []byte(""))
+		demoMatch = false
 	}
 
-	// Check viewer if configured
-	if demoUser != "" && subtle.ConstantTimeCompare([]byte(email), []byte(demoUser)) == 1 {
+	// Evaluate results AFTER all comparisons
+	if adminMatch {
+		return RoleAdmin, nil
+	}
+	if demoMatch {
 		return RoleViewer, nil
 	}
 

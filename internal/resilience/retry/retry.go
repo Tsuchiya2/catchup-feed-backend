@@ -215,6 +215,8 @@ func addJitter(duration time.Duration, jitterFraction float64) time.Duration {
 	if jitterFraction > 1.0 {
 		jitterFraction = 1.0
 	}
+	// #nosec G404 -- Using math/rand is acceptable for jitter calculation.
+	// Cryptographic randomness is not required for retry backoff jitter.
 	jitter := time.Duration(rand.Float64() * float64(duration) * jitterFraction)
 	return duration + jitter
 }

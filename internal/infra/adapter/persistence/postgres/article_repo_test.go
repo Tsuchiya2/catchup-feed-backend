@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,8 +209,8 @@ func TestArticleRepo_ExistsByURLBatch(t *testing.T) {
 	}
 
 	// article1とarticle3が存在する
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT url FROM articles WHERE url = ANY($1)")).
-		WithArgs(sqlmock.AnyArg()).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT url FROM articles WHERE url IN ($1, $2, $3)")).
+		WithArgs("https://example.com/article1", "https://example.com/article2", "https://example.com/article3").
 		WillReturnRows(sqlmock.NewRows([]string{"url"}).
 			AddRow("https://example.com/article1").
 			AddRow("https://example.com/article3"))
@@ -261,8 +262,8 @@ func TestArticleRepo_ExistsByURLBatch_AllNew(t *testing.T) {
 	}
 
 	// すべて存在しない（空の結果）
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT url FROM articles WHERE url = ANY($1)")).
-		WithArgs(sqlmock.AnyArg()).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT url FROM articles WHERE url IN ($1, $2)")).
+		WithArgs("https://example.com/new1", "https://example.com/new2").
 		WillReturnRows(sqlmock.NewRows([]string{"url"}))
 
 	repo := pg.NewArticleRepo(db)
@@ -287,8 +288,8 @@ func TestArticleRepo_ExistsByURLBatch_AllExist(t *testing.T) {
 	}
 
 	// すべて存在する
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT url FROM articles WHERE url = ANY($1)")).
-		WithArgs(sqlmock.AnyArg()).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT url FROM articles WHERE url IN ($1, $2)")).
+		WithArgs("https://example.com/article1", "https://example.com/article2").
 		WillReturnRows(sqlmock.NewRows([]string{"url"}).
 			AddRow("https://example.com/article1").
 			AddRow("https://example.com/article2"))
@@ -823,5 +824,356 @@ func TestArticleRepo_CountArticles_Zero(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+/* ──────────────────────────── Error Cases ──────────────────────────── */
+
+func TestArticleRepo_Get_NotFound(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id")).
+		WithArgs(int64(999)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at",
+		}))
+
+	repo := pg.NewArticleRepo(db)
+	got, err := repo.Get(context.Background(), 999)
+	if err != nil {
+		t.Fatalf("Get should not return error for not found, err=%v", err)
+	}
+	if got != nil {
+		t.Fatalf("Get should return nil for not found, got=%v", got)
+	}
+}
+
+func TestArticleRepo_Get_DatabaseError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	dbError := errors.New("database connection lost")
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id")).
+		WithArgs(int64(1)).
+		WillReturnError(dbError)
+
+	repo := pg.NewArticleRepo(db)
+	got, err := repo.Get(context.Background(), 1)
+	if err == nil {
+		t.Fatal("Get should return error for database error")
+	}
+	if got != nil {
+		t.Errorf("Get should return nil on error, got=%v", got)
+	}
+}
+
+func TestArticleRepo_Update_NotFound(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	mock.ExpectExec("UPDATE articles").
+		WithArgs(int64(2), "new", "https://u",
+			"sum", now, int64(999)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	repo := pg.NewArticleRepo(db)
+	err := repo.Update(context.Background(), &entity.Article{
+		ID: 999, SourceID: 2, Title: "new", URL: "https://u",
+		Summary: "sum", PublishedAt: now,
+	})
+	if err == nil {
+		t.Fatal("Update should fail when no rows affected")
+	}
+	if !strings.Contains(err.Error(), "no rows affected") {
+		t.Fatalf("Update error should mention 'no rows affected', got: %v", err)
+	}
+}
+
+func TestArticleRepo_Delete_NotFound(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectExec("DELETE FROM articles").
+		WithArgs(int64(999)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	repo := pg.NewArticleRepo(db)
+	err := repo.Delete(context.Background(), 999)
+	if err == nil {
+		t.Fatal("Delete should fail when no rows affected")
+	}
+	if !strings.Contains(err.Error(), "no rows affected") {
+		t.Fatalf("Delete error should mention 'no rows affected', got: %v", err)
+	}
+}
+
+func TestArticleRepo_List_ScanError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock invalid data type for ID (string instead of int64)
+	mock.ExpectQuery("FROM articles").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at",
+		}).AddRow("invalid", 2, "title", "url", "summary", time.Now(), time.Now()))
+
+	repo := pg.NewArticleRepo(db)
+	got, err := repo.List(context.Background())
+	if err == nil {
+		t.Fatal("List should return error for scan error")
+	}
+	if got != nil {
+		t.Errorf("List should return nil on scan error, got=%v", got)
+	}
+}
+
+func TestArticleRepo_ListWithSource_ScanError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock invalid data type
+	mock.ExpectQuery("FROM articles").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}).AddRow("invalid", 2, "title", "url", "summary", time.Now(), time.Now(), "source"))
+
+	repo := pg.NewArticleRepo(db)
+	got, err := repo.ListWithSource(context.Background())
+	if err == nil {
+		t.Fatal("ListWithSource should return error for scan error")
+	}
+	if got != nil {
+		t.Errorf("ListWithSource should return nil on scan error, got=%v", got)
+	}
+}
+
+func TestArticleRepo_ListWithSourcePaginated_ScanError(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock invalid data type
+	mock.ExpectQuery("SELECT.*FROM articles.*INNER JOIN sources.*LIMIT.*OFFSET").
+		WithArgs(10, 0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}).AddRow("invalid", 2, "title", "url", "summary", time.Now(), time.Now(), "source"))
+
+	repo := pg.NewArticleRepo(db)
+	got, err := repo.ListWithSourcePaginated(context.Background(), 0, 10)
+	if err == nil {
+		t.Fatal("ListWithSourcePaginated should return error for scan error")
+	}
+	if got != nil {
+		t.Errorf("ListWithSourcePaginated should return nil on scan error, got=%v", got)
+	}
+}
+
+func TestArticleRepo_CountArticles_DatabaseError(t *testing.T) {
+	t.Parallel()
+
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	dbError := errors.New("connection lost")
+	mock.ExpectQuery("SELECT COUNT.*FROM articles").
+		WillReturnError(dbError)
+
+	repo := pg.NewArticleRepo(db)
+	count, err := repo.CountArticles(context.Background())
+	if err == nil {
+		t.Fatal("CountArticles should return error for database error")
+	}
+	if count != 0 {
+		t.Errorf("CountArticles should return 0 on error, got=%d", count)
+	}
+}
+
+func TestArticleRepo_Create_DatabaseError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	dbError := errors.New("unique constraint violation")
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO articles")).
+		WithArgs(int64(2), "title", "https://u",
+			"summary", now, now).
+		WillReturnError(dbError)
+
+	repo := pg.NewArticleRepo(db)
+	err := repo.Create(context.Background(), &entity.Article{
+		SourceID: 2, Title: "title", URL: "https://u",
+		Summary: "summary", PublishedAt: now, CreatedAt: now,
+	})
+	if err == nil {
+		t.Fatal("Create should return error for database error")
+	}
+}
+
+func TestArticleRepo_ExistsByURL_DatabaseError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	dbError := errors.New("connection lost")
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS")).
+		WithArgs("https://u").
+		WillReturnError(dbError)
+
+	repo := pg.NewArticleRepo(db)
+	ok, err := repo.ExistsByURL(context.Background(), "https://u")
+	if err == nil {
+		t.Fatal("ExistsByURL should return error for database error")
+	}
+	if ok {
+		t.Errorf("ExistsByURL should return false on error, got=%v", ok)
+	}
+}
+
+func TestArticleRepo_ExistsByURLBatch_DatabaseError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	urls := []string{"https://example.com/1"}
+
+	// Mock database error
+	dbError := errors.New("connection lost")
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT url FROM articles WHERE url IN ($1)")).
+		WithArgs("https://example.com/1").
+		WillReturnError(dbError)
+
+	repo := pg.NewArticleRepo(db)
+	result, err := repo.ExistsByURLBatch(context.Background(), urls)
+	if err == nil {
+		t.Fatal("ExistsByURLBatch should return error for database error")
+	}
+	if result != nil {
+		t.Errorf("ExistsByURLBatch should return nil on error, got=%v", result)
+	}
+}
+
+/* ──────────────────────────── CountArticlesWithFilters Tests ──────────────────────────── */
+
+func TestArticleRepo_CountArticlesWithFilters_NoFilters(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	repo := pg.NewArticleRepo(db)
+	count, err := repo.CountArticlesWithFilters(context.Background(), []string{}, repository.ArticleSearchFilters{})
+	if err != nil {
+		t.Fatalf("CountArticlesWithFilters err=%v", err)
+	}
+	if count != 0 {
+		t.Fatalf("CountArticlesWithFilters count = %d, want 0", count)
+	}
+}
+
+func TestArticleRepo_CountArticlesWithFilters_WithKeywords(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT COUNT.*FROM articles").
+		WithArgs("%Go%").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(42))
+
+	repo := pg.NewArticleRepo(db)
+	count, err := repo.CountArticlesWithFilters(context.Background(), []string{"Go"}, repository.ArticleSearchFilters{})
+	if err != nil {
+		t.Fatalf("CountArticlesWithFilters err=%v", err)
+	}
+	if count != 42 {
+		t.Fatalf("CountArticlesWithFilters count = %d, want 42", count)
+	}
+}
+
+func TestArticleRepo_CountArticlesWithFilters_WithSourceID(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	sourceID := int64(2)
+	mock.ExpectQuery("SELECT COUNT.*FROM articles").
+		WithArgs("%Go%", sourceID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
+
+	repo := pg.NewArticleRepo(db)
+	filters := repository.ArticleSearchFilters{SourceID: &sourceID}
+	count, err := repo.CountArticlesWithFilters(context.Background(), []string{"Go"}, filters)
+	if err != nil {
+		t.Fatalf("CountArticlesWithFilters err=%v", err)
+	}
+	if count != 10 {
+		t.Fatalf("CountArticlesWithFilters count = %d, want 10", count)
+	}
+}
+
+/* ──────────────────────────── SearchWithFiltersPaginated Tests ──────────────────────────── */
+
+func TestArticleRepo_SearchWithFiltersPaginated_NoFilters(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	repo := pg.NewArticleRepo(db)
+	result, err := repo.SearchWithFiltersPaginated(context.Background(), []string{}, repository.ArticleSearchFilters{}, 0, 10)
+	if err != nil {
+		t.Fatalf("SearchWithFiltersPaginated err=%v", err)
+	}
+	if len(result) != 0 {
+		t.Fatalf("SearchWithFiltersPaginated len=%d, want 0", len(result))
+	}
+}
+
+func TestArticleRepo_SearchWithFiltersPaginated_WithKeywords(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	mock.ExpectQuery("FROM articles").
+		WithArgs("%Go%", 10, 0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}).AddRow(
+			int64(1), int64(2), "Go 1.24", "https://example.com",
+			"New version", now, now, "Tech News",
+		))
+
+	repo := pg.NewArticleRepo(db)
+	result, err := repo.SearchWithFiltersPaginated(context.Background(), []string{"Go"}, repository.ArticleSearchFilters{}, 0, 10)
+	if err != nil {
+		t.Fatalf("SearchWithFiltersPaginated err=%v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("SearchWithFiltersPaginated len=%d, want 1", len(result))
+	}
+	if result[0].SourceName != "Tech News" {
+		t.Errorf("SourceName = %q, want %q", result[0].SourceName, "Tech News")
+	}
+}
+
+func TestArticleRepo_SearchWithFiltersPaginated_ScanError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock invalid data type
+	mock.ExpectQuery("FROM articles").
+		WithArgs("%Go%", 10, 0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_id", "title", "url",
+			"summary", "published_at", "created_at", "source_name",
+		}).AddRow("invalid", 2, "title", "url", "summary", time.Now(), time.Now(), "source"))
+
+	repo := pg.NewArticleRepo(db)
+	result, err := repo.SearchWithFiltersPaginated(context.Background(), []string{"Go"}, repository.ArticleSearchFilters{}, 0, 10)
+	if err == nil {
+		t.Fatal("SearchWithFiltersPaginated should return error for scan error")
+	}
+	if result != nil {
+		t.Errorf("SearchWithFiltersPaginated should return nil on error, got=%v", result)
 	}
 }

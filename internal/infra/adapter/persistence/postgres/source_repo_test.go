@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"testing"
 	"time"
@@ -778,5 +779,294 @@ func TestSourceRepo_SearchWithFilters_EmptyKeywords_EmptyResult(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+/* ──────────────────────────────── 12. Additional Error Cases ──────────────────────────────── */
+
+func TestSourceRepo_Get_NotFound(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id`)).
+		WithArgs(int64(999)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "name", "feed_url", "last_crawled_at", "active",
+			"source_type", "scraper_config",
+		}))
+
+	repo := postgres.NewSourceRepo(db)
+	got, err := repo.Get(context.Background(), 999)
+	if err != nil {
+		t.Fatalf("Get should not return error for not found, err=%v", err)
+	}
+	if got != nil {
+		t.Fatalf("Get should return nil for not found, got=%v", got)
+	}
+}
+
+func TestSourceRepo_Get_DatabaseError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	dbError := errors.New("connection lost")
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id`)).
+		WithArgs(int64(1)).
+		WillReturnError(dbError)
+
+	repo := postgres.NewSourceRepo(db)
+	got, err := repo.Get(context.Background(), 1)
+	if err == nil {
+		t.Fatal("Get should return error for database error")
+	}
+	if got != nil {
+		t.Errorf("Get should return nil on error, got=%v", got)
+	}
+}
+
+func TestSourceRepo_Get_WithScraperConfig(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	scraperConfigJSON := []byte(`{"item_selector":"article","url_prefix":"https://example.com"}`)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id`)).
+		WithArgs(int64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "name", "feed_url", "last_crawled_at", "active",
+			"source_type", "scraper_config",
+		}).AddRow(1, "Test Source", "https://example.com/feed", &now, true, "Webflow", scraperConfigJSON))
+
+	repo := postgres.NewSourceRepo(db)
+	got, err := repo.Get(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("Get err=%v", err)
+	}
+	if got == nil {
+		t.Fatal("Get should return source")
+	}
+	if got.ScraperConfig == nil {
+		t.Fatal("ScraperConfig should not be nil")
+	}
+	if got.ScraperConfig.ItemSelector != "article" {
+		t.Errorf("ItemSelector = %q, want %q", got.ScraperConfig.ItemSelector, "article")
+	}
+}
+
+func TestSourceRepo_Get_InvalidScraperConfigJSON(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	invalidJSON := []byte(`{"item_selector":invalid}`) // Invalid JSON
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id`)).
+		WithArgs(int64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "name", "feed_url", "last_crawled_at", "active",
+			"source_type", "scraper_config",
+		}).AddRow(1, "Test", "https://example.com", &now, true, "RSS", invalidJSON))
+
+	repo := postgres.NewSourceRepo(db)
+	got, err := repo.Get(context.Background(), 1)
+	if err == nil {
+		t.Fatal("Get should return error for invalid JSON")
+	}
+	if got != nil {
+		t.Errorf("Get should return nil on JSON unmarshal error, got=%v", got)
+	}
+}
+
+func TestSourceRepo_List_ScanError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock invalid data type for ID
+	mock.ExpectQuery(`FROM sources`).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "name", "feed_url", "last_crawled_at", "active",
+			"source_type", "scraper_config",
+		}).AddRow("invalid", "name", "url", nil, true, "RSS", nil))
+
+	repo := postgres.NewSourceRepo(db)
+	got, err := repo.List(context.Background())
+	if err == nil {
+		t.Fatal("List should return error for scan error")
+	}
+	if got != nil {
+		t.Errorf("List should return nil on error, got=%v", got)
+	}
+}
+
+func TestSourceRepo_ListActive_ScanError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock invalid data type
+	mock.ExpectQuery(`FROM sources`).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "name", "feed_url", "last_crawled_at", "active",
+			"source_type", "scraper_config",
+		}).AddRow("invalid", "name", "url", nil, true, "RSS", nil))
+
+	repo := postgres.NewSourceRepo(db)
+	got, err := repo.ListActive(context.Background())
+	if err == nil {
+		t.Fatal("ListActive should return error for scan error")
+	}
+	if got != nil {
+		t.Errorf("ListActive should return nil on error, got=%v", got)
+	}
+}
+
+func TestSourceRepo_Search_ScanError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock invalid data type
+	mock.ExpectQuery(`FROM sources`).
+		WithArgs("%go%").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "name", "feed_url", "last_crawled_at", "active",
+			"source_type", "scraper_config",
+		}).AddRow("invalid", "name", "url", nil, true, "RSS", nil))
+
+	repo := postgres.NewSourceRepo(db)
+	got, err := repo.Search(context.Background(), "go")
+	if err == nil {
+		t.Fatal("Search should return error for scan error")
+	}
+	if got != nil {
+		t.Errorf("Search should return nil on error, got=%v", got)
+	}
+}
+
+func TestSourceRepo_SearchWithFilters_ScanError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Mock invalid data type
+	mock.ExpectQuery(`FROM sources`).
+		WithArgs("%go%").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "name", "feed_url", "last_crawled_at", "active",
+			"source_type", "scraper_config",
+		}).AddRow("invalid", "name", "url", nil, true, "RSS", nil))
+
+	repo := postgres.NewSourceRepo(db)
+	got, err := repo.SearchWithFilters(context.Background(), []string{"go"}, repository.SourceSearchFilters{})
+	if err == nil {
+		t.Fatal("SearchWithFilters should return error for scan error")
+	}
+	if got != nil {
+		t.Errorf("SearchWithFilters should return nil on error, got=%v", got)
+	}
+}
+
+func TestSourceRepo_Create_DatabaseError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	dbError := errors.New("unique constraint violation")
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO sources`)).
+		WithArgs("Qiita", "https://qiita.com/feed",
+			&now, true, "RSS", []byte(nil)).
+		WillReturnError(dbError)
+
+	repo := postgres.NewSourceRepo(db)
+	err := repo.Create(context.Background(), &entity.Source{
+		Name: "Qiita", FeedURL: "https://qiita.com/feed",
+		LastCrawledAt: &now, Active: true,
+		SourceType: "RSS",
+	})
+	if err == nil {
+		t.Fatal("Create should return error for database error")
+	}
+}
+
+func TestSourceRepo_Create_WithScraperConfig(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	scraperConfig := &entity.ScraperConfig{
+		ItemSelector: "article",
+		URLPrefix:    "https://example.com",
+	}
+	expectedJSON := []byte(`{"item_selector":"article","url_prefix":"https://example.com"}`)
+
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO sources`)).
+		WithArgs("Webflow", "https://webflow.com/blog",
+			&now, true, "Webflow", expectedJSON).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	repo := postgres.NewSourceRepo(db)
+	err := repo.Create(context.Background(), &entity.Source{
+		Name:           "Webflow",
+		FeedURL:        "https://webflow.com/blog",
+		LastCrawledAt:  &now,
+		Active:         true,
+		SourceType:     "Webflow",
+		ScraperConfig:  scraperConfig,
+	})
+	if err != nil {
+		t.Fatalf("Create err=%v", err)
+	}
+}
+
+func TestSourceRepo_Update_DatabaseError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	dbError := errors.New("constraint violation")
+	mock.ExpectExec(`UPDATE sources`).
+		WithArgs("Qiita", "https://qiita.com/feed",
+			&now, true, "RSS", []byte(nil), int64(1)).
+		WillReturnError(dbError)
+
+	repo := postgres.NewSourceRepo(db)
+	err := repo.Update(context.Background(), &entity.Source{
+		ID: 1, Name: "Qiita", FeedURL: "https://qiita.com/feed",
+		LastCrawledAt: &now, Active: true,
+		SourceType: "RSS",
+	})
+	if err == nil {
+		t.Fatal("Update should return error for database error")
+	}
+}
+
+func TestSourceRepo_Delete_DatabaseError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	dbError := errors.New("foreign key constraint")
+	mock.ExpectExec(`DELETE FROM sources`).
+		WithArgs(int64(1)).
+		WillReturnError(dbError)
+
+	repo := postgres.NewSourceRepo(db)
+	err := repo.Delete(context.Background(), 1)
+	if err == nil {
+		t.Fatal("Delete should return error for database error")
+	}
+}
+
+func TestSourceRepo_TouchCrawledAt_DatabaseError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	now := time.Now()
+	dbError := errors.New("connection lost")
+	mock.ExpectExec(`UPDATE sources SET last_crawled_at`).
+		WithArgs(now, int64(1)).
+		WillReturnError(dbError)
+
+	repo := postgres.NewSourceRepo(db)
+	err := repo.TouchCrawledAt(context.Background(), 1, now)
+	if err == nil {
+		t.Fatal("TouchCrawledAt should return error for database error")
 	}
 }
