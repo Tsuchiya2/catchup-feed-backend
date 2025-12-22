@@ -8,12 +8,17 @@
       "mcp__chrome-devtools__fill",
       "mcp__chrome-devtools__click",
       "Bash(docker compose exec:*)",
-      "Bash(docker-compose exec:*)"
+      "Bash(docker-compose exec:*)",
+      "Bash(go test:*)",
+      "Bash(grep:*)",
+      "Bash(ls:*)",
+      "Bash(CI=true go test:*)",
+      "Bash(golangci-lint run:*)"
     ],
     "deny": [
-      "Bash(git add*)",
-      "Bash(git commit*)",
-      "Bash(git push*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ],
     "ask": []
   },
@@ -24,22 +29,20 @@
   "hooks": {
     "Notification": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/notification.sh\" 'Input needed' WarblerSong"
+            "command": "/Users/yujitsuchiya/catchup-feed/.claude/scripts/notification.sh 'Input needed' WarblerSong"
           }
         ]
       }
     ],
     "Stop": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/scripts/notification.sh\" 'Task completed' CatMeow"
+            "command": "/Users/yujitsuchiya/catchup-feed/.claude/scripts/notification.sh 'Task completed' CatMeow"
           }
         ]
       }
