@@ -23,9 +23,10 @@ type SearchHandler struct{ Svc srcUC.Service }
 // @Param        keyword query string false "検索キーワード（スペース区切り）"
 // @Param        source_type query string false "ソースタイプでフィルタ（RSS, Webflow, NextJS, Remix）"
 // @Param        active query bool false "アクティブ状態でフィルタ"
-// @Success      200 {array} DTO "検索結果"
+// @Success      200 {array} DTO "検索結果" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer)
 // @Failure      400 {string} string "Bad request"
 // @Failure      401 {string} string "Authentication required"
+// @Failure      429 {string} string "Too many requests - rate limit exceeded" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer,Retry-After=integer)
 // @Failure      500 {string} string "Server error"
 // @Router       /sources/search [get]
 func (h SearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

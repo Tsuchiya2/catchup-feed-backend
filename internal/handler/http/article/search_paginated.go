@@ -37,9 +37,10 @@ type PaginatedResponse struct {
 // @Param        to query string false "公開日時の終了（ISO 8601）"
 // @Param        page query int false "ページ番号（1-indexed、デフォルト: 1）"
 // @Param        limit query int false "1ページあたりの件数（デフォルト: 10、最大: 100）"
-// @Success      200 {object} PaginatedResponse "検索結果（ページネーション付き）"
+// @Success      200 {object} PaginatedResponse "検索結果（ページネーション付き）" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer)
 // @Failure      400 {string} string "Bad request"
 // @Failure      401 {string} string "Authentication required"
+// @Failure      429 {string} string "Too many requests - rate limit exceeded" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer,Retry-After=integer)
 // @Failure      500 {string} string "Server error"
 // @Router       /articles/search [get]
 func (h SearchPaginatedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

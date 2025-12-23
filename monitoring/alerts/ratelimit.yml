@@ -1,0 +1,187 @@
+# ============================================================
+# Rate Limiting Prometheus Alert Rules
+# ============================================================
+# Alert rules for monitoring rate limiting health and performance
+
+groups:
+  # ──────────────────────────────────────────────────────────
+  # Rate Limiter Health Alerts
+  # ──────────────────────────────────────────────────────────
+  - name: ratelimit_health
+    interval: 30s
+    rules:
+      # Circuit breaker is open for more than 1 minute
+      - alert: RateLimitCircuitBreakerOpen
+        expr: http_rate_limit_circuit_state > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: rate_limiter
+        annotations:
+          summary: "Rate limit circuit breaker is open"
+          description: "Circuit breaker for {{ $labels.limiter_type }} has been open for more than 1 minute. State: {{ $value }} (1=open, 2=half-open). Rate limiting is currently disabled to prevent cascading failures."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/rate-limiting-monitoring.md#circuit-breaker-open"
+
+      # Degradation level is active for more than 5 minutes
+      - alert: RateLimitDegradationActive
+        expr: http_rate_limit_degradation_level > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: rate_limiter
+        annotations:
+          summary: "Rate limiter degradation is active"
+          description: "Rate limiter for {{ $labels.limiter_type }} has been degraded for more than 5 minutes. Level: {{ $value }} (1=relaxed/2x limits, 2=minimal/10x limits, 3=disabled). This indicates performance issues or high error rates."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/rate-limiting-monitoring.md#degradation-active"
+
+  # ──────────────────────────────────────────────────────────
+  # Rate Limit Violations and Denial Alerts
+  # ──────────────────────────────────────────────────────────
+  - name: ratelimit_violations
+    interval: 30s
+    rules:
+      # High denial rate (>10% of requests) for more than 5 minutes
+      - alert: RateLimitHighDenialRate
+        expr: |
+          (
+            sum(rate(http_rate_limit_requests_total{status="denied"}[5m])) by (limiter_type)
+            /
+            sum(rate(http_rate_limit_requests_total[5m])) by (limiter_type)
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          component: rate_limiter
+        annotations:
+          summary: "High rate limit denial rate"
+          description: "Rate limiter {{ $labels.limiter_type }} is denying more than 10% of requests (current: {{ $value | humanizePercentage }}). This may indicate a DDoS attack, misconfigured client, or limits set too low."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/rate-limiting-monitoring.md#high-denial-rate"
+
+      # Very high denial rate (>50%) - critical alert
+      - alert: RateLimitCriticalDenialRate
+        expr: |
+          (
+            sum(rate(http_rate_limit_requests_total{status="denied"}[5m])) by (limiter_type)
+            /
+            sum(rate(http_rate_limit_requests_total[5m])) by (limiter_type)
+          ) > 0.50
+        for: 2m
+        labels:
+          severity: critical
+          component: rate_limiter
+        annotations:
+          summary: "Critical rate limit denial rate"
+          description: "Rate limiter {{ $labels.limiter_type }} is denying more than 50% of requests (current: {{ $value | humanizePercentage }}). This is likely a DDoS attack or critical misconfiguration."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/rate-limiting-monitoring.md#critical-denial-rate"
+
+  # ──────────────────────────────────────────────────────────
+  # Memory and Resource Alerts
+  # ──────────────────────────────────────────────────────────
+  - name: ratelimit_resources
+    interval: 1m
+    rules:
+      # Active keys >80% of max_keys (default 10000 -> 8000)
+      - alert: RateLimitHighMemoryUsage
+        expr: http_rate_limit_active_keys > 8000
+        for: 5m
+        labels:
+          severity: warning
+          component: rate_limiter
+        annotations:
+          summary: "Rate limiter memory usage is high"
+          description: "Rate limiter {{ $labels.limiter_type }} has {{ $value }} active keys (>80% of max 10000). LRU eviction is active. Consider increasing max_keys or investigating potential attack."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/rate-limiting-monitoring.md#high-memory-usage"
+
+      # Active keys >95% of max_keys - critical
+      - alert: RateLimitCriticalMemoryUsage
+        expr: http_rate_limit_active_keys > 9500
+        for: 2m
+        labels:
+          severity: critical
+          component: rate_limiter
+        annotations:
+          summary: "Rate limiter memory usage is critical"
+          description: "Rate limiter {{ $labels.limiter_type }} has {{ $value }} active keys (>95% of max 10000). Aggressive LRU eviction is occurring. This may impact legitimate users."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/rate-limiting-monitoring.md#critical-memory-usage"
+
+      # High eviction rate (>100 evictions/minute) for more than 5 minutes
+      - alert: RateLimitEvictionRateHigh
+        expr: rate(http_rate_limit_evictions_total[1m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: rate_limiter
+        annotations:
+          summary: "High rate limit eviction rate"
+          description: "Rate limiter {{ $labels.limiter_type }} is evicting keys at {{ $value | humanize }} per minute (>100/min). This indicates memory pressure or potential attack with many unique IPs."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/rate-limiting-monitoring.md#high-eviction-rate"
+
+  # ──────────────────────────────────────────────────────────
+  # Performance Alerts
+  # ──────────────────────────────────────────────────────────
+  - name: ratelimit_performance
+    interval: 30s
+    rules:
+      # p99 latency >10ms for more than 5 minutes
+      - alert: RateLimitCheckLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_rate_limit_check_duration_seconds_bucket[5m])) by (le, limiter_type)
+          ) > 0.010
+        for: 5m
+        labels:
+          severity: warning
+          component: rate_limiter
+        annotations:
+          summary: "Rate limit check latency is high"
+          description: "Rate limiter {{ $labels.limiter_type }} p99 check latency is {{ $value | humanizeDuration }} (>10ms). This may trigger circuit breaker or degradation. Target is <5ms."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/rate-limiting-monitoring.md#high-latency"
+
+      # p99 latency >50ms - critical
+      - alert: RateLimitCheckLatencyCritical
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_rate_limit_check_duration_seconds_bucket[5m])) by (le, limiter_type)
+          ) > 0.050
+        for: 2m
+        labels:
+          severity: critical
+          component: rate_limiter
+        annotations:
+          summary: "Rate limit check latency is critical"
+          description: "Rate limiter {{ $labels.limiter_type }} p99 check latency is {{ $value | humanizeDuration }} (>50ms). Circuit breaker will likely open. Immediate investigation required."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/rate-limiting-monitoring.md#critical-latency"
+
+      # p50 latency >5ms - warning
+      - alert: RateLimitCheckLatencyMedianHigh
+        expr: |
+          histogram_quantile(0.50,
+            sum(rate(http_rate_limit_check_duration_seconds_bucket[5m])) by (le, limiter_type)
+          ) > 0.005
+        for: 10m
+        labels:
+          severity: warning
+          component: rate_limiter
+        annotations:
+          summary: "Rate limit check median latency is elevated"
+          description: "Rate limiter {{ $labels.limiter_type }} p50 check latency is {{ $value | humanizeDuration }} (>5ms). Performance is degraded across all requests."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/rate-limiting-monitoring.md#median-latency-high"
+
+  # ──────────────────────────────────────────────────────────
+  # Per-Endpoint Alerts
+  # ──────────────────────────────────────────────────────────
+  - name: ratelimit_endpoints
+    interval: 30s
+    rules:
+      # Specific endpoint has high denial rate
+      - alert: RateLimitEndpointHighDenials
+        expr: |
+          rate(http_rate_limit_requests_total{status="denied"}[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: rate_limiter
+        annotations:
+          summary: "High rate limit denials for specific endpoint"
+          description: "Endpoint {{ $labels.path }} is being rate limited at {{ $value | humanize }} denials/sec for {{ $labels.limiter_type }}. This may indicate targeted abuse or misconfigured client."
+          runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/rate-limiting-monitoring.md#endpoint-high-denials"

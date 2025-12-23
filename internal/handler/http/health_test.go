@@ -1,12 +1,15 @@
 package http
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"catchup-feed/pkg/ratelimit"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
@@ -382,4 +385,243 @@ func TestLiveHandler_ServeHTTP(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "alive", rec.Body.String())
 	assert.Equal(t, "text/plain", rec.Header().Get("Content-Type"))
+}
+
+// Mock implementations for testing
+
+type mockDegradationLevel struct {
+	level string
+}
+
+func (m *mockDegradationLevel) String() string {
+	return m.level
+}
+
+type mockDegradationManager struct {
+	level DegradationLevel
+}
+
+func (m *mockDegradationManager) GetLevel() DegradationLevel {
+	return m.level
+}
+
+func TestHealthHandler_WithRateLimiter(t *testing.T) {
+	// Setup mock database
+	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectPing()
+
+	// Create mock rate limiter stores
+	ipStore := ratelimit.NewInMemoryRateLimitStore(ratelimit.InMemoryStoreConfig{
+		MaxKeys: 100,
+		Clock:   &ratelimit.SystemClock{},
+	})
+	userStore := ratelimit.NewInMemoryRateLimitStore(ratelimit.InMemoryStoreConfig{
+		MaxKeys: 100,
+		Clock:   &ratelimit.SystemClock{},
+	})
+
+	// Add some test data
+	ctx := context.Background()
+	_ = ipStore.AddRequest(ctx, "192.168.1.1", time.Now())
+	_ = ipStore.AddRequest(ctx, "192.168.1.2", time.Now())
+	_ = userStore.AddRequest(ctx, "user1", time.Now())
+
+	// Create mock circuit breakers
+	ipCircuit := ratelimit.NewCircuitBreaker(ratelimit.CircuitBreakerConfig{
+		FailureThreshold: 10,
+		RecoveryTimeout:  30 * time.Second,
+		LimiterType:      "ip",
+	})
+	userCircuit := ratelimit.NewCircuitBreaker(ratelimit.CircuitBreakerConfig{
+		FailureThreshold: 10,
+		RecoveryTimeout:  30 * time.Second,
+		LimiterType:      "user",
+	})
+
+	// Create mock degradation managers
+	ipDegradation := &mockDegradationManager{
+		level: &mockDegradationLevel{level: "normal"},
+	}
+	userDegradation := &mockDegradationManager{
+		level: &mockDegradationLevel{level: "relaxed"},
+	}
+
+	// Create handler with rate limiter components
+	handler := &HealthHandler{
+		DB:                       db,
+		Version:                  "test-version",
+		RateLimiterEnabled:       true,
+		IPRateLimiterStore:       ipStore,
+		UserRateLimiterStore:     userStore,
+		IPCircuitBreaker:         ipCircuit,
+		UserCircuitBreaker:       userCircuit,
+		IPDegradationManager:     ipDegradation,
+		UserDegradationManager:   userDegradation,
+		CSPEnabled:               true,
+		CSPReportOnly:            false,
+	}
+
+	// Create request
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+
+	// Execute
+	handler.ServeHTTP(rec, req)
+
+	// Assert status code
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Parse response
+	var response HealthResponse
+	err = json.NewDecoder(rec.Body).Decode(&response)
+	require.NoError(t, err)
+
+	// Assert basic response
+	// Note: Overall status is "healthy" even if database is "degraded"
+	// because degraded state is not a failure
+	assert.Equal(t, "healthy", response.Status)
+	assert.Equal(t, "test-version", response.Version)
+
+	// Assert database check
+	assert.Contains(t, response.Checks, "database")
+	// Database may be "degraded" if MaxOpenConnections is not configured
+	// This is acceptable for the test
+
+	// Assert rate limiter check
+	assert.Contains(t, response.Checks, "rate_limiter")
+	rateLimiterCheck := response.Checks["rate_limiter"]
+	assert.Equal(t, "healthy", rateLimiterCheck.Status)
+
+	// Check IP rate limiter details
+	details := rateLimiterCheck.Details
+	assert.Contains(t, details, "ip")
+	ipDetails := details["ip"].(map[string]interface{})
+	assert.Equal(t, float64(2), ipDetails["active_keys"]) // JSON unmarshals numbers as float64
+	assert.Greater(t, ipDetails["memory_bytes"], float64(0))
+	assert.Equal(t, "closed", ipDetails["circuit_breaker"])
+	assert.Equal(t, "normal", ipDetails["degradation_level"])
+
+	// Check user rate limiter details
+	assert.Contains(t, details, "user")
+	userDetails := details["user"].(map[string]interface{})
+	assert.Equal(t, float64(1), userDetails["active_keys"])
+	assert.Greater(t, userDetails["memory_bytes"], float64(0))
+	assert.Equal(t, "closed", userDetails["circuit_breaker"])
+	assert.Equal(t, "relaxed", userDetails["degradation_level"])
+
+	// Assert CSP check
+	assert.Contains(t, response.Checks, "csp")
+	cspCheck := response.Checks["csp"]
+	assert.Equal(t, "healthy", cspCheck.Status)
+	cspDetails := cspCheck.Details["config"].(map[string]interface{})
+	assert.Equal(t, true, cspDetails["enabled"])
+	assert.Equal(t, false, cspDetails["report_only"])
+
+	// Verify mock expectations
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestHealthHandler_RateLimiterDisabled(t *testing.T) {
+	// Setup mock database
+	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectPing()
+
+	// Create handler without rate limiter
+	handler := &HealthHandler{
+		DB:                 db,
+		Version:            "test-version",
+		RateLimiterEnabled: false,
+	}
+
+	// Create request
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+
+	// Execute
+	handler.ServeHTTP(rec, req)
+
+	// Assert status code
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Parse response
+	var response HealthResponse
+	err = json.NewDecoder(rec.Body).Decode(&response)
+	require.NoError(t, err)
+
+	// Assert rate limiter check is not included
+	assert.NotContains(t, response.Checks, "rate_limiter")
+	assert.NotContains(t, response.Checks, "csp")
+
+	// Verify mock expectations
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestHealthHandler_CircuitBreakerOpen(t *testing.T) {
+	// Setup mock database
+	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectPing()
+
+	// Create mock rate limiter store
+	ipStore := ratelimit.NewInMemoryRateLimitStore(ratelimit.InMemoryStoreConfig{
+		MaxKeys: 100,
+	})
+
+	// Create circuit breaker and force it open
+	ipCircuit := ratelimit.NewCircuitBreaker(ratelimit.CircuitBreakerConfig{
+		FailureThreshold: 2,
+		RecoveryTimeout:  30 * time.Second,
+		LimiterType:      "ip",
+	})
+
+	// Force circuit open by recording failures
+	ipCircuit.RecordFailure()
+	ipCircuit.RecordFailure()
+
+	// Verify circuit is open
+	assert.True(t, ipCircuit.IsOpen())
+
+	// Create handler
+	handler := &HealthHandler{
+		DB:                 db,
+		Version:            "test-version",
+		RateLimiterEnabled: true,
+		IPRateLimiterStore: ipStore,
+		IPCircuitBreaker:   ipCircuit,
+		IPDegradationManager: &mockDegradationManager{
+			level: &mockDegradationLevel{level: "minimal"},
+		},
+	}
+
+	// Create request
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+
+	// Execute
+	handler.ServeHTTP(rec, req)
+
+	// Assert status code (should still be healthy - circuit open is operational)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Parse response
+	var response HealthResponse
+	err = json.NewDecoder(rec.Body).Decode(&response)
+	require.NoError(t, err)
+
+	// Assert rate limiter reports open circuit
+	rateLimiterCheck := response.Checks["rate_limiter"]
+	ipDetails := rateLimiterCheck.Details["ip"].(map[string]interface{})
+	assert.Equal(t, "open", ipDetails["circuit_breaker"])
+	assert.Equal(t, "minimal", ipDetails["degradation_level"])
+
+	// Verify mock expectations
+	assert.NoError(t, mock.ExpectationsWereMet())
 }

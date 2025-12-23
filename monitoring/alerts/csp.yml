@@ -1,0 +1,92 @@
+# ============================================================
+# Content Security Policy (CSP) Prometheus Alert Rules
+# ============================================================
+# Alert rules for CSP monitoring and violation tracking
+#
+# Note: These alerts require CSP violation reporting to be configured.
+# See docs/operations/csp-monitoring.md for setup instructions.
+
+groups:
+  # ──────────────────────────────────────────────────────────
+  # CSP Violation Alerts
+  # ──────────────────────────────────────────────────────────
+  - name: csp_violations
+    interval: 1m
+    rules:
+      # High CSP violation rate (if violation reporting is configured)
+      # This alert will fire when CSP violation reports are implemented
+      # and metrics are exported to Prometheus.
+      #
+      # Uncomment when CSP violation reporting is configured:
+      #
+      # - alert: CSPHighViolationRate
+      #   expr: rate(http_csp_violations_total[5m]) > 10
+      #   for: 5m
+      #   labels:
+      #     severity: warning
+      #     component: security
+      #   annotations:
+      #     summary: "High CSP violation rate detected"
+      #     description: "CSP violations are occurring at {{ $value | humanize }} per second for directive {{ $labels.directive }} on {{ $labels.path }}. This may indicate an XSS attack attempt or misconfigured CSP policy."
+      #     runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/csp-monitoring.md#high-violation-rate"
+
+      # Specific directive violations (script-src)
+      # Uncomment when CSP violation reporting is configured:
+      #
+      # - alert: CSPScriptSrcViolation
+      #   expr: rate(http_csp_violations_total{directive="script-src"}[5m]) > 1
+      #   for: 2m
+      #   labels:
+      #     severity: critical
+      #     component: security
+      #   annotations:
+      #     summary: "CSP script-src violations detected"
+      #     description: "Script-src CSP violations are occurring at {{ $value | humanize }} per second on {{ $labels.path }}. This may indicate an active XSS attack or compromised third-party script."
+      #     runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/csp-monitoring.md#script-src-violation"
+
+  # ──────────────────────────────────────────────────────────
+  # CSP Configuration Alerts
+  # ──────────────────────────────────────────────────────────
+  - name: csp_configuration
+    interval: 5m
+    rules:
+      # CSP header missing on protected paths
+      # This requires application-level metrics to track CSP header presence
+      #
+      # Uncomment when CSP header metrics are implemented:
+      #
+      # - alert: CSPHeaderMissing
+      #   expr: |
+      #     (
+      #       sum(rate(http_requests_total{path=~"/swagger/.*"}[5m]))
+      #       -
+      #       sum(rate(http_requests_with_csp_total{path=~"/swagger/.*"}[5m]))
+      #     ) > 0
+      #   for: 5m
+      #   labels:
+      #     severity: warning
+      #     component: security
+      #   annotations:
+      #     summary: "CSP header missing on protected paths"
+      #     description: "Some requests to {{ $labels.path }} are not receiving CSP headers. This may indicate middleware misconfiguration."
+      #     runbook_url: "https://github.com/Tsuchiya2/catchup-feed/blob/main/docs/operations/csp-monitoring.md#header-missing"
+
+  # ──────────────────────────────────────────────────────────
+  # Future CSP Metrics (Placeholders)
+  # ──────────────────────────────────────────────────────────
+  # When CSP violation reporting is implemented, the following metrics
+  # should be exposed:
+  #
+  # - http_csp_violations_total (CounterVec)
+  #   Labels: directive, path, blocked_uri, source_file
+  #   Description: Total CSP violations reported
+  #
+  # - http_csp_reports_total (CounterVec)
+  #   Labels: path, report_type
+  #   Description: Total CSP reports received
+  #
+  # - http_requests_with_csp_total (CounterVec)
+  #   Labels: path, policy_type
+  #   Description: Total requests with CSP header applied
+  #
+  # See TASK-024 implementation notes for metric implementation details.

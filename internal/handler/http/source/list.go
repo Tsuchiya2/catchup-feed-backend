@@ -15,9 +15,10 @@ type ListHandler struct{ Svc srcUC.Service }
 // @Tags         sources
 // @Security     BearerAuth
 // @Produce      json
-// @Success      200 {array} DTO "ソース一覧"
+// @Success      200 {array} DTO "ソース一覧" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer)
 // @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
 // @Failure      403 {string} string "Forbidden - insufficient permissions"
+// @Failure      429 {string} string "Too many requests - rate limit exceeded" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer,Retry-After=integer)
 // @Failure      500 {string} string "サーバーエラー"
 // @Router       /sources [get]
 func (h ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

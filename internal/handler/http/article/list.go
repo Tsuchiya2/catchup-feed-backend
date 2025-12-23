@@ -27,9 +27,17 @@ type ListHandler struct {
 // @Param        page   query    int  false  "ページ番号 (1-based)" default(1) minimum(1)
 // @Param        limit  query    int  false  "1ページあたりの件数" default(20) minimum(1) maximum(100)
 // @Success      200 {object} pagination.Response[DTO] "ページネーション付き記事一覧"
+// @Header       200 {integer} X-RateLimit-Limit "Maximum number of requests allowed in the current window"
+// @Header       200 {integer} X-RateLimit-Remaining "Number of requests remaining in the current window"
+// @Header       200 {integer} X-RateLimit-Reset "Unix timestamp when the rate limit window resets"
 // @Failure      400 {string} string "Invalid query parameters"
 // @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
 // @Failure      403 {string} string "Forbidden - insufficient permissions"
+// @Failure      429 {string} string "Too many requests - rate limit exceeded"
+// @Header       429 {integer} X-RateLimit-Limit "Maximum number of requests allowed in the current window"
+// @Header       429 {integer} X-RateLimit-Remaining "Number of requests remaining (should be 0)"
+// @Header       429 {integer} X-RateLimit-Reset "Unix timestamp when the rate limit window resets"
+// @Header       429 {integer} Retry-After "Seconds until the client should retry"
 // @Failure      500 {string} string "サーバーエラー"
 // @Router       /articles [get]
 func (h ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

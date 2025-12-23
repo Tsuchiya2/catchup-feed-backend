@@ -21,9 +21,17 @@ type CreateHandler struct{ Svc artUC.Service }
 // @Produce      json
 // @Param        article body object true "記事情報"
 // @Success      201 "Created"
+// @Header       201 {integer} X-RateLimit-Limit "Maximum number of requests allowed in the current window"
+// @Header       201 {integer} X-RateLimit-Remaining "Number of requests remaining in the current window"
+// @Header       201 {integer} X-RateLimit-Reset "Unix timestamp when the rate limit window resets"
 // @Failure      400 {string} string "Bad request - invalid input"
 // @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
 // @Failure      403 {string} string "Forbidden - admin role required"
+// @Failure      429 {string} string "Too many requests - rate limit exceeded"
+// @Header       429 {integer} X-RateLimit-Limit "Maximum number of requests allowed in the current window"
+// @Header       429 {integer} X-RateLimit-Remaining "Number of requests remaining (should be 0)"
+// @Header       429 {integer} X-RateLimit-Reset "Unix timestamp when the rate limit window resets"
+// @Header       429 {integer} Retry-After "Seconds until the client should retry"
 // @Router       /articles [post]
 func (h CreateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req struct {

@@ -21,11 +21,12 @@ type UpdateHandler struct{ Svc srcUC.Service }
 // @Produce      json
 // @Param        id path int true "ソースID"
 // @Param        source body object true "更新するソース情報"
-// @Success      204 "No Content"
+// @Success      204 "No Content" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer)
 // @Failure      400 {string} string "Bad request - invalid input"
 // @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
 // @Failure      403 {string} string "Forbidden - admin role required"
 // @Failure      404 {string} string "Not found - source not found"
+// @Failure      429 {string} string "Too many requests - rate limit exceeded" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer,Retry-After=integer)
 // @Router       /sources/{id} [put]
 func (h UpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := pathutil.ExtractID(r.URL.Path, "/sources/")

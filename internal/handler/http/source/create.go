@@ -19,10 +19,11 @@ type CreateHandler struct{ Svc srcUC.Service }
 // @Accept       json
 // @Produce      json
 // @Param        source body object true "ソース情報"
-// @Success      201 "Created"
+// @Success      201 "Created" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer)
 // @Failure      400 {string} string "Bad request - invalid input"
 // @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
 // @Failure      403 {string} string "Forbidden - admin role required"
+// @Failure      429 {string} string "Too many requests - rate limit exceeded" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer,Retry-After=integer)
 // @Router       /sources [post]
 func (h CreateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
