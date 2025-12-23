@@ -153,7 +153,7 @@ func (s *EnvConfigSource) LoadHeaders() ([]string, error) {
 	headersStr := strings.TrimSpace(os.Getenv("CORS_ALLOWED_HEADERS"))
 	if headersStr == "" {
 		// Return default headers
-		return []string{"Content-Type", "Authorization", "X-Request-ID"}, nil
+		return []string{"Content-Type", "Authorization", "X-Request-ID", "X-Trace-ID"}, nil
 	}
 
 	// Split by comma
