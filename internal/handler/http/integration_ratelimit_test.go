@@ -70,7 +70,6 @@ func TestIntegration_IPRateLimiting(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Request %d failed: %v", i+1, err)
 			}
-			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != http.StatusOK {
 				t.Errorf("Request %d: expected status 200, got %d", i+1, resp.StatusCode)
@@ -89,6 +88,9 @@ func TestIntegration_IPRateLimiting(t *testing.T) {
 			if resp.Header.Get("X-RateLimit-Type") != "ip" {
 				t.Errorf("Request %d: X-RateLimit-Type expected 'ip', got '%s'", i+1, resp.Header.Get("X-RateLimit-Type"))
 			}
+
+			// Close body immediately to prevent resource leaks in loop
+			_ = resp.Body.Close()
 		}
 	})
 
@@ -135,7 +137,6 @@ func TestIntegration_IPRateLimiting(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Request %d failed: %v", i+1, err)
 			}
-			defer func() { _ = resp.Body.Close() }()
 
 			switch resp.StatusCode {
 			case http.StatusOK:
@@ -162,6 +163,9 @@ func TestIntegration_IPRateLimiting(t *testing.T) {
 					}
 				}
 			}
+
+			// Close body immediately to prevent resource leaks in loop
+			_ = resp.Body.Close()
 		}
 
 		// Should have exactly 3 successful requests and 7 denied
