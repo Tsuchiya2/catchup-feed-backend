@@ -295,7 +295,7 @@ func TestEnvConfigSource_LoadHeaders_Default(t *testing.T) {
 		t.Fatalf("LoadHeaders() returned unexpected error: %v", err)
 	}
 
-	expectedHeaders := []string{"Content-Type", "Authorization", "X-Request-ID"}
+	expectedHeaders := []string{"Content-Type", "Authorization", "X-Request-ID", "X-Trace-ID"}
 	if len(headers) != len(expectedHeaders) {
 		t.Errorf("Expected %d default headers, got %d", len(expectedHeaders), len(headers))
 	}
@@ -559,7 +559,7 @@ func TestLoadCORSConfig_DefaultValues(t *testing.T) {
 	}
 
 	// Verify default headers
-	expectedHeaders := []string{"Content-Type", "Authorization", "X-Request-ID"}
+	expectedHeaders := []string{"Content-Type", "Authorization", "X-Request-ID", "X-Trace-ID"}
 	if len(config.AllowedHeaders) != len(expectedHeaders) {
 		t.Errorf("Expected %d default headers, got %d", len(expectedHeaders), len(config.AllowedHeaders))
 	}
