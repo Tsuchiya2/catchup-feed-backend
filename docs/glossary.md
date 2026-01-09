@@ -1,0 +1,829 @@
+# Glossary
+
+This glossary defines domain terms, technical terminology, acronyms, and entity definitions used throughout the catchup-feed project. All definitions are extracted from the actual codebase implementation.
+
+---
+
+## Table of Contents
+
+- [Domain Entities](#domain-entities)
+- [Architecture Patterns](#architecture-patterns)
+- [Business Logic Terms](#business-logic-terms)
+- [Technical Components](#technical-components)
+- [Reliability Patterns](#reliability-patterns)
+- [Security Terms](#security-terms)
+- [Observability Terms](#observability-terms)
+- [API and Integration Terms](#api-and-integration-terms)
+- [Acronyms and Abbreviations](#acronyms-and-abbreviations)
+
+---
+
+## Domain Entities
+
+### Article
+A news article entity representing content fetched from RSS/Atom feeds. Contains metadata, content summary, and relationships to sources.
+
+**Fields:**
+- `ID`: Unique identifier (int64)
+- `SourceID`: Reference to the feed source (int64)
+- `Title`: Article title (string)
+- `URL`: Article URL (string)
+- `Summary`: AI-generated summary (string)
+- `PublishedAt`: Original publication timestamp (time.Time)
+- `CreatedAt`: Database insertion timestamp (time.Time)
+
+**Usage:** Core domain entity used throughout the system for representing fetched and summarized articles.
+
+### Source
+A feed source entity representing an RSS/Atom feed endpoint.
+
+**Fields:**
+- `ID`: Unique identifier (int64)
+- `Name`: Human-readable source name (string)
+- `FeedURL`: RSS/Atom feed URL (string)
+- `IsActive`: Whether the source is enabled for crawling (bool)
+- `CrawledAt`: Last successful crawl timestamp (time.Time, nullable)
+- `SourceType`: Type of source (RSS, Webflow, NextJS, Remix) (string, optional)
+
+**Usage:** Represents feed sources that are crawled periodically by the worker.
+
+### User
+A user entity for authentication and authorization.
+
+**Fields:**
+- `ID`: Unique identifier (int64)
+- `Username`: Unique username (string)
+- `PasswordHash`: Bcrypt password hash (string)
+- `Role`: User role (admin, viewer) (string)
+
+**Usage:** Represents authenticated users with role-based access control.
+
+### ArticleWithSource
+An aggregate combining Article and Source information.
+
+**Structure:**
+- `Article`: Article entity pointer
+- `SourceName`: Name of the source (string)
+
+**Usage:** Used for API responses that need to display source information alongside articles.
+
+---
+
+## Architecture Patterns
+
+### Clean Architecture
+An architectural pattern separating concerns into layers with strict dependency rules.
+
+**Layers (inside to outside):**
+1. **Domain Layer** (`internal/domain/entity`): Core business entities with no external dependencies
+2. **UseCase Layer** (`internal/usecase`): Business logic and application services
+3. **Infrastructure Layer** (`internal/infra`): External integrations (database, APIs, notifications)
+4. **Presentation Layer** (`internal/handler/http`): HTTP handlers and request/response transformation
+
+**Dependency Rule:** Dependencies always point inward (Presentation → UseCase → Domain). Domain layer has no dependencies on outer layers.
+
+### Repository Pattern
+An abstraction layer between domain logic and data persistence.
+
+**Interfaces:**
+- `ArticleRepository`: Provides methods for article CRUD operations
+- `SourceRepository`: Provides methods for source CRUD operations
+
+**Implementations:**
+- PostgreSQL adapter (`internal/infra/adapter/persistence/postgres`)
+- SQLite adapter (`internal/infra/adapter/persistence/sqlite`)
+
+**Purpose:** Enables database-agnostic domain logic and testability through mocking.
+
+### Dependency Inversion Principle (DIP)
+High-level modules depend on abstractions (interfaces) rather than concrete implementations.
+
+**Examples:**
+- `Summarizer` interface: Allows switching between Claude and OpenAI implementations
+- `ContentFetcher` interface: Abstracts web scraping implementations
+- `Channel` interface: Abstracts notification channel implementations (Discord, Slack)
+
+---
+
+## Business Logic Terms
+
+### Feed Crawling
+The process of periodically fetching RSS/Atom feeds and extracting new articles.
+
+**Flow:**
+1. Retrieve active sources from database
+2. Fetch feeds in parallel
+3. Parse feed items
+4. Check for duplicates by URL
+5. Insert new articles
+6. Generate AI summaries
+7. Send notifications
+
+**Scheduling:** Runs on cron schedule (default: daily at 5:30 AM, configurable via `CRON_SCHEDULE`)
+
+### RSS Content Enhancement
+A feature that fetches full article content when RSS feed content is insufficient.
+
+**Behavior:**
+- If RSS content length < threshold (default: 1500 characters), fetch full content from article URL
+- Uses Mozilla Readability algorithm to extract clean article text
+- Falls back to RSS content if fetching fails
+- Improves AI summarization quality from 40% to 90%
+
+**Configuration:**
+- `CONTENT_FETCH_ENABLED`: Enable/disable feature (default: true)
+- `CONTENT_FETCH_THRESHOLD`: Minimum RSS content length (default: 1500)
+- `CONTENT_FETCH_PARALLELISM`: Concurrent fetch operations (default: 10)
+
+### Feed Quality Management
+Automatic detection and handling of problematic feeds.
+
+**Quality Categories:**
+- **A-Grade Feeds:** Full content, reliable parsing (40% of feeds)
+- **B-Grade Feeds:** Summary only, requires content enhancement (50% of feeds)
+- **Failed Feeds:** 404 errors, parser incompatibility, SSRF violations (10% of feeds)
+
+**Behavior:** Failed feeds are automatically disabled (`IsActive = false`) to prevent repeated errors.
+
+### Crawl Resilience
+The system's ability to continue crawling even when individual articles fail.
+
+**Strategy:**
+- Process each source independently
+- Summarization errors for individual articles don't block other articles
+- Failed sources are logged but don't stop the entire crawl job
+- Partial success is acceptable (e.g., 24/32 feeds successful)
+
+### Deduplication
+The process of preventing duplicate articles based on URL.
+
+**Methods:**
+- `ExistsByURL(ctx, url)`: Single URL check
+- `ExistsByURLBatch(ctx, urls)`: Batch check to avoid N+1 problem
+
+**Strategy:** Check URL existence before insertion to maintain uniqueness constraint.
+
+---
+
+## Technical Components
+
+### Summarizer
+An interface for AI-powered text summarization.
+
+**Implementations:**
+- **Claude** (`ClaudeSummarizer`): Uses Anthropic Claude Sonnet 4.5 API
+- **OpenAI** (`OpenAISummarizer`): Uses OpenAI GPT-4o-mini API
+
+**Configuration:**
+- `SUMMARIZER_TYPE`: Select implementation (openai, claude)
+- `SUMMARIZER_CHAR_LIMIT`: Maximum summary length (default: 900, range: 100-5000)
+- API keys: `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`
+
+**Cost Comparison:**
+- OpenAI: ~200 JPY per 1,000 articles (development)
+- Claude: ~1,400 JPY per 1,000 articles (production quality)
+
+### ContentFetcher
+An interface for fetching full article content from URLs.
+
+**Implementation:**
+- `ReadabilityFetcher`: Uses go-readability (Mozilla Readability algorithm)
+
+**Security Features:**
+- SSRF prevention (blocks private IPs)
+- Size limits (max 10MB)
+- Timeout enforcement (default: 10s)
+- Redirect limits (max 5 redirects)
+
+**Errors:**
+- `ErrInvalidURL`: Invalid URL or unsupported scheme
+- `ErrPrivateIP`: SSRF prevention triggered
+- `ErrTooManyRedirects`: Redirect limit exceeded
+- `ErrBodyTooLarge`: Response size exceeded limit
+- `ErrTimeout`: Request timed out
+- `ErrReadabilityFailed`: Content extraction failed
+
+### FeedFetcher
+An interface for fetching and parsing RSS/Atom feeds.
+
+**Implementation:**
+- `RSSFetcher`: Uses gofeed library with circuit breaker and retry logic
+
+**Features:**
+- Supports both RSS and Atom formats
+- Automatic date parsing
+- Content prioritization (Content field preferred over Description)
+- User-Agent: "CatchUpFeedBot"
+
+### Notification Service
+A multi-channel notification system for new article alerts.
+
+**Architecture:**
+- Service layer (`usecase/notify/service.go`): Orchestrates notification dispatch
+- Channel abstraction (`usecase/notify/channel.go`): Interface for notification channels
+- Infrastructure implementations (`infra/notifier/`): Discord, Slack, Noop
+
+**Channels:**
+- **Discord**: Webhook-based notifications (enabled via `DISCORD_ENABLED`, `DISCORD_WEBHOOK_URL`)
+- **Slack**: Webhook-based notifications (enabled via `SLACK_ENABLED`, `SLACK_WEBHOOK_URL`)
+- **Noop**: No-op implementation for testing
+
+**Features:**
+- Goroutine pool for concurrency control (default: 10 concurrent notifications)
+- Per-channel circuit breakers (5 failures = 1 minute timeout)
+- Per-channel rate limiting (Discord: 2 req/s, Slack: 1 req/s)
+- Prometheus metrics for success rate, latency, circuit breaker state
+
+---
+
+## Reliability Patterns
+
+### Circuit Breaker
+A pattern that prevents cascading failures by temporarily stopping requests to a failing service.
+
+**Implementation:** Uses `sony/gobreaker` library
+
+**States:**
+- **Closed:** Normal operation, all requests pass through
+- **Open:** Service unavailable, requests fail immediately
+- **Half-Open:** Testing if service recovered, limited requests allowed
+
+**Configuration:**
+- `FailureThreshold`: Percentage of failures to open circuit (0.0-1.0)
+- `MinRequests`: Minimum requests before evaluating threshold
+- `Timeout`: Duration to keep circuit open before testing recovery
+- `MaxRequests`: Maximum test requests in half-open state
+
+**Usage:**
+- Database operations (`circuitbreaker/db.go`)
+- Claude API calls (`infra/summarizer/claude.go`)
+- Feed fetching (`infra/scraper/rss.go`)
+- Content fetching (`infra/fetcher/readability.go`)
+
+### Retry Logic
+Automatic retry with exponential backoff for transient failures.
+
+**Implementation:** `internal/resilience/retry/retry.go`
+
+**Configuration:**
+- `MaxRetries`: Maximum retry attempts
+- `InitialDelay`: Delay before first retry
+- `MaxDelay`: Maximum delay between retries
+- `Multiplier`: Backoff multiplier (default: 2.0)
+
+**Presets:**
+- `AIAPIConfig()`: For Claude/OpenAI API calls (3 retries, 1s initial delay)
+- `FeedFetchConfig()`: For RSS feed fetching (3 retries, 500ms initial delay)
+
+### Rate Limiting
+Restricts the number of requests within a time window to prevent abuse and resource exhaustion.
+
+**Types:**
+1. **IP-based Rate Limiting:** Limits requests per IP address
+2. **User-based Rate Limiting:** Limits requests per authenticated user with tier support
+3. **Endpoint-specific Rate Limiting:** Custom limits for specific endpoints (e.g., `/auth/token`, `/search`)
+
+**Algorithm:** Sliding window counter for accurate rate limiting
+
+**Tiers (User Rate Limiting):**
+- **Standard:** Default tier (100 req/min)
+- **Premium:** Enhanced tier (1000 req/min)
+- **Unlimited:** No rate limits
+
+**Configuration:**
+- `RATE_LIMIT_ENABLED`: Enable/disable rate limiting (default: true)
+- `RATE_LIMIT_IP_LIMIT`: Requests per IP per window (default: 1000)
+- `RATE_LIMIT_IP_WINDOW`: Time window for IP limiting (default: 1m)
+- `RATE_LIMIT_USER_LIMIT`: Requests per user per window (default: 100)
+- `RATE_LIMIT_USER_WINDOW`: Time window for user limiting (default: 1m)
+
+**Graceful Degradation:**
+- When circuit breaker opens, rate limits automatically relax (2x multiplier for relaxed mode, 10x for minimal mode)
+- Automatic recovery after cooldown period (default: 1 minute)
+
+### Pagination
+Efficient data retrieval using limit and offset for large result sets.
+
+**Configuration:**
+- `PAGINATION_DEFAULT_PAGE_SIZE`: Default page size (default: 20)
+- `PAGINATION_MAX_PAGE_SIZE`: Maximum allowed page size (default: 100)
+- `PAGINATION_MIN_PAGE_SIZE`: Minimum page size (default: 1)
+
+**Response Structure:**
+- `items`: Array of results
+- `meta.total`: Total number of items
+- `meta.page`: Current page number (1-indexed)
+- `meta.page_size`: Number of items per page
+- `meta.total_pages`: Total number of pages
+
+**Implementation:**
+- `ListWithSourcePaginated(ctx, offset, limit)`: Articles with pagination
+- `SearchWithFiltersPaginated(ctx, keywords, filters, offset, limit)`: Search with pagination
+
+---
+
+## Security Terms
+
+### SSRF (Server-Side Request Forgery)
+An attack where an attacker forces the server to make requests to unintended destinations.
+
+**Prevention:**
+- URL validation to block private IP addresses (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16)
+- Hostname validation before DNS resolution
+- Redirect target validation
+- Cloud metadata endpoint blocking (169.254.169.254)
+
+**Protected Operations:**
+- Content fetching from article URLs
+- Feed fetching from source URLs
+- Webhook URL validation (Discord, Slack)
+
+### JWT (JSON Web Token)
+A standard for securely transmitting information between parties as a JSON object.
+
+**Usage:** Authentication and authorization in API requests
+
+**Token Structure:**
+- **Header:** Algorithm (HS256) and token type
+- **Payload:** Subject (username), role, expiration time
+- **Signature:** HMAC-SHA256 signature using secret key
+
+**Configuration:**
+- `JWT_SECRET`: Secret key for signing tokens (minimum 32 characters)
+- Expiry: 24 hours (configurable via JWT config)
+
+**Security Requirements:**
+- Secret must be at least 32 characters (256 bits)
+- Weak secrets rejected (password, test, admin, secret, default)
+- Server fails to start with invalid JWT_SECRET
+
+### RBAC (Role-Based Access Control)
+Access control based on user roles.
+
+**Roles:**
+- **Admin:** Full access to all endpoints (create, read, update, delete)
+- **Viewer:** Read-only access to articles and sources (demo/monitoring use case)
+
+**Implementation:**
+- Role stored in JWT token payload
+- Endpoint-level authorization checks
+- Graceful degradation if viewer credentials misconfigured
+
+### Authentication Middleware
+HTTP middleware that validates JWT tokens and enforces authentication.
+
+**Protected Endpoints:** All endpoints except public endpoints
+
+**Public Endpoints (No Authentication Required):**
+- `/auth/token`: Token generation
+- `/health`, `/ready`, `/live`: Health checks
+- `/metrics`: Prometheus metrics
+- `/swagger/*`: API documentation
+
+**Behavior:**
+- Extracts JWT from `Authorization: Bearer <token>` header
+- Validates signature and expiration
+- Injects user context for downstream handlers
+- Returns 401 Unauthorized for invalid/missing tokens
+
+### Password Security
+Security measures for user password management.
+
+**Requirements (v2.0+):**
+- Minimum 12 characters
+- No weak password patterns (admin, password, 123456789012, qwertyuiop, etc.)
+- Bcrypt hashing with cost factor
+
+**Validation:**
+- Server startup validation prevents weak admin credentials
+- Viewer credentials validation with graceful degradation
+
+### CSP (Content Security Policy)
+HTTP security header that prevents XSS attacks by controlling resource loading.
+
+**Configuration:**
+- `CSP_ENABLED`: Enable/disable CSP headers (default: true)
+- `CSP_REPORT_ONLY`: Report violations without enforcement (default: false)
+
+**Policies:**
+- **Default Policy (Strict):** Blocks inline scripts, restricts resource origins
+- **Swagger UI Policy:** Relaxed policy for Swagger documentation (allows inline styles)
+
+**Implementation:** Path-specific policies via `CSPMiddleware`
+
+### CORS (Cross-Origin Resource Sharing)
+HTTP headers that allow web applications from different origins to access API resources.
+
+**Configuration:**
+- `CORS_ALLOWED_ORIGINS`: Comma-separated list of allowed origins (required)
+- `CORS_ALLOWED_METHODS`: Allowed HTTP methods (default: GET, POST, PUT, DELETE, OPTIONS)
+- `CORS_ALLOWED_HEADERS`: Allowed request headers (default: Authorization, Content-Type, X-Request-ID, X-Trace-ID)
+- `CORS_MAX_AGE`: Preflight cache duration in seconds (default: 3600)
+
+**Features:**
+- Origin validation (wildcard support with `*`)
+- Preflight request handling (OPTIONS method)
+- Credentials support configuration
+- Security logging for invalid origins
+
+### Trusted Proxy Configuration
+Configuration for extracting real client IP addresses when behind reverse proxies.
+
+**Configuration:**
+- `TRUSTED_PROXY_ENABLED`: Enable trusted proxy mode (default: false)
+- `TRUSTED_PROXY_ALLOWED_CIDRS`: Comma-separated CIDR ranges of trusted proxies
+
+**Headers Checked (Priority Order):**
+1. `X-Real-IP`: Single IP address
+2. `X-Forwarded-For`: Comma-separated IP chain (rightmost trusted IP used)
+3. `RemoteAddr`: Direct connection IP (fallback)
+
+**Security:**
+- Only enabled proxies can set client IP via headers
+- Untrusted proxies ignored (uses RemoteAddr instead)
+- Prevents IP spoofing attacks
+
+---
+
+## Observability Terms
+
+### Structured Logging
+Logging format where log entries are structured key-value pairs (JSON).
+
+**Implementation:** Uses Go's standard library `log/slog` package
+
+**Log Levels:**
+- `DEBUG`: Detailed diagnostic information
+- `INFO`: General informational messages
+- `WARN`: Warning messages (non-critical issues)
+- `ERROR`: Error messages (critical issues)
+
+**Configuration:**
+- `LOG_LEVEL`: Set log level (debug, info, warn, error) (default: info)
+
+**Features:**
+- JSON output for machine parsing
+- Context propagation via `request_id`
+- Source location tracking (file, line) for error/warn levels
+
+### Request Tracing
+Tracking requests across system components using unique identifiers.
+
+**Request ID:**
+- Generated for each HTTP request
+- Format: UUID v4
+- Propagated through context
+- Included in all log entries
+
+**Headers:**
+- `X-Request-ID`: Request identifier for tracing
+- `X-Trace-ID`: Distributed tracing identifier (also allowed via CORS)
+
+**Usage:** Enables end-to-end request tracking for debugging and monitoring.
+
+### Prometheus Metrics
+Time-series metrics exposed for monitoring and alerting.
+
+**Metric Types:**
+- **Counter:** Monotonically increasing value (e.g., `http_requests_total`)
+- **Gauge:** Current value that can go up or down (e.g., `articles_total`)
+- **Histogram:** Distribution of values with bucketing (e.g., `http_request_duration_seconds`)
+
+**Business Metrics:**
+- `articles_fetched_total`: Articles fetched per source
+- `articles_summarized_total`: Summarization success/failure count
+- `summarization_duration_seconds`: AI summarization latency
+- `feed_crawl_duration_seconds`: Feed crawl duration per source
+- `content_fetch_attempts_total`: Content fetch success/failure/skipped count
+- `content_fetch_duration_seconds`: Content fetch latency
+- `content_fetch_size_bytes`: Fetched content size distribution
+
+**Notification Metrics:**
+- `notification_sent_total`: Notifications sent per channel (success/failure)
+- `notification_duration_seconds`: Notification latency histogram
+- `notification_rate_limit_hit_total`: Rate limit hits per channel
+- `notification_circuit_breaker_open_total`: Circuit breaker open events
+- `notification_dropped_total`: Dropped notifications (pool_full, circuit_open)
+- `notification_active_goroutines`: Active notification goroutines
+- `notification_channels_enabled`: Number of enabled notification channels
+
+**Infrastructure Metrics:**
+- `http_requests_total`: HTTP request count by method, path, status
+- `http_request_duration_seconds`: HTTP request latency histogram
+- `db_query_duration_seconds`: Database query latency
+- `db_connections_active`: Active database connections
+- `db_connections_idle`: Idle database connections
+
+**Rate Limiting Metrics:**
+- `rate_limit_requests_total`: Rate limit checks (allowed/rejected)
+- `rate_limit_store_size`: Number of tracked IPs/users
+- `rate_limit_store_evictions_total`: Evicted entries from store
+- `rate_limit_circuit_breaker_state`: Circuit breaker state (0=closed, 1=open, 2=half-open)
+- `rate_limit_degradation_active`: Whether degradation mode is active
+
+**Endpoints:**
+- API Server: `http://localhost:8080/metrics`
+- Worker: `http://localhost:9090/metrics`
+
+### Health Checks
+Endpoints for monitoring service health and readiness.
+
+**Types:**
+1. **Liveness Probe** (`/live`): Checks if service is running
+2. **Readiness Probe** (`/ready`): Checks if service can handle requests
+3. **General Health** (`/health`): Checks overall health including dependencies
+
+**Health Check Components:**
+- Database connectivity
+- Cron scheduler status (worker only)
+- API version information
+
+**Usage:** Kubernetes/Docker orchestration, monitoring systems
+
+### SLO (Service Level Objective)
+Target metrics for service reliability and performance.
+
+**Targets:**
+- **Availability:** 99.9% uptime (43 minutes downtime per month)
+- **Latency P95:** 200ms (95th percentile)
+- **Latency P99:** 500ms (99th percentile)
+- **Error Rate:** 0.1% maximum (0.001 ratio)
+
+**Metrics:**
+- `slo_availability_ratio`: Current availability (0-1)
+- `slo_latency_p95_seconds`: Current p95 latency
+- `slo_latency_p99_seconds`: Current p99 latency
+- `slo_error_rate_ratio`: Current error rate (0-1)
+
+**Calculation:** Updated periodically based on recent measurements (5-minute window recommended)
+
+---
+
+## API and Integration Terms
+
+### REST API
+Representational State Transfer API for HTTP-based client-server communication.
+
+**Base URL:** `http://localhost:8080`
+
+**Versioning:** Currently v1.0 (no version prefix in URL)
+
+**Response Format:** JSON
+
+**Error Format:**
+```json
+{
+  "error": "error message",
+  "details": "additional context (optional)"
+}
+```
+
+### Swagger UI
+Interactive API documentation and testing interface.
+
+**URL:** `http://localhost:8080/swagger/index.html`
+
+**Generation:** Uses `swaggo/swag` annotations in Go code
+
+**Command:** `swag init -g cmd/api/main.go -o docs/swagger`
+
+### Webhook
+HTTP callback mechanism for real-time notifications.
+
+**Supported Platforms:**
+- **Discord:** Webhook URL format: `https://discord.com/api/webhooks/{id}/{token}`
+- **Slack:** Webhook URL format: `https://hooks.slack.com/services/{T}/{B}/{X}`
+
+**Security:**
+- HTTPS required
+- URL validation (host, path format)
+- Timeout enforcement (30 seconds)
+- Rate limiting (per-channel)
+
+### gofeed
+Go library for parsing RSS and Atom feeds.
+
+**Features:**
+- Auto-detects feed format (RSS 1.0, RSS 2.0, Atom)
+- Parses dates automatically
+- Extracts title, link, description, content, published date
+
+**Usage:** Core library for feed parsing in `RSSFetcher`
+
+### Mozilla Readability
+Algorithm for extracting article content from web pages.
+
+**Implementation:** `go-shiori/go-readability` (Go port)
+
+**Process:**
+1. Parse HTML using goquery
+2. Identify article content using heuristics
+3. Remove navigation, ads, sidebars
+4. Extract clean text
+
+**Usage:** Content enhancement in `ReadabilityFetcher`
+
+---
+
+## Acronyms and Abbreviations
+
+### AI
+Artificial Intelligence. Refers to Claude (Anthropic) or GPT (OpenAI) APIs used for article summarization.
+
+### API
+Application Programming Interface. HTTP-based REST API for accessing articles and sources.
+
+### CIDR
+Classless Inter-Domain Routing. IP address range notation (e.g., 192.168.0.0/16) used for trusted proxy configuration.
+
+### CORS
+Cross-Origin Resource Sharing. HTTP headers for allowing cross-origin requests.
+
+### CRUD
+Create, Read, Update, Delete. Basic database operations.
+
+### CSP
+Content Security Policy. HTTP security header to prevent XSS attacks.
+
+### DB
+Database. Refers to PostgreSQL 16 (production) or SQLite (testing).
+
+### DIP
+Dependency Inversion Principle. High-level modules depend on abstractions rather than concrete implementations.
+
+### DoS
+Denial of Service. Attack that exhausts server resources. Prevented by timeouts, size limits, rate limiting.
+
+### EDAF
+Enterprise Development Automation Framework. Claude Code agent system with 4-phase gate system (v1.0).
+
+### HTTP
+Hypertext Transfer Protocol. Protocol for web communication.
+
+### HTTPS
+HTTP Secure. Encrypted version of HTTP using TLS.
+
+### JWT
+JSON Web Token. Authentication token format.
+
+### N+1 Problem
+Database performance issue where N queries are executed in a loop instead of a single batch query. Solved by `ExistsByURLBatch`.
+
+### ORM
+Object-Relational Mapping. Not used in this project (uses raw SQL for performance and control).
+
+### P95 / P99
+95th percentile / 99th percentile. Latency metrics excluding outliers (top 5% or 1%).
+
+### RBAC
+Role-Based Access Control. Authorization based on user roles (admin, viewer).
+
+### RSS
+Really Simple Syndication. XML format for web feed content.
+
+### SLO
+Service Level Objective. Target metrics for reliability (availability, latency, error rate).
+
+### SQL
+Structured Query Language. Database query language.
+
+### SSRF
+Server-Side Request Forgery. Attack where server makes unintended requests. Prevented by URL validation and private IP blocking.
+
+### TLS
+Transport Layer Security. Cryptographic protocol for secure communication (minimum TLS 1.2).
+
+### URL
+Uniform Resource Locator. Web address for resources.
+
+### UUID
+Universally Unique Identifier. 128-bit identifier (v4 variant used for request IDs).
+
+### XSS
+Cross-Site Scripting. Web vulnerability where malicious scripts are injected. Prevented by CSP headers.
+
+---
+
+## Usage Patterns
+
+### Context Propagation
+Passing context through application layers.
+
+**Pattern:**
+```go
+func Handler(ctx context.Context, req Request) (Response, error) {
+    // Extract request ID from context
+    reqID := requestid.FromContext(ctx)
+
+    // Pass context to use case
+    result, err := useCase.Execute(ctx, req)
+
+    return result, err
+}
+```
+
+**Purpose:** Enables request tracing, cancellation, and timeout propagation.
+
+### Error Wrapping
+Adding context to errors while preserving the original error.
+
+**Pattern:**
+```go
+if err != nil {
+    return fmt.Errorf("failed to create article: %w", err)
+}
+```
+
+**Purpose:** Provides error context for debugging while allowing error type checking with `errors.Is()` and `errors.As()`.
+
+### Sentinel Errors
+Predefined error values for common error conditions.
+
+**Examples:**
+- `entity.ErrNotFound`: Entity not found in database
+- `entity.ErrInvalidInput`: Invalid input validation
+- `entity.ErrValidationFailed`: Domain validation failed
+- `fetch.ErrInvalidURL`: Invalid URL format
+- `fetch.ErrPrivateIP`: SSRF prevention triggered
+
+**Usage:** Enables error type checking: `errors.Is(err, entity.ErrNotFound)`
+
+### Table-Driven Tests
+Go testing pattern using a slice of test cases.
+
+**Pattern:**
+```go
+tests := []struct {
+    name    string
+    input   Input
+    want    Output
+    wantErr bool
+}{
+    {name: "valid input", input: Input{}, want: Output{}, wantErr: false},
+    {name: "invalid input", input: Input{}, want: Output{}, wantErr: true},
+}
+
+for _, tt := range tests {
+    t.Run(tt.name, func(t *testing.T) {
+        // Test logic
+    })
+}
+```
+
+**Purpose:** Readable test organization with clear test case definitions.
+
+---
+
+## Configuration Terms
+
+### Environment Variables
+Configuration values loaded from environment at runtime.
+
+**Categories:**
+1. **Database:** `DATABASE_URL`
+2. **Security:** `JWT_SECRET`, `ADMIN_USER`, `ADMIN_USER_PASSWORD`
+3. **AI Services:** `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `SUMMARIZER_TYPE`, `SUMMARIZER_CHAR_LIMIT`
+4. **Worker:** `CRON_SCHEDULE`, `METRICS_PORT`
+5. **Notifications:** `DISCORD_ENABLED`, `DISCORD_WEBHOOK_URL`, `SLACK_ENABLED`, `SLACK_WEBHOOK_URL`, `NOTIFY_MAX_CONCURRENT`
+6. **Content Fetching:** `CONTENT_FETCH_ENABLED`, `CONTENT_FETCH_THRESHOLD`, `CONTENT_FETCH_TIMEOUT`, `CONTENT_FETCH_PARALLELISM`
+7. **CORS:** `CORS_ALLOWED_ORIGINS`, `CORS_ALLOWED_METHODS`, `CORS_ALLOWED_HEADERS`, `CORS_MAX_AGE`
+8. **Rate Limiting:** `RATE_LIMIT_ENABLED`, `RATE_LIMIT_IP_LIMIT`, `RATE_LIMIT_IP_WINDOW`, `RATE_LIMIT_USER_LIMIT`, `RATE_LIMIT_USER_WINDOW`
+9. **Pagination:** `PAGINATION_DEFAULT_PAGE_SIZE`, `PAGINATION_MAX_PAGE_SIZE`, `PAGINATION_MIN_PAGE_SIZE`
+10. **Logging:** `LOG_LEVEL`
+
+### Fail-Open Strategy
+Configuration loading strategy that allows application to start with default values if configuration is invalid.
+
+**Behavior:**
+- Invalid configuration values fall back to defaults
+- Warnings logged for invalid values
+- Application continues to run
+- Prevents deployment failures due to misconfiguration
+
+**Examples:**
+- Invalid `SUMMARIZER_CHAR_LIMIT` → defaults to 900
+- Missing `CONTENT_FETCH_PARALLELISM` → defaults to 10
+- Invalid `CRON_SCHEDULE` → startup failure (critical config)
+
+---
+
+**Last Updated:** 2026-01-09
+**Version:** 2.0.0
+**Maintainer:** catchup-feed development team
+
+---
+
+## Notes for Contributors
+
+When adding new terms to this glossary:
+
+1. **Extract from Code:** Ensure definitions match actual implementation
+2. **Provide Context:** Include usage examples and related terms
+3. **Be Specific:** Use concrete examples from the codebase
+4. **Keep Updated:** Update glossary when domain terminology changes
+5. **Cross-Reference:** Link related terms within the glossary
+
+For questions or clarifications, refer to:
+- [README.md](/Users/yujitsuchiya/catchup-feed-backend/README.md): Project overview and setup
+- [CHANGELOG.md](/Users/yujitsuchiya/catchup-feed-backend/CHANGELOG.md): Version history and changes
+- Source code documentation in `internal/` packages
