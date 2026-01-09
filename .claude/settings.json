@@ -1,38 +1,30 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cat:*)",
-      "mcp__chrome-devtools__list_pages",
-      "mcp__chrome-devtools__navigate_page",
-      "mcp__chrome-devtools__take_snapshot",
-      "mcp__chrome-devtools__fill",
-      "mcp__chrome-devtools__click",
       "Bash(docker compose exec:*)",
-      "Bash(docker-compose exec:*)",
-      "Bash(go test:*)",
-      "Bash(grep:*)",
-      "Bash(ls:*)",
-      "Bash(CI=true go test:*)",
-      "Bash(golangci-lint run:*)"
+      "Bash(docker-compose exec:*)"
     ],
     "deny": [
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(rm -rf:*)",
+      "Bash(git push --force:*)"
     ],
     "ask": []
   },
-  "enableAllProjectMcpServers": true,
-  "enabledMcpjsonServers": [
-    "chrome-devtools"
-  ],
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "excludedCommands": ["git push", "rm -rf", "docker rm"]
+  },
   "hooks": {
-    "Notification": [
+    "PermissionRequest": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/yujitsuchiya/catchup-feed/.claude/scripts/notification.sh 'Input needed' WarblerSong"
+            "command": "$PWD/.claude/scripts/notification.sh 'Input needed' WarblerSong"
           }
         ]
       }
@@ -42,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/yujitsuchiya/catchup-feed/.claude/scripts/notification.sh 'Task completed' CatMeow"
+            "command": "$PWD/.claude/scripts/notification.sh 'Task completed' CatMeow"
           }
         ]
       }

@@ -1,7 +1,3 @@
----
-description: EDAF v1.0 Configuration and Language Preferences
----
-
 # EDAF v1.0 - Claude Code Configuration
 
 ## Language Preferences
@@ -17,289 +13,114 @@ Do not edit manually - run `/setup` again to change preferences.
 
 ---
 
-## EDAF 4-Phase Gate System - IMPORTANT
+## EDAF 7-Phase Gate System
 
-**When the user requests to implement a feature using "エージェントフロー" (agent flow) or "EDAF", you MUST follow this exact workflow:**
+**When implementing features, fixing bugs, or making changes, automatically follow this workflow:**
 
-### Phase 1: Design Gate
-1. Launch `designer` agent via Task tool
-2. Designer creates design document in `docs/designs/{feature-slug}.md`
-3. Launch ALL 7 design evaluators in parallel via Task tool:
-   - design-consistency-evaluator
-   - design-extensibility-evaluator
-   - design-goal-alignment-evaluator
-   - design-maintainability-evaluator
-   - design-observability-evaluator
-   - design-reliability-evaluator
-   - design-reusability-evaluator
-4. Review evaluation results
-5. If evaluators request changes, ask designer to revise
-6. Repeat until all evaluators approve (≥ 7.0/10.0)
+> Triggered by natural language requests for implementation work (no need to say "EDAF")
+> Detailed workflows: `.claude/skills/edaf-orchestration/PHASE{1-7}-*.md`
 
-### Phase 2: Planning Gate
-1. Launch `planner` agent via Task tool
-2. Planner creates task plan in `docs/plans/{feature-slug}-tasks.md`
-3. Launch ALL 7 planner evaluators in parallel via Task tool:
-   - planner-clarity-evaluator
-   - planner-deliverable-structure-evaluator
-   - planner-dependency-evaluator
-   - planner-goal-alignment-evaluator
-   - planner-granularity-evaluator
-   - planner-responsibility-alignment-evaluator
-   - planner-reusability-evaluator
-4. Review evaluation results
-5. If evaluators request changes, ask planner to revise
-6. Repeat until all evaluators approve (≥ 7.0/10.0)
+### Quick Reference
 
-### Phase 2.5: Implementation
-1. Launch appropriate worker agents via Task tool based on task plan:
-   - database-worker-v1-self-adapting (for database models)
-   - backend-worker-v1-self-adapting (for backend logic)
-   - frontend-worker-v1-self-adapting (for UI components)
-   - test-worker-v1-self-adapting (for tests)
-2. Workers implement code according to task plan
+| Phase | Agent | Evaluators | Pass Criteria |
+|-------|-------|------------|---------------|
+| 1. Requirements | requirements-gatherer | 7 | All >= 8.0/10 |
+| 2. Design | designer | 7 | All >= 8.0/10 |
+| 3. Planning | planner | 7 | All >= 8.0/10 |
+| 4. Implementation | 4 workers | 1 quality-gate | 10.0 (lint+tests) |
+| 5. Code Review | - | 7 + UI | All >= 8.0/10 |
+| 6. Documentation | documentation-worker | 5 | All >= 8.0/10 |
+| 7. Deployment | - | 5 | All >= 8.0/10 |
 
-### Phase 3: Code Review Gate
-1. Launch ALL 7 code evaluators in parallel via Task tool:
-   - code-quality-evaluator-v1-self-adapting
-   - code-testing-evaluator-v1-self-adapting
-   - code-security-evaluator-v1-self-adapting
-   - code-documentation-evaluator-v1-self-adapting
-   - code-maintainability-evaluator-v1-self-adapting
-   - code-performance-evaluator-v1-self-adapting
-   - code-implementation-alignment-evaluator-v1-self-adapting
-2. Review evaluation results
-3. **If frontend files were modified (views, components, CSS, JavaScript):**
-   - **MANDATORY: Always ask user for login information:**
-     - Use AskUserQuestion tool: "Do the modified pages require login to view?"
-     - If YES, collect:
-       - Login URL (e.g., http://localhost:3000/login)
-       - Email/Username
-       - Password
-     - Confirm development server is running
-     - If NO, proceed without login
-   - **MANDATORY: Create screenshot directory:**
-     - Create directory: `docs/screenshots/{feature-name}/`
-     - Example: `docs/screenshots/user-authentication/`
-     - All screenshots will be saved in this directory
-   - **MANDATORY: Use MCP chrome-devtools for UI/UX verification:**
-     - Prerequisites verification:
-       - Confirm development server is running (from user response above)
-       - Identify all URLs to verify from design document
-     - **Step 1: Setup and Authentication (if needed)**
-       - `mcp__chrome-devtools__list_pages` - List available browser tabs
-       - `mcp__chrome-devtools__navigate_page` - Navigate to login page (if required)
-       - `mcp__chrome-devtools__fill` - Fill login credentials (if required)
-       - `mcp__chrome-devtools__click` - Click login button (if required)
-       - Verify successful login
-     - **Step 2: Page-by-Page Verification (MANDATORY - DO NOT SKIP)**
-       - For EACH modified page or component:
-         1. `mcp__chrome-devtools__navigate_page` - Navigate to the page
-         2. **`mcp__chrome-devtools__take_snapshot` - MANDATORY: Capture screenshot**
-            - Save to: `docs/screenshots/{feature-name}/{page-name}.png`
-            - Example: `docs/screenshots/user-authentication/login-page.png`
-         3. Compare screenshot with design document specifications
-         4. Check for visual inconsistencies (layout, colors, fonts, spacing)
-         5. Document findings with screenshot reference (use relative path)
-     - **Step 3: Interactive Element Testing**
-       - For forms: `mcp__chrome-devtools__fill` - Test with sample data
-       - For buttons/links: `mcp__chrome-devtools__click` - Test interactions
-       - **`mcp__chrome-devtools__take_snapshot` - MANDATORY: Capture after each interaction**
-         - Save to: `docs/screenshots/{feature-name}/{page-name}-{action}.png`
-         - Example: `docs/screenshots/user-authentication/login-page-submitted.png`
-       - Verify expected behaviors (validation, submission, navigation)
-     - **Step 4: Console and Performance Check**
-       - Check browser console for errors/warnings
-       - Note any performance issues
-     - **Step 5: Documentation (MANDATORY)**
-       - Create review section with ALL screenshots included
-       - Use relative paths: `![Screenshot](../screenshots/{feature-name}/{page-name}.png)`
-       - List findings for each page/component
-       - Compare actual vs expected behavior
-       - **CRITICAL: Review MUST include at least one screenshot per modified page**
-       - **Directory structure example:**
-         ```
-         docs/
-         ├── reviews/{feature-name}-review.md
-         └── screenshots/{feature-name}/
-             ├── login-page.png
-             ├── login-page-submitted.png
-             ├── dashboard.png
-             └── profile-page.png
-         ```
-4. If evaluators find issues OR UI verification fails, fix them
-5. Repeat until all evaluators approve (≥ 7.0/10.0) AND UI verification passes
+---
 
-### Phase 4: Deployment Gate (Optional)
-1. Launch ALL 5 deployment evaluators in parallel via Task tool:
-   - deployment-readiness-evaluator
-   - production-security-evaluator
-   - observability-evaluator
-   - performance-benchmark-evaluator
-   - rollback-plan-evaluator
-2. Review evaluation results
-3. If evaluators find issues, fix them
-4. Repeat until all evaluators approve (≥ 7.0/10.0)
+### EDAF Execution Pattern
 
-**CRITICAL RULES:**
-- NEVER skip phases
-- NEVER launch evaluators directly - always use Task tool with subagent_type
-- ALWAYS launch all evaluators in each phase in parallel
-- ALWAYS wait for ALL evaluators to approve before proceeding to next phase
+**For each phase**:
 
-**NOTE:** Notification sounds will play automatically when each Task completes (configured via `.claude/settings.json` hooks)
+1. **Execute** -> Run agent/worker to generate artifact
+2. **Evaluate** -> Run ALL evaluators in parallel (use Task tool)
+3. **Check** results:
+   - **ALL pass (>= threshold)** -> Proceed to next phase
+   - **ANY fail (< threshold)** -> Feedback loop:
+     1. Read evaluator reports for specific feedback
+     2. Revise artifact based on feedback
+     3. Re-run ALL evaluators (not just failed ones)
+     4. Repeat until ALL pass (unlimited iterations)
+
+**This feedback loop is EDAF's core quality mechanism.**
+
+**Artifacts by Phase**:
+- Phase 1: `.steering/{date}-{feature}/idea.md` (requirements)
+- Phase 2: `.steering/{date}-{feature}/design.md` (technical design)
+- Phase 3: `.steering/{date}-{feature}/tasks.md` (task plan)
+- Phase 4: Source code (implementation)
+- Phase 5: `.steering/{date}-{feature}/reports/` (evaluation reports)
+- Phase 6: `docs/` (permanent documentation updates)
+- Phase 7: Deployment configs
+
+**Permanent Documentation** (`docs/`):
+- `product-requirements.md`, `functional-design.md`, `development-guidelines.md`
+- `repository-structure.md`, `architecture.md`, `glossary.md`
+
+---
+
+## Critical Rules
+
+1. **NEVER skip phases**
+2. **ALWAYS run evaluators in parallel** (use Task tool)
+3. **ALWAYS iterate until ALL evaluators pass** (no exceptions)
+4. **IF any evaluator fails**:
+   - Read evaluator report for specific feedback
+   - Revise artifact based on feedback
+   - Re-run ALL evaluators (not just failed ones)
+   - Repeat until ALL pass (unlimited iterations)
+5. **Phase 1 is mandatory** for new features (requirements gathering)
+6. **Phase 4 quality-gate is ultra-strict** (10.0 = zero lint errors/warnings + all tests pass)
+7. **UI verification required** if frontend modified (Phase 5)
+
+---
+
+## Component Discovery
+
+**All components are auto-discovered from file system. No manual listing needed.**
+
+**Locations**:
+- **Agents**: `.claude/agents/*.md` + `.claude/agents/workers/*.md`
+- **Evaluators**: `.claude/agents/evaluators/phase{1-7}-*/*.md`
+- **Skills**: `.claude/skills/*/SKILL.md` (coding standards, workflows)
+- **Commands**: `.claude/commands/*.md` (e.g., `/review-standards`)
+- **Config**: `.claude/edaf-config.yml`, `.claude/agent-models.yml`
+
+**Component Count**:
+- 9 Agents (requirements-gatherer, designer, planner, 4 workers, documentation-worker, ui-verification-worker)
+- 39 Evaluators (7 per phase for phases 1-3,5,6; 1 for phase 4; 5 for phase 7)
+- Total: 48 components
 
 ---
 
 ## Instructions for Claude Code
 
-When working with EDAF Workers and Evaluators, please follow these rules:
+### Terminal Output Language
+Respond in **JAPANESE** for all output.
 
-### 1. Terminal Output Language
+### Documentation Language
+Generate documentation in **ENGLISH**.
 
-**Respond to the user in JAPANESE for all terminal output, messages, and explanations.**
+### Agent Behavior
+- **Workers**: Follow project coding standards in `.claude/skills/`
+- **Evaluators**: Output in terminal language, generate reports in documentation language
+- **All agents**: Read detailed phase instructions in `.claude/skills/edaf-orchestration/`
 
-Examples:
-- "✅ データベースモデルを作成しました"
-- "📋 コード品質評価を開始します"
-- "❌ エラー: ファイルが見つかりません"
+### Docker Execution
+Commands should be executed via: `docker compose exec dev`
+- Compose file: compose.yml
+- Main service: dev
 
-### 2. Documentation Language
-
-**Generate ALL documentation in ENGLISH.**
-
-When creating markdown files, API documentation, README files, or code comments:
-- Write in English
-- Use standard English technical terms
-- Provide English examples
-
-Example:
-```markdown
-# User Model
-
-## Overview
-
-This model manages user information.
-
-## Fields
-
-- `email`: Email address (required)
-- `password`: Password (hashed)
-```
-
----
-
-## Docker Configuration
-
-**Commands will be executed inside Docker containers.**
-
-- **Compose File**: compose.yml
-- **Main Service**: app
-- **Command Prefix**: docker compose exec app
-
-When running commands, always use:
-```bash
-docker compose exec app <command>
-```
-
-Example:
-```bash
-# Run tests
-docker compose exec app go test ./...
-
-# Run linter
-docker compose exec app golangci-lint run
-```
-
----
-
-## Notification System
-
-EDAF includes a sound notification system to alert you when tasks complete or errors occur.
-
-### Automatic Notifications (via Hooks)
-
-**Notifications play automatically** when any Task completes, thanks to Claude Code hooks configured in `.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "tool-result": {
-      "Task": "bash .claude/scripts/notification.sh 'Task completed' WarblerSong"
-    }
-  }
-}
-```
-
-**What happens automatically:**
-- When Designer completes → WarblerSong plays (3 times, 1.8s intervals)
-- When Planner completes → WarblerSong plays
-- When any Worker completes → WarblerSong plays
-- When any Evaluator completes → WarblerSong plays
-
-**No manual action required!** The notification system is fully automated.
-
-### Manual Notifications (Optional)
-
-You can also play notifications manually if needed:
-
-```bash
-bash .claude/scripts/notification.sh "Custom message" WarblerSong
-```
-
-**Available Sounds:**
-- `WarblerSong` - Pleasant bird song (for task completion)
-- `CatMeow` - Cat meow (for errors or attention needed)
-- `Glass` - System glass sound (macOS only)
-
-**Configuration:**
-- Hook settings: `.claude/settings.json`
-- Sound files: `.claude/sounds/`
-- Notification script: `.claude/scripts/notification.sh`
-- Playback: 3 times with 1.8 second intervals
-
----
-
-## Worker-Specific Instructions
-
-### Database Worker
-
-When generating database models:
-- Follow the documentation language setting above
-- Use appropriate naming conventions for the target language
-- Generate migration files with proper comments
-
-### Backend Worker
-
-When generating backend code:
-- Follow the documentation language setting above
-- Generate API documentation in the specified language
-- Use proper error messages in the terminal output language
-
-### Frontend Worker
-
-When generating frontend components:
-- Follow the documentation language setting above
-- Generate component documentation in the specified language
-- Use proper UI text in the terminal output language
-
-### Test Worker
-
-When generating tests:
-- Follow the documentation language setting above
-- Write test descriptions in the specified language
-- Use proper assertion messages in the terminal output language
-
----
-
-## Evaluator-Specific Instructions
-
-All evaluators should:
-- Output evaluation results in the terminal output language
-- Generate reports in the documentation language
-- Use proper scoring explanations in the terminal output language
+### Setup
+For initial project setup, see README.md for `/setup` command instructions.
 
 ---
 
 **Last Updated**: Auto-generated by `/setup` command
-**Configuration File**: `.claude/edaf-config.yml`
+**Configuration**: `.claude/edaf-config.yml`

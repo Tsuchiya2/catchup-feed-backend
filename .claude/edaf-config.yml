@@ -2,8 +2,18 @@ language_preferences:
   documentation_language: en
   terminal_output_language: ja
   save_dual_language_docs: false
+
 docker:
   enabled: true
   compose_file: compose.yml
-  main_service: app
-  exec_prefix: docker compose exec app
+  main_service: dev
+  exec_prefix: docker compose exec dev
+
+project:
+  type: go
+  name: catchup-feed
+  language: Go
+  frameworks:
+    - pgx
+    - OpenTelemetry
+    - Prometheus
