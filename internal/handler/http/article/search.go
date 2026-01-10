@@ -30,7 +30,8 @@ type SearchHandler struct{ Svc artUC.Service }
 // @Failure      401 {string} string "Authentication required"
 // @Failure      429 {string} string "Too many requests - rate limit exceeded" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer,Retry-After=integer)
 // @Failure      500 {string} string "Server error"
-// @Router       /articles/search [get]
+// Note: This handler is deprecated. SearchPaginatedHandler is used in production.
+// Router annotation removed to avoid Swagger duplicate route warning.
 func (h SearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Parse keyword parameter (required)
 	kw := r.URL.Query().Get("keyword")
