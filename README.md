@@ -4,6 +4,22 @@
 
 ---
 
+## 📸 スクリーンショット
+
+### 通知機能
+
+| Discord | Slack |
+|:-------:|:-----:|
+| ![Discord通知](docs/images/screenshots/discord-notification.webp) | ![Slack通知](docs/images/screenshots/slack-notification.webp) |
+
+### Web UI（[catchup-feed-frontend](https://github.com/Tsuchiya2/catchup-feed-frontend)）
+
+| 記事一覧 | 記事詳細 | ソース一覧 |
+|:-------:|:-------:|:---------:|
+| ![記事一覧](docs/images/screenshots/articles-list.webp) | ![記事詳細](docs/images/screenshots/article-detail.webp) | ![ソース一覧](docs/images/screenshots/sources.webp) |
+
+---
+
 ## 📋 プロジェクト概要
 
 **catchup-feed** は、RSS/Atomフィードから記事を自動収集し、Claude/OpenAI APIを使用してAI要約を生成、REST APIで提供するバックエンドシステムです。
