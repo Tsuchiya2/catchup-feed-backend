@@ -1,6 +1,6 @@
 # catchup-feed
 
-**RSS/Atomフィードを自動クロールし、AIで要約を生成するバックエンドシステム**
+> RSS/Atomフィードを自動クロールし、AIで要約を生成するバックエンドシステム
 
 ---
 
@@ -54,7 +54,7 @@
 
 ### クリーンアーキテクチャ
 
-```
+```text
 ┌────────────────────────────────┐
 │ プレゼンテーション層            │ ← cmd/api, internal/handler/http
 │ （HTTPハンドラー）              │
@@ -83,7 +83,7 @@
 
 ## 📁 ディレクトリ構成
 
-```
+```text
 catchup-feed/
 ├── cmd/
 │   ├── api/                  # APIサーバー（ポート8080）
@@ -153,7 +153,7 @@ RSSフィードの内容が不十分な場合（要約のみの記事など）�
 
 拡張可能な設計の通知システムを実装しています。
 
-```
+```text
 ┌─────────────────────────────────────────┐
 │ 通知サービス                             │
 │   ├─ ゴルーチンプール（同時実行数制御）    │
@@ -210,10 +210,10 @@ golangci-lint run
 
 | サービス | URL | 説明 |
 |---------|-----|------|
-| API | http://localhost:8080 | REST API |
-| Swagger UI | http://localhost:8080/swagger/index.html | APIドキュメント |
-| Prometheus | http://localhost:9090 | メトリクス |
-| Grafana | http://localhost:3000 | ダッシュボード |
+| API | <http://localhost:8080> | REST API |
+| Swagger UI | <http://localhost:8080/swagger/index.html> | APIドキュメント |
+| Prometheus | <http://localhost:9090> | メトリクス |
+| Grafana | <http://localhost:3000> | ダッシュボード |
 
 ---
 
@@ -304,7 +304,7 @@ if err != nil {
 
 ### インフラ構成
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                         catchup-feed.com                                │
 │                      (Cloudflare DNS Zone)                              │
