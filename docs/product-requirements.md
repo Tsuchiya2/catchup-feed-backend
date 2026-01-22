@@ -1469,7 +1469,7 @@ Acceptance Criteria:
 ### 6.1 Technology Stack
 
 - **Language**: Go 1.25.4
-- **Database**: PostgreSQL 16+ (primary), SQLite (testing)
+- **Database**: PostgreSQL 18+ (primary), SQLite (testing)
 - **HTTP Router**: Standard `net/http`
 - **Authentication**: JWT (golang-jwt/jwt/v5)
 - **Feed Parsing**: mmcdole/gofeed

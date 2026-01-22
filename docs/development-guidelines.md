@@ -44,7 +44,7 @@ catchup-feed is a Go-based RSS/Atom feed aggregation system with AI-powered summ
 
 ### Core
 - **Language**: Go 1.25.4+
-- **Database**: PostgreSQL 16+ (production), SQLite (testing)
+- **Database**: PostgreSQL 18+ (production), SQLite (testing)
 - **HTTP Router**: Standard `net/http` package
 - **Authentication**: JWT (golang-jwt/jwt/v5)
 
@@ -1160,7 +1160,7 @@ golangci-lint run
 
 ### Docker Compose Services
 
-- `postgres` - Database (PostgreSQL 16)
+- `postgres` - Database (PostgreSQL 18)
 - `dev` - Development container (Go 1.25.4 + tools)
 - `app` - API server (port 8080)
 - `worker` - Background worker
