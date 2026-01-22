@@ -43,7 +43,7 @@ catchup-feed is a RSS/Atom feed aggregator with AI-powered summarization capabil
 - **Language**: Go 1.25.4
 - **Architecture**: Clean Architecture (Hexagonal/Ports & Adapters)
 - **Deployment**: Docker containers with docker-compose
-- **Database**: PostgreSQL 16 (production), SQLite (testing)
+- **Database**: PostgreSQL 18 (production), SQLite (testing)
 - **Concurrency**: Go goroutines with semaphore-based parallelism control
 - **Observability**: Prometheus metrics, structured logging (slog)
 
@@ -183,7 +183,7 @@ Dependency Direction: Presentation → UseCase → Domain ← Infrastructure
 | Category | Technology | Version | Purpose |
 |----------|-----------|---------|---------|
 | **Language** | Go | 1.25.4 | Primary programming language |
-| **Database** | PostgreSQL | 16 | Primary data store |
+| **Database** | PostgreSQL | 18 | Primary data store |
 | **Database (Test)** | SQLite | 3.x | In-memory testing |
 | **HTTP Framework** | net/http | stdlib | HTTP server (no framework) |
 | **AI Provider** | Anthropic Claude | Sonnet 4.5 | AI summarization (production) |

@@ -46,7 +46,7 @@
 | カテゴリ | 技術 |
 |---------|------|
 | **言語** | Go 1.25.4 |
-| **データベース** | PostgreSQL 16 / SQLite（テスト用） |
+| **データベース** | PostgreSQL 18 / SQLite（テスト用） |
 | **HTTPルーター** | 標準ライブラリ（net/http） |
 | **認証** | JWT（golang-jwt/jwt/v5） |
 | **AI API** | Anthropic Claude（Sonnet 4.5） / OpenAI（GPT-4o-mini） |

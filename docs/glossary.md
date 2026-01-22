@@ -646,7 +646,7 @@ Create, Read, Update, Delete. Basic database operations.
 Content Security Policy. HTTP security header to prevent XSS attacks.
 
 ### DB
-Database. Refers to PostgreSQL 16 (production) or SQLite (testing).
+Database. Refers to PostgreSQL 18 (production) or SQLite (testing).
 
 ### DIP
 Dependency Inversion Principle. High-level modules depend on abstractions rather than concrete implementations.
