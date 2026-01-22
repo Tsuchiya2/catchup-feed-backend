@@ -1,0 +1,145 @@
+// Copyright 2026 catchup-feed. All rights reserved.
+// Embedding service protocol buffer definitions for gRPC communication.
+
+syntax = "proto3";
+
+package embedding;
+
+option go_package = "catchup-feed/internal/interface/grpc/pb/embedding";
+
+// EmbeddingService provides operations for managing article embeddings.
+// This service is used by catchup-ai (Python) to store embeddings and perform
+// similarity searches on articles.
+service EmbeddingService {
+    // StoreEmbedding stores or updates an embedding for an article.
+    // If an embedding with the same (article_id, embedding_type, provider, model)
+    // combination exists, it will be updated. Otherwise, a new embedding is created.
+    rpc StoreEmbedding(StoreEmbeddingRequest) returns (StoreEmbeddingResponse);
+
+    // GetEmbeddings retrieves all embeddings for an article.
+    // Returns an empty list if no embeddings exist for the article.
+    rpc GetEmbeddings(GetEmbeddingsRequest) returns (GetEmbeddingsResponse);
+
+    // SearchSimilar finds articles similar to a query vector using cosine similarity.
+    // Results are sorted by similarity score in descending order.
+    rpc SearchSimilar(SearchSimilarRequest) returns (SearchSimilarResponse);
+}
+
+// StoreEmbeddingRequest contains the embedding data to store.
+message StoreEmbeddingRequest {
+    // Required: ID of the article this embedding belongs to.
+    // Must be a positive integer referencing an existing article.
+    int64 article_id = 1;
+
+    // Required: Type of content that was embedded.
+    // Valid values: "title", "content", "summary"
+    string embedding_type = 2;
+
+    // Required: AI provider that generated the embedding.
+    // Valid values: "openai", "voyage"
+    string provider = 3;
+
+    // Required: Model name that generated the embedding.
+    // Example: "text-embedding-3-small", "voyage-3"
+    string model = 4;
+
+    // Required: Dimension of the embedding vector.
+    // Must match the length of embedding field.
+    int32 dimension = 5;
+
+    // Required: The embedding vector.
+    // Length must match dimension field.
+    repeated float embedding = 6;
+}
+
+// StoreEmbeddingResponse contains the result of the store operation.
+message StoreEmbeddingResponse {
+    // True if the operation succeeded.
+    bool success = 1;
+
+    // ID of the stored/updated embedding.
+    // Only populated if success is true.
+    int64 embedding_id = 2;
+
+    // Error message if success is false.
+    // Empty if success is true.
+    string error_message = 3;
+}
+
+// GetEmbeddingsRequest specifies which article's embeddings to retrieve.
+message GetEmbeddingsRequest {
+    // Required: ID of the article.
+    // Must be a positive integer.
+    int64 article_id = 1;
+}
+
+// GetEmbeddingsResponse contains the retrieved embeddings.
+message GetEmbeddingsResponse {
+    // List of embeddings for the article.
+    // Empty if no embeddings exist.
+    repeated ArticleEmbedding embeddings = 1;
+}
+
+// SearchSimilarRequest contains the query for similarity search.
+message SearchSimilarRequest {
+    // Required: Query embedding vector.
+    // Must not be empty.
+    repeated float embedding = 1;
+
+    // Required: Type of embeddings to search against.
+    // Valid values: "title", "content", "summary"
+    string embedding_type = 2;
+
+    // Optional: Maximum number of results.
+    // Default: 10, Maximum: 100
+    // Values <= 0 will use default, values > 100 will be capped at 100.
+    int32 limit = 3;
+}
+
+// SearchSimilarResponse contains the search results.
+message SearchSimilarResponse {
+    // List of similar articles, sorted by similarity (highest first).
+    // May be empty if no similar articles are found.
+    repeated SimilarArticle articles = 1;
+}
+
+// ArticleEmbedding represents a stored embedding with metadata.
+message ArticleEmbedding {
+    // Unique identifier for this embedding.
+    int64 id = 1;
+
+    // ID of the article this embedding belongs to.
+    int64 article_id = 2;
+
+    // Type of content that was embedded.
+    string embedding_type = 3;
+
+    // AI provider that generated the embedding.
+    string provider = 4;
+
+    // Model name that generated the embedding.
+    string model = 5;
+
+    // Dimension of the embedding vector.
+    int32 dimension = 6;
+
+    // The embedding vector data.
+    repeated float embedding = 7;
+
+    // Timestamp when the embedding was created (RFC 3339 format).
+    string created_at = 8;
+
+    // Timestamp when the embedding was last updated (RFC 3339 format).
+    string updated_at = 9;
+}
+
+// SimilarArticle represents an article with its similarity score.
+message SimilarArticle {
+    // ID of the similar article.
+    int64 article_id = 1;
+
+    // Cosine similarity score (0.0 to 1.0).
+    // Higher values indicate more similar articles.
+    // Note: Due to pgvector implementation, this is calculated as 1 - cosine_distance.
+    float similarity = 2;
+}

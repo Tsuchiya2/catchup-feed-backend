@@ -5,7 +5,7 @@
 # No local Go installation required!
 # ============================================================
 
-.PHONY: help dev-up dev-down dev-shell test lint fmt build clean logs
+.PHONY: help dev-up dev-down dev-shell test lint fmt build clean logs proto
 
 # Default target
 .DEFAULT_GOAL := help
@@ -76,6 +76,14 @@ fmt: ## Format code with gofmt inside Docker
 	@echo "🎨 Formatting code in Docker..."
 	docker compose --profile dev run --rm dev sh -c "gofmt -w ."
 	@echo "✅ Code formatting completed"
+
+# ────────────────────────────────────────────────────────────
+# Code Generation (runs inside Docker)
+# ────────────────────────────────────────────────────────────
+proto: ## Generate Go code from proto files inside Docker
+	@echo "📝 Generating proto files in Docker..."
+	docker compose --profile dev run --rm dev sh ./scripts/generate-proto.sh
+	@echo "✅ Proto generation completed"
 
 # ────────────────────────────────────────────────────────────
 # Build (runs inside Docker)

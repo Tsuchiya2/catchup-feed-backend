@@ -4,7 +4,7 @@
 > **Architecture**: Clean Architecture
 > **Language**: Go 1.25.4
 > **Database**: PostgreSQL 18
-> **Last Updated**: 2026-01-09
+> **Last Updated**: 2026-01-23
 
 ---
 
@@ -1961,6 +1961,460 @@ rate_limit_circuit_breaker_open_total{type="user"}
 # Store size gauge
 rate_limit_store_size{type="ip"}
 rate_limit_store_size{type="user"}
+```
+
+---
+
+### 3.9 Embedding Storage & Vector Search
+
+#### Purpose
+Store and manage article embeddings for semantic search capabilities using pgvector extension and gRPC interface.
+
+#### User Stories
+- **As an external AI service**, I can store article embeddings via gRPC for semantic search
+- **As a system**, I can perform vector similarity search to find related articles
+- **As a system**, I can update embeddings when models are upgraded (upsert)
+- **As a system**, I cascade delete embeddings when articles are deleted
+
+#### Architecture
+
+**Service Interface** (proto/embedding/embedding.proto)
+```protobuf
+service EmbeddingService {
+    rpc StoreEmbedding(StoreEmbeddingRequest) returns (StoreEmbeddingResponse);
+    rpc GetEmbeddings(GetEmbeddingsRequest) returns (GetEmbeddingsResponse);
+    rpc SearchSimilar(SearchSimilarRequest) returns (SearchSimilarResponse);
+}
+```
+
+**gRPC Endpoints**
+
+**StoreEmbedding** - Store or update embedding
+```protobuf
+Request:
+message StoreEmbeddingRequest {
+    int64 article_id = 1;        // Required: Article ID
+    string embedding_type = 2;    // Required: "title", "content", "summary"
+    string provider = 3;          // Required: "openai", "voyage"
+    string model = 4;             // Required: Model name (e.g., "text-embedding-3-small")
+    int32 dimension = 5;          // Required: Vector dimension (must match embedding length)
+    repeated float embedding = 6; // Required: Vector data
+}
+
+Response:
+message StoreEmbeddingResponse {
+    bool success = 1;            // True if operation succeeded
+    int64 embedding_id = 2;      // ID of stored/updated embedding
+    string error_message = 3;    // Error message if success is false
+}
+
+Validation:
+- article_id must be positive
+- embedding cannot be empty
+- dimension must match embedding length
+- embedding_type must be valid enum value
+- provider must be valid enum value
+
+Error Handling:
+- Returns success=false with error_message for validation errors
+- Returns success=false with error_message for database errors
+```
+
+**GetEmbeddings** - Retrieve all embeddings for an article
+```protobuf
+Request:
+message GetEmbeddingsRequest {
+    int64 article_id = 1;  // Required: Article ID
+}
+
+Response:
+message GetEmbeddingsResponse {
+    repeated ArticleEmbedding embeddings = 1;  // List of embeddings (may be empty)
+}
+
+message ArticleEmbedding {
+    int64 id = 1;
+    int64 article_id = 2;
+    string embedding_type = 3;
+    string provider = 4;
+    string model = 5;
+    int32 dimension = 6;
+    repeated float embedding = 7;
+    string created_at = 8;  // RFC 3339 format
+    string updated_at = 9;  // RFC 3339 format
+}
+
+Errors:
+- InvalidArgument: article_id <= 0
+- Internal: Database failure
+```
+
+**SearchSimilar** - Find similar articles using vector search
+```protobuf
+Request:
+message SearchSimilarRequest {
+    repeated float embedding = 1;  // Required: Query vector
+    string embedding_type = 2;      // Required: Search within this type
+    int32 limit = 3;                // Optional: Max results (default: 10, max: 100)
+}
+
+Response:
+message SearchSimilarResponse {
+    repeated SimilarArticle articles = 1;
+}
+
+message SimilarArticle {
+    int64 article_id = 1;
+    float similarity = 2;  // Cosine similarity (0.0 to 1.0)
+}
+
+Validation:
+- embedding cannot be empty
+- embedding_type must be valid ("title", "content", "summary")
+- limit capped at 100, defaults to 10
+
+Search Algorithm:
+- Uses cosine similarity (1 - cosine_distance)
+- IVFFlat index for approximate nearest neighbor
+- 5-second timeout enforced
+- Results sorted by similarity (highest first)
+
+Errors:
+- InvalidArgument: Invalid embedding_type or empty embedding
+- Internal: Search failure or timeout
+```
+
+#### Data Model
+
+**ArticleEmbedding Entity** (internal/domain/entity/article_embedding.go)
+```go
+type ArticleEmbedding struct {
+    ID            int64
+    ArticleID     int64
+    EmbeddingType EmbeddingType     // Enum: title, content, summary
+    Provider      EmbeddingProvider // Enum: openai, voyage
+    Model         string            // e.g., "text-embedding-3-small"
+    Dimension     int32             // Must match len(Embedding)
+    Embedding     []float32         // Vector data
+    CreatedAt     time.Time
+    UpdatedAt     time.Time
+}
+
+// Enums
+type EmbeddingType string
+const (
+    EmbeddingTypeTitle   EmbeddingType = "title"
+    EmbeddingTypeContent EmbeddingType = "content"
+    EmbeddingTypeSummary EmbeddingType = "summary"
+)
+
+type EmbeddingProvider string
+const (
+    EmbeddingProviderOpenAI  EmbeddingProvider = "openai"
+    EmbeddingProviderVoyage  EmbeddingProvider = "voyage"
+)
+```
+
+**Repository Interface** (internal/repository/article_embedding_repository.go)
+```go
+type ArticleEmbeddingRepository interface {
+    // Upsert creates or updates embedding
+    // Unique constraint: (article_id, embedding_type, provider, model)
+    Upsert(ctx context.Context, embedding *entity.ArticleEmbedding) error
+
+    // FindByArticleID retrieves all embeddings for an article
+    // Returns empty slice if not found (not nil)
+    FindByArticleID(ctx context.Context, articleID int64) ([]*entity.ArticleEmbedding, error)
+
+    // SearchSimilar finds similar articles using cosine similarity
+    // Returns results sorted by similarity (highest first)
+    // Limit defaults to 10, max 100
+    SearchSimilar(ctx context.Context, embedding []float32, embeddingType entity.EmbeddingType, limit int) ([]SimilarArticle, error)
+
+    // DeleteByArticleID removes all embeddings for an article
+    // Returns number of deleted rows (0 if none found)
+    DeleteByArticleID(ctx context.Context, articleID int64) (int64, error)
+}
+
+type SimilarArticle struct {
+    ArticleID  int64   // Article ID
+    Similarity float64 // Cosine similarity (0.0 to 1.0)
+}
+```
+
+**Database Schema** (internal/infra/db/migrate.go)
+```sql
+-- Enable pgvector extension
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- article_embeddings table
+CREATE TABLE IF NOT EXISTS article_embeddings (
+    id              SERIAL PRIMARY KEY,
+    article_id      BIGINT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    embedding_type  VARCHAR(50) NOT NULL,
+    provider        VARCHAR(50) NOT NULL,
+    model           VARCHAR(100) NOT NULL,
+    dimension       INT NOT NULL,
+    embedding       vector(1536) NOT NULL,  -- Max 1536 dimensions
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(article_id, embedding_type, provider, model)
+);
+
+-- B-tree index for article_id lookups
+CREATE INDEX IF NOT EXISTS idx_article_embeddings_article_id
+    ON article_embeddings(article_id);
+
+-- IVFFlat index for vector similarity search
+-- lists=100 is optimal for <1M records
+CREATE INDEX IF NOT EXISTS idx_article_embeddings_vector
+    ON article_embeddings
+    USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
+```
+
+#### Business Logic
+
+**Upsert Embedding** (internal/infra/adapter/persistence/postgres/article_embedding_repo.go:32-65)
+```go
+func (repo *ArticleEmbeddingRepo) Upsert(ctx context.Context, embedding *entity.ArticleEmbedding) error {
+    // 1. Validate entity
+    if err := embedding.Validate(); err != nil {
+        return fmt.Errorf("Upsert: %w", err)
+    }
+
+    // 2. Convert []float32 to pgvector.Vector
+    vector := pgvector.NewVector(embedding.Embedding)
+
+    // 3. Upsert query (INSERT ... ON CONFLICT DO UPDATE)
+    const query = `
+INSERT INTO article_embeddings (article_id, embedding_type, provider, model, dimension, embedding, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+ON CONFLICT (article_id, embedding_type, provider, model)
+DO UPDATE SET
+    dimension = EXCLUDED.dimension,
+    embedding = EXCLUDED.embedding,
+    updated_at = NOW()
+RETURNING id, created_at, updated_at`
+
+    // 4. Execute and populate ID/timestamps
+    err := repo.db.QueryRowContext(ctx, query,
+        embedding.ArticleID,
+        string(embedding.EmbeddingType),
+        string(embedding.Provider),
+        embedding.Model,
+        embedding.Dimension,
+        vector,
+    ).Scan(&embedding.ID, &embedding.CreatedAt, &embedding.UpdatedAt)
+
+    return err
+}
+```
+
+**Search Similar** (internal/infra/adapter/persistence/postgres/article_embedding_repo.go:137-183)
+```go
+func (repo *ArticleEmbeddingRepo) SearchSimilar(
+    ctx context.Context,
+    embedding []float32,
+    embeddingType entity.EmbeddingType,
+    limit int,
+) ([]repository.SimilarArticle, error) {
+    // 1. Apply timeout (5 seconds)
+    searchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+    defer cancel()
+
+    // 2. Validate and apply limit (default: 10, max: 100)
+    if limit <= 0 {
+        limit = 10
+    }
+    if limit > 100 {
+        limit = 100
+    }
+
+    // 3. Convert []float32 to pgvector.Vector
+    vector := pgvector.NewVector(embedding)
+
+    // 4. Query using cosine distance operator (<=>)
+    const query = `
+SELECT article_id, 1 - (embedding <=> $1) AS similarity
+FROM article_embeddings
+WHERE embedding_type = $2
+ORDER BY embedding <=> $1
+LIMIT $3`
+
+    rows, err := repo.db.QueryContext(searchCtx, query, vector, string(embeddingType), limit)
+    if err != nil {
+        return nil, fmt.Errorf("SearchSimilar: %w", err)
+    }
+    defer rows.Close()
+
+    // 5. Collect results
+    results := make([]repository.SimilarArticle, 0, limit)
+    for rows.Next() {
+        var result repository.SimilarArticle
+        if err := rows.Scan(&result.ArticleID, &result.Similarity); err != nil {
+            return nil, fmt.Errorf("SearchSimilar: Scan: %w", err)
+        }
+        results = append(results, result)
+    }
+
+    return results, rows.Err()
+}
+```
+
+**Entity Validation** (internal/domain/entity/article_embedding.go:84-116)
+```go
+func (e *ArticleEmbedding) Validate() error {
+    // 1. Validate ArticleID is positive
+    if e.ArticleID <= 0 {
+        return &ValidationError{Field: "ArticleID", Message: "must be positive"}
+    }
+
+    // 2. Validate EmbeddingType enum
+    if !e.EmbeddingType.IsValid() {
+        return ErrInvalidEmbeddingType
+    }
+
+    // 3. Validate Provider enum
+    if !e.Provider.IsValid() {
+        return ErrInvalidEmbeddingProvider
+    }
+
+    // 4. Validate Embedding is not empty
+    if len(e.Embedding) == 0 {
+        return ErrEmptyEmbedding
+    }
+
+    // 5. Validate Dimension matches embedding length
+    if int32(len(e.Embedding)) != e.Dimension {
+        return ErrInvalidEmbeddingDimension
+    }
+
+    return nil
+}
+```
+
+#### gRPC Server Implementation
+
+**Server Struct** (internal/interface/grpc/embedding_server.go:16-26)
+```go
+type EmbeddingServer struct {
+    pb.UnimplementedEmbeddingServiceServer
+    repo repository.ArticleEmbeddingRepository
+}
+
+func NewEmbeddingServer(repo repository.ArticleEmbeddingRepository) *EmbeddingServer {
+    return &EmbeddingServer{repo: repo}
+}
+```
+
+**StoreEmbedding Handler** (internal/interface/grpc/embedding_server.go:28-81)
+```go
+func (s *EmbeddingServer) StoreEmbedding(
+    ctx context.Context,
+    req *pb.StoreEmbeddingRequest,
+) (*pb.StoreEmbeddingResponse, error) {
+    // 1. Validate request
+    if req.ArticleId <= 0 {
+        return &pb.StoreEmbeddingResponse{
+            Success:      false,
+            ErrorMessage: "article_id must be positive",
+        }, nil
+    }
+
+    if len(req.Embedding) == 0 {
+        return &pb.StoreEmbeddingResponse{
+            Success:      false,
+            ErrorMessage: "embedding cannot be empty",
+        }, nil
+    }
+
+    if int(req.Dimension) != len(req.Embedding) {
+        return &pb.StoreEmbeddingResponse{
+            Success:      false,
+            ErrorMessage: "dimension does not match embedding length",
+        }, nil
+    }
+
+    // 2. Convert to domain entity
+    embedding := &entity.ArticleEmbedding{
+        ArticleID:     req.ArticleId,
+        EmbeddingType: entity.EmbeddingType(req.EmbeddingType),
+        Provider:      entity.EmbeddingProvider(req.Provider),
+        Model:         req.Model,
+        Dimension:     req.Dimension,
+        Embedding:     req.Embedding,
+    }
+
+    // 3. Store via repository (upsert)
+    if err := s.repo.Upsert(ctx, embedding); err != nil {
+        return &pb.StoreEmbeddingResponse{
+            Success:      false,
+            ErrorMessage: err.Error(),
+        }, nil
+    }
+
+    // 4. Return success
+    return &pb.StoreEmbeddingResponse{
+        Success:     true,
+        EmbeddingId: embedding.ID,
+    }, nil
+}
+```
+
+#### Error Handling
+
+**Validation Errors**
+```go
+var (
+    ErrInvalidEmbeddingType      = errors.New("invalid embedding type")
+    ErrInvalidEmbeddingProvider  = errors.New("invalid embedding provider")
+    ErrInvalidEmbeddingDimension = errors.New("invalid embedding dimension")
+    ErrEmptyEmbedding            = errors.New("empty embedding vector")
+)
+```
+
+**gRPC Error Responses**
+```go
+// Validation errors return status.Error
+return nil, status.Error(codes.InvalidArgument, "article_id must be positive")
+
+// Database errors return status.Errorf
+return nil, status.Errorf(codes.Internal, "failed to get embeddings: %v", err)
+```
+
+**Timeout Handling**
+```go
+// Search enforces 5-second timeout
+searchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+defer cancel()
+
+// Timeout returns context.DeadlineExceeded
+if errors.Is(err, context.DeadlineExceeded) {
+    return nil, status.Error(codes.DeadlineExceeded, "search timeout exceeded")
+}
+```
+
+#### Integration
+
+**External AI Service (catchup-ai)**
+- Python-based service generates embeddings using OpenAI/Voyage APIs
+- Connects to gRPC server to store embeddings
+- Manages embedding generation lifecycle
+
+**Communication Flow**
+```
+1. catchup-feed-backend crawls articles → saves to database
+2. catchup-ai fetches new articles without embeddings
+3. catchup-ai generates embeddings via OpenAI/Voyage API
+4. catchup-ai calls StoreEmbedding gRPC to persist vectors
+5. Future: Frontend calls SearchSimilar for related articles
+```
+
+**Configuration**
+```bash
+# No environment variables needed (uses existing database connection)
+# gRPC server runs on same port as main app (internal service)
 ```
 
 ---
