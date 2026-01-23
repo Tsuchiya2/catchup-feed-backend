@@ -108,6 +108,7 @@ func (e *ArticleEmbedding) Validate() error {
 	}
 
 	// Validate Dimension matches embedding length
+	// #nosec G115 -- embedding dimension is always within int32 range (max 1536)
 	if int32(len(e.Embedding)) != e.Dimension {
 		return ErrInvalidEmbeddingDimension
 	}

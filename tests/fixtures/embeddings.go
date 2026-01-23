@@ -85,6 +85,7 @@ func WithDimension(dim int32) EmbeddingOption {
 func WithEmbedding(embedding []float32) EmbeddingOption {
 	return func(e *entity.ArticleEmbedding) {
 		e.Embedding = embedding
+		// #nosec G115 -- embedding dimension is always within int32 range (max 1536)
 		e.Dimension = int32(len(embedding))
 	}
 }
