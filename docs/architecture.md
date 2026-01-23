@@ -216,7 +216,7 @@ Dependency Direction: Presentation → UseCase → Domain ← Infrastructure
 
 #### Database & Persistence
 - **jackc/pgx/v5** (v5.8.0) - PostgreSQL driver with connection pooling
-- **pgvector/pgvector-go** (v0.2.3) - PostgreSQL vector extension support for embeddings
+- **pgvector/pgvector-go** (v0.3.0) - PostgreSQL vector extension support for embeddings
 - **database/sql** (stdlib) - Database interface abstraction
 - **PostgreSQL Extensions**:
   - `pgvector` - Vector data type and similarity search operators
