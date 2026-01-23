@@ -75,6 +75,14 @@ func (s *EmbeddingServer) StoreEmbedding(
 		}, nil
 	}
 
+	// Validate model is not empty
+	if req.Model == "" {
+		return &pb.StoreEmbeddingResponse{
+			Success:      false,
+			ErrorMessage: "model cannot be empty",
+		}, nil
+	}
+
 	// Convert to domain entity
 	embedding := &entity.ArticleEmbedding{
 		ArticleID:     req.ArticleId,
@@ -207,6 +215,44 @@ func (s *EmbeddingServer) SearchSimilar(
 
 	return &pb.SearchSimilarResponse{
 		Articles: pbArticles,
+	}, nil
+}
+
+// DeleteEmbedding removes all embeddings associated with an article.
+// Returns the number of deleted embeddings.
+func (s *EmbeddingServer) DeleteEmbedding(
+	ctx context.Context,
+	req *pb.DeleteEmbeddingRequest,
+) (*pb.DeleteEmbeddingResponse, error) {
+	// Validate article_id
+	if req.ArticleId <= 0 {
+		return &pb.DeleteEmbeddingResponse{
+			Success:      false,
+			ErrorMessage: "article_id must be positive",
+		}, nil
+	}
+
+	// Delete embeddings via repository
+	deletedCount, err := s.repo.DeleteByArticleID(ctx, req.ArticleId)
+	if err != nil {
+		slog.Error("failed to delete embeddings",
+			slog.Int64("article_id", req.ArticleId),
+			slog.String("error", err.Error()),
+		)
+		return &pb.DeleteEmbeddingResponse{
+			Success:      false,
+			ErrorMessage: "failed to delete embeddings",
+		}, nil
+	}
+
+	slog.Info("embeddings deleted successfully",
+		slog.Int64("article_id", req.ArticleId),
+		slog.Int64("deleted_count", deletedCount),
+	)
+
+	return &pb.DeleteEmbeddingResponse{
+		Success:      true,
+		DeletedCount: deletedCount,
 	}, nil
 }
 

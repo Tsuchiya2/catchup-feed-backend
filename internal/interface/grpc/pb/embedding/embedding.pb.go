@@ -571,6 +571,118 @@ func (x *SimilarArticle) GetSimilarity() float32 {
 	return 0
 }
 
+// DeleteEmbeddingRequest specifies which article's embeddings to delete.
+type DeleteEmbeddingRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required: ID of the article whose embeddings should be deleted.
+	// Must be a positive integer.
+	ArticleId     int64 `protobuf:"varint,1,opt,name=article_id,json=articleId,proto3" json:"article_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteEmbeddingRequest) Reset() {
+	*x = DeleteEmbeddingRequest{}
+	mi := &file_embedding_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteEmbeddingRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteEmbeddingRequest) ProtoMessage() {}
+
+func (x *DeleteEmbeddingRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_embedding_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteEmbeddingRequest.ProtoReflect.Descriptor instead.
+func (*DeleteEmbeddingRequest) Descriptor() ([]byte, []int) {
+	return file_embedding_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *DeleteEmbeddingRequest) GetArticleId() int64 {
+	if x != nil {
+		return x.ArticleId
+	}
+	return 0
+}
+
+// DeleteEmbeddingResponse contains the result of the delete operation.
+type DeleteEmbeddingResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// True if the operation succeeded (even if no embeddings existed).
+	Success bool `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	// Number of embeddings that were deleted.
+	DeletedCount int64 `protobuf:"varint,2,opt,name=deleted_count,json=deletedCount,proto3" json:"deleted_count,omitempty"`
+	// Error message if success is false.
+	// Empty if success is true.
+	ErrorMessage  string `protobuf:"bytes,3,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteEmbeddingResponse) Reset() {
+	*x = DeleteEmbeddingResponse{}
+	mi := &file_embedding_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteEmbeddingResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteEmbeddingResponse) ProtoMessage() {}
+
+func (x *DeleteEmbeddingResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_embedding_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteEmbeddingResponse.ProtoReflect.Descriptor instead.
+func (*DeleteEmbeddingResponse) Descriptor() ([]byte, []int) {
+	return file_embedding_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *DeleteEmbeddingResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *DeleteEmbeddingResponse) GetDeletedCount() int64 {
+	if x != nil {
+		return x.DeletedCount
+	}
+	return 0
+}
+
+func (x *DeleteEmbeddingResponse) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
 var File_embedding_proto protoreflect.FileDescriptor
 
 const file_embedding_proto_rawDesc = "" +
@@ -619,11 +731,19 @@ const file_embedding_proto_rawDesc = "" +
 	"article_id\x18\x01 \x01(\x03R\tarticleId\x12\x1e\n" +
 	"\n" +
 	"similarity\x18\x02 \x01(\x02R\n" +
-	"similarity2\x91\x02\n" +
+	"similarity\"7\n" +
+	"\x16DeleteEmbeddingRequest\x12\x1d\n" +
+	"\n" +
+	"article_id\x18\x01 \x01(\x03R\tarticleId\"}\n" +
+	"\x17DeleteEmbeddingResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12#\n" +
+	"\rdeleted_count\x18\x02 \x01(\x03R\fdeletedCount\x12#\n" +
+	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage2\xeb\x02\n" +
 	"\x10EmbeddingService\x12U\n" +
 	"\x0eStoreEmbedding\x12 .embedding.StoreEmbeddingRequest\x1a!.embedding.StoreEmbeddingResponse\x12R\n" +
 	"\rGetEmbeddings\x12\x1f.embedding.GetEmbeddingsRequest\x1a .embedding.GetEmbeddingsResponse\x12R\n" +
-	"\rSearchSimilar\x12\x1f.embedding.SearchSimilarRequest\x1a .embedding.SearchSimilarResponseB3Z1catchup-feed/internal/interface/grpc/pb/embeddingb\x06proto3"
+	"\rSearchSimilar\x12\x1f.embedding.SearchSimilarRequest\x1a .embedding.SearchSimilarResponse\x12X\n" +
+	"\x0fDeleteEmbedding\x12!.embedding.DeleteEmbeddingRequest\x1a\".embedding.DeleteEmbeddingResponseB3Z1catchup-feed/internal/interface/grpc/pb/embeddingb\x06proto3"
 
 var (
 	file_embedding_proto_rawDescOnce sync.Once
@@ -637,16 +757,18 @@ func file_embedding_proto_rawDescGZIP() []byte {
 	return file_embedding_proto_rawDescData
 }
 
-var file_embedding_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_embedding_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_embedding_proto_goTypes = []any{
-	(*StoreEmbeddingRequest)(nil),  // 0: embedding.StoreEmbeddingRequest
-	(*StoreEmbeddingResponse)(nil), // 1: embedding.StoreEmbeddingResponse
-	(*GetEmbeddingsRequest)(nil),   // 2: embedding.GetEmbeddingsRequest
-	(*GetEmbeddingsResponse)(nil),  // 3: embedding.GetEmbeddingsResponse
-	(*SearchSimilarRequest)(nil),   // 4: embedding.SearchSimilarRequest
-	(*SearchSimilarResponse)(nil),  // 5: embedding.SearchSimilarResponse
-	(*ArticleEmbedding)(nil),       // 6: embedding.ArticleEmbedding
-	(*SimilarArticle)(nil),         // 7: embedding.SimilarArticle
+	(*StoreEmbeddingRequest)(nil),   // 0: embedding.StoreEmbeddingRequest
+	(*StoreEmbeddingResponse)(nil),  // 1: embedding.StoreEmbeddingResponse
+	(*GetEmbeddingsRequest)(nil),    // 2: embedding.GetEmbeddingsRequest
+	(*GetEmbeddingsResponse)(nil),   // 3: embedding.GetEmbeddingsResponse
+	(*SearchSimilarRequest)(nil),    // 4: embedding.SearchSimilarRequest
+	(*SearchSimilarResponse)(nil),   // 5: embedding.SearchSimilarResponse
+	(*ArticleEmbedding)(nil),        // 6: embedding.ArticleEmbedding
+	(*SimilarArticle)(nil),          // 7: embedding.SimilarArticle
+	(*DeleteEmbeddingRequest)(nil),  // 8: embedding.DeleteEmbeddingRequest
+	(*DeleteEmbeddingResponse)(nil), // 9: embedding.DeleteEmbeddingResponse
 }
 var file_embedding_proto_depIdxs = []int32{
 	6, // 0: embedding.GetEmbeddingsResponse.embeddings:type_name -> embedding.ArticleEmbedding
@@ -654,11 +776,13 @@ var file_embedding_proto_depIdxs = []int32{
 	0, // 2: embedding.EmbeddingService.StoreEmbedding:input_type -> embedding.StoreEmbeddingRequest
 	2, // 3: embedding.EmbeddingService.GetEmbeddings:input_type -> embedding.GetEmbeddingsRequest
 	4, // 4: embedding.EmbeddingService.SearchSimilar:input_type -> embedding.SearchSimilarRequest
-	1, // 5: embedding.EmbeddingService.StoreEmbedding:output_type -> embedding.StoreEmbeddingResponse
-	3, // 6: embedding.EmbeddingService.GetEmbeddings:output_type -> embedding.GetEmbeddingsResponse
-	5, // 7: embedding.EmbeddingService.SearchSimilar:output_type -> embedding.SearchSimilarResponse
-	5, // [5:8] is the sub-list for method output_type
-	2, // [2:5] is the sub-list for method input_type
+	8, // 5: embedding.EmbeddingService.DeleteEmbedding:input_type -> embedding.DeleteEmbeddingRequest
+	1, // 6: embedding.EmbeddingService.StoreEmbedding:output_type -> embedding.StoreEmbeddingResponse
+	3, // 7: embedding.EmbeddingService.GetEmbeddings:output_type -> embedding.GetEmbeddingsResponse
+	5, // 8: embedding.EmbeddingService.SearchSimilar:output_type -> embedding.SearchSimilarResponse
+	9, // 9: embedding.EmbeddingService.DeleteEmbedding:output_type -> embedding.DeleteEmbeddingResponse
+	6, // [6:10] is the sub-list for method output_type
+	2, // [2:6] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name
 	2, // [2:2] is the sub-list for extension extendee
 	0, // [0:2] is the sub-list for field type_name
@@ -675,7 +799,7 @@ func file_embedding_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_embedding_proto_rawDesc), len(file_embedding_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

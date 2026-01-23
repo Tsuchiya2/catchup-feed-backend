@@ -167,6 +167,27 @@ func TestEmbeddingServer_StoreEmbedding_DimensionMismatch(t *testing.T) {
 	assert.Contains(t, resp.ErrorMessage, "dimension")
 }
 
+func TestEmbeddingServer_StoreEmbedding_EmptyModel(t *testing.T) {
+	mockRepo := new(MockEmbeddingRepository)
+	server := grpcserver.NewEmbeddingServer(mockRepo)
+
+	req := &pb.StoreEmbeddingRequest{
+		ArticleId:     100,
+		EmbeddingType: "content",
+		Provider:      "openai",
+		Model:         "", // empty model
+		Dimension:     3,
+		Embedding:     []float32{0.1, 0.2, 0.3},
+	}
+
+	resp, err := server.StoreEmbedding(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.False(t, resp.Success)
+	assert.Contains(t, resp.ErrorMessage, "model cannot be empty")
+}
+
 func TestEmbeddingServer_StoreEmbedding_RepositoryError(t *testing.T) {
 	mockRepo := new(MockEmbeddingRepository)
 	server := grpcserver.NewEmbeddingServer(mockRepo)
@@ -615,4 +636,93 @@ func BenchmarkEmbeddingServer_SearchSimilar_VaryingLimits(b *testing.B) {
 			}
 		})
 	}
+}
+
+/* ─────────────────────────── DeleteEmbedding Tests ─────────────────────────── */
+
+func TestEmbeddingServer_DeleteEmbedding_Success(t *testing.T) {
+	mockRepo := new(MockEmbeddingRepository)
+	server := grpcserver.NewEmbeddingServer(mockRepo)
+
+	mockRepo.On("DeleteByArticleID", mock.Anything, int64(100)).Return(int64(3), nil)
+
+	req := &pb.DeleteEmbeddingRequest{
+		ArticleId: 100,
+	}
+
+	resp, err := server.DeleteEmbedding(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Equal(t, int64(3), resp.DeletedCount)
+	assert.Empty(t, resp.ErrorMessage)
+	mockRepo.AssertExpectations(t)
+}
+
+func TestEmbeddingServer_DeleteEmbedding_InvalidArticleID(t *testing.T) {
+	mockRepo := new(MockEmbeddingRepository)
+	server := grpcserver.NewEmbeddingServer(mockRepo)
+
+	tests := []struct {
+		name      string
+		articleID int64
+	}{
+		{"zero", 0},
+		{"negative", -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &pb.DeleteEmbeddingRequest{
+				ArticleId: tt.articleID,
+			}
+
+			resp, err := server.DeleteEmbedding(context.Background(), req)
+
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
+			assert.False(t, resp.Success)
+			assert.Contains(t, resp.ErrorMessage, "article_id must be positive")
+		})
+	}
+}
+
+func TestEmbeddingServer_DeleteEmbedding_RepoError(t *testing.T) {
+	mockRepo := new(MockEmbeddingRepository)
+	server := grpcserver.NewEmbeddingServer(mockRepo)
+
+	mockRepo.On("DeleteByArticleID", mock.Anything, int64(100)).Return(int64(0), errors.New("database error"))
+
+	req := &pb.DeleteEmbeddingRequest{
+		ArticleId: 100,
+	}
+
+	resp, err := server.DeleteEmbedding(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.False(t, resp.Success)
+	assert.Contains(t, resp.ErrorMessage, "failed to delete embeddings")
+	mockRepo.AssertExpectations(t)
+}
+
+func TestEmbeddingServer_DeleteEmbedding_NoEmbeddings(t *testing.T) {
+	mockRepo := new(MockEmbeddingRepository)
+	server := grpcserver.NewEmbeddingServer(mockRepo)
+
+	// Even if no embeddings exist, operation should succeed
+	mockRepo.On("DeleteByArticleID", mock.Anything, int64(999)).Return(int64(0), nil)
+
+	req := &pb.DeleteEmbeddingRequest{
+		ArticleId: 999,
+	}
+
+	resp, err := server.DeleteEmbedding(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, resp.Success)
+	assert.Equal(t, int64(0), resp.DeletedCount)
+	mockRepo.AssertExpectations(t)
 }

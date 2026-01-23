@@ -87,8 +87,13 @@ END $$;
 `)
 
 	// Embedding Feature: pgvector拡張を有効化
-	// エラーを無視(既に存在する場合やスーパーユーザー権限がない場合)
-	_, _ = db.Exec(`CREATE EXTENSION IF NOT EXISTS vector`)
+	// Note: エラーをログ出力するが、処理は継続（既存環境では既にインストール済みの場合がある）
+	if _, err := db.Exec(`CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
+		// pgvector拡張がインストールされていない場合は警告を出力
+		// ベクトル検索機能は使用不可となるが、他の機能は正常に動作する
+		println("WARNING: Failed to create pgvector extension:", err.Error())
+		println("         Vector search functionality will not be available.")
+	}
 
 	// Embedding Feature: article_embeddings テーブル作成
 	// Note: article_id is INTEGER to match articles.id (SERIAL = INTEGER)
@@ -123,12 +128,17 @@ CREATE TABLE IF NOT EXISTS article_embeddings (
 	}
 
 	// Embedding Feature: IVFFlat ベクトル類似検索インデックス
-	// エラーを無視(pgvector拡張がない場合にエラーとなるため)
+	// Note: エラーをログ出力するが、処理は継続（pgvector拡張がない場合は作成不可）
 	// lists=100 は <1M レコードに適した値
-	_, _ = db.Exec(`
+	if _, err := db.Exec(`
 CREATE INDEX IF NOT EXISTS idx_article_embeddings_vector
     ON article_embeddings USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100)`)
+    WITH (lists = 100)`); err != nil {
+		// IVFFlatインデックスが作成できない場合は警告を出力
+		// ベクトル検索は動作するが、パフォーマンスが低下する（フルスキャン）
+		println("WARNING: Failed to create IVFFlat index:", err.Error())
+		println("         Vector search will work but may be slower (full table scan).")
+	}
 
 	// シードデータの投入(重複は自動的にスキップ)
 	if _, err := db.Exec(seedSourcesSQL); err != nil {

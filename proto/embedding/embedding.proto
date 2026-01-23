@@ -23,6 +23,10 @@ service EmbeddingService {
     // SearchSimilar finds articles similar to a query vector using cosine similarity.
     // Results are sorted by similarity score in descending order.
     rpc SearchSimilar(SearchSimilarRequest) returns (SearchSimilarResponse);
+
+    // DeleteEmbedding removes all embeddings associated with an article.
+    // Returns the number of deleted embeddings.
+    rpc DeleteEmbedding(DeleteEmbeddingRequest) returns (DeleteEmbeddingResponse);
 }
 
 // StoreEmbeddingRequest contains the embedding data to store.
@@ -142,4 +146,24 @@ message SimilarArticle {
     // Higher values indicate more similar articles.
     // Note: Due to pgvector implementation, this is calculated as 1 - cosine_distance.
     float similarity = 2;
+}
+
+// DeleteEmbeddingRequest specifies which article's embeddings to delete.
+message DeleteEmbeddingRequest {
+    // Required: ID of the article whose embeddings should be deleted.
+    // Must be a positive integer.
+    int64 article_id = 1;
+}
+
+// DeleteEmbeddingResponse contains the result of the delete operation.
+message DeleteEmbeddingResponse {
+    // True if the operation succeeded (even if no embeddings existed).
+    bool success = 1;
+
+    // Number of embeddings that were deleted.
+    int64 deleted_count = 2;
+
+    // Error message if success is false.
+    // Empty if success is true.
+    string error_message = 3;
 }

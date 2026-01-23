@@ -64,13 +64,13 @@ test-coverage: ## Generate test coverage report inside Docker
 # ────────────────────────────────────────────────────────────
 k6-load: ## Run k6 load test for embedding service (requires running gRPC server)
 	@echo "🔥 Running k6 load test..."
-	@echo "   Note: Ensure gRPC embedding service is running on localhost:50051"
+	@echo "   Note: Ensure gRPC embedding service is running on localhost:50052"
 	docker run --rm --network host -v "$(shell pwd):/app" -w /app grafana/k6:latest run tests/load/embedding_load_test.ts
 	@echo "✅ Load test completed"
 
 k6-stress: ## Run k6 stress test for embedding service (requires running gRPC server)
 	@echo "💥 Running k6 stress test..."
-	@echo "   Note: Ensure gRPC embedding service is running on localhost:50051"
+	@echo "   Note: Ensure gRPC embedding service is running on localhost:50052"
 	docker run --rm --network host -v "$(shell pwd):/app" -w /app grafana/k6:latest run tests/load/embedding_stress_test.ts
 	@echo "✅ Stress test completed"
 

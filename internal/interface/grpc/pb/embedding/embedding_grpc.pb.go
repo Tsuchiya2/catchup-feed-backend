@@ -22,9 +22,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	EmbeddingService_StoreEmbedding_FullMethodName = "/embedding.EmbeddingService/StoreEmbedding"
-	EmbeddingService_GetEmbeddings_FullMethodName  = "/embedding.EmbeddingService/GetEmbeddings"
-	EmbeddingService_SearchSimilar_FullMethodName  = "/embedding.EmbeddingService/SearchSimilar"
+	EmbeddingService_StoreEmbedding_FullMethodName  = "/embedding.EmbeddingService/StoreEmbedding"
+	EmbeddingService_GetEmbeddings_FullMethodName   = "/embedding.EmbeddingService/GetEmbeddings"
+	EmbeddingService_SearchSimilar_FullMethodName   = "/embedding.EmbeddingService/SearchSimilar"
+	EmbeddingService_DeleteEmbedding_FullMethodName = "/embedding.EmbeddingService/DeleteEmbedding"
 )
 
 // EmbeddingServiceClient is the client API for EmbeddingService service.
@@ -45,6 +46,9 @@ type EmbeddingServiceClient interface {
 	// SearchSimilar finds articles similar to a query vector using cosine similarity.
 	// Results are sorted by similarity score in descending order.
 	SearchSimilar(ctx context.Context, in *SearchSimilarRequest, opts ...grpc.CallOption) (*SearchSimilarResponse, error)
+	// DeleteEmbedding removes all embeddings associated with an article.
+	// Returns the number of deleted embeddings.
+	DeleteEmbedding(ctx context.Context, in *DeleteEmbeddingRequest, opts ...grpc.CallOption) (*DeleteEmbeddingResponse, error)
 }
 
 type embeddingServiceClient struct {
@@ -85,6 +89,16 @@ func (c *embeddingServiceClient) SearchSimilar(ctx context.Context, in *SearchSi
 	return out, nil
 }
 
+func (c *embeddingServiceClient) DeleteEmbedding(ctx context.Context, in *DeleteEmbeddingRequest, opts ...grpc.CallOption) (*DeleteEmbeddingResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteEmbeddingResponse)
+	err := c.cc.Invoke(ctx, EmbeddingService_DeleteEmbedding_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // EmbeddingServiceServer is the server API for EmbeddingService service.
 // All implementations must embed UnimplementedEmbeddingServiceServer
 // for forward compatibility.
@@ -103,6 +117,9 @@ type EmbeddingServiceServer interface {
 	// SearchSimilar finds articles similar to a query vector using cosine similarity.
 	// Results are sorted by similarity score in descending order.
 	SearchSimilar(context.Context, *SearchSimilarRequest) (*SearchSimilarResponse, error)
+	// DeleteEmbedding removes all embeddings associated with an article.
+	// Returns the number of deleted embeddings.
+	DeleteEmbedding(context.Context, *DeleteEmbeddingRequest) (*DeleteEmbeddingResponse, error)
 	mustEmbedUnimplementedEmbeddingServiceServer()
 }
 
@@ -121,6 +138,9 @@ func (UnimplementedEmbeddingServiceServer) GetEmbeddings(context.Context, *GetEm
 }
 func (UnimplementedEmbeddingServiceServer) SearchSimilar(context.Context, *SearchSimilarRequest) (*SearchSimilarResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SearchSimilar not implemented")
+}
+func (UnimplementedEmbeddingServiceServer) DeleteEmbedding(context.Context, *DeleteEmbeddingRequest) (*DeleteEmbeddingResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteEmbedding not implemented")
 }
 func (UnimplementedEmbeddingServiceServer) mustEmbedUnimplementedEmbeddingServiceServer() {}
 func (UnimplementedEmbeddingServiceServer) testEmbeddedByValue()                          {}
@@ -197,6 +217,24 @@ func _EmbeddingService_SearchSimilar_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _EmbeddingService_DeleteEmbedding_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteEmbeddingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmbeddingServiceServer).DeleteEmbedding(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmbeddingService_DeleteEmbedding_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmbeddingServiceServer).DeleteEmbedding(ctx, req.(*DeleteEmbeddingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // EmbeddingService_ServiceDesc is the grpc.ServiceDesc for EmbeddingService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -215,6 +253,10 @@ var EmbeddingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SearchSimilar",
 			Handler:    _EmbeddingService_SearchSimilar_Handler,
+		},
+		{
+			MethodName: "DeleteEmbedding",
+			Handler:    _EmbeddingService_DeleteEmbedding_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

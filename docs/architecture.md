@@ -253,8 +253,8 @@ Dependency Direction: Presentation → UseCase → Domain ← Infrastructure
 - **google/uuid** (v1.6.0) - UUID generation for request tracking
 
 #### Inter-Service Communication
-- **google.golang.org/grpc** (v1.70.0) - gRPC framework for embedding service
-- **google.golang.org/protobuf** (v1.36.6) - Protocol Buffers for gRPC messages
+- **google.golang.org/grpc** (v1.78.0) - gRPC framework for embedding service
+- **google.golang.org/protobuf** (v1.36.11) - Protocol Buffers for gRPC messages
 - **Protocol Definition**: `proto/embedding/embedding.proto` - EmbeddingService RPC interface
 
 ---

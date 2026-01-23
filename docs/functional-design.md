@@ -2364,7 +2364,7 @@ func (s *EmbeddingServer) StoreEmbedding(
 
 #### Error Handling
 
-**Validation Errors**
+##### Validation Errors
 ```go
 var (
     ErrInvalidEmbeddingType      = errors.New("invalid embedding type")
@@ -2374,7 +2374,7 @@ var (
 )
 ```
 
-**gRPC Error Responses**
+##### gRPC Error Responses
 ```go
 // Validation errors return status.Error
 return nil, status.Error(codes.InvalidArgument, "article_id must be positive")
@@ -2383,7 +2383,7 @@ return nil, status.Error(codes.InvalidArgument, "article_id must be positive")
 return nil, status.Errorf(codes.Internal, "failed to get embeddings: %v", err)
 ```
 
-**Timeout Handling**
+##### Timeout Handling
 ```go
 // Search enforces 5-second timeout
 searchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -2397,13 +2397,13 @@ if errors.Is(err, context.DeadlineExceeded) {
 
 #### Integration
 
-**External AI Service (catchup-ai)**
+##### External AI Service (catchup-ai)
 - Python-based service generates embeddings using OpenAI/Voyage APIs
 - Connects to gRPC server to store embeddings
 - Manages embedding generation lifecycle
 
-**Communication Flow**
-```
+##### Communication Flow
+```text
 1. catchup-feed-backend crawls articles → saves to database
 2. catchup-ai fetches new articles without embeddings
 3. catchup-ai generates embeddings via OpenAI/Voyage API
@@ -2411,7 +2411,7 @@ if errors.Is(err, context.DeadlineExceeded) {
 5. Future: Frontend calls SearchSimilar for related articles
 ```
 
-**Configuration**
+##### Configuration
 ```bash
 # No environment variables needed (uses existing database connection)
 # gRPC server runs on same port as main app (internal service)

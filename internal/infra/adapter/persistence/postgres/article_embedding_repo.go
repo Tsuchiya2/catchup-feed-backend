@@ -86,7 +86,7 @@ ORDER BY embedding_type, provider, model`
 
 	embeddings := make([]*entity.ArticleEmbedding, 0)
 	for rows.Next() {
-		var emb entity.ArticleEmbedding
+		emb := &entity.ArticleEmbedding{}
 		var vector pgvector.Vector
 		var embType string
 		var provider string
@@ -111,7 +111,7 @@ ORDER BY embedding_type, provider, model`
 		emb.Provider = entity.EmbeddingProvider(provider)
 		emb.Embedding = vector.Slice()
 
-		embeddings = append(embeddings, &emb)
+		embeddings = append(embeddings, emb)
 	}
 
 	if err := rows.Err(); err != nil {
