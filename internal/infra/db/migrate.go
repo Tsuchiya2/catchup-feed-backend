@@ -138,39 +138,25 @@ CREATE INDEX IF NOT EXISTS idx_article_embeddings_vector
 	return nil
 }
 
-// MigrateDown rolls back the database schema.
-// This function removes tables and indexes in reverse order of creation.
-// Use with caution: this will delete all data in the affected tables.
+// MigrateDown rolls back the embedding feature schema.
+// This function removes embedding-related tables and indexes only.
+// Core tables (sources, articles) are intentionally preserved.
+// Use with caution: this will delete all embedding data.
 func MigrateDown(db *sql.DB) error {
-	// Embedding Feature: Drop article_embeddings table and related objects
-	// Drop indexes first (CASCADE will handle this automatically, but explicit is safer)
+	return MigrateDownEmbeddingsOnly(db)
+}
+
+// MigrateDownEmbeddingsOnly rolls back only the embedding feature.
+// This is a targeted rollback that preserves other schema elements.
+// Drops: article_embeddings table, idx_article_embeddings_vector, idx_article_embeddings_article_id
+// Preserves: sources, articles tables, vector extension
+func MigrateDownEmbeddingsOnly(db *sql.DB) error {
 	dropStatements := []string{
 		// Drop IVFFlat vector index
 		`DROP INDEX IF EXISTS idx_article_embeddings_vector`,
 		// Drop article_id index
 		`DROP INDEX IF EXISTS idx_article_embeddings_article_id`,
 		// Drop article_embeddings table (CASCADE to handle foreign key references)
-		`DROP TABLE IF EXISTS article_embeddings CASCADE`,
-	}
-
-	for _, stmt := range dropStatements {
-		if _, err := db.Exec(stmt); err != nil {
-			return err
-		}
-	}
-
-	// Note: We do NOT drop the vector extension as it may be used by other tables
-	// Note: We do NOT drop sources/articles tables as they are core tables
-
-	return nil
-}
-
-// MigrateDownEmbeddingsOnly rolls back only the embedding feature.
-// This is a targeted rollback that preserves other schema elements.
-func MigrateDownEmbeddingsOnly(db *sql.DB) error {
-	dropStatements := []string{
-		`DROP INDEX IF EXISTS idx_article_embeddings_vector`,
-		`DROP INDEX IF EXISTS idx_article_embeddings_article_id`,
 		`DROP TABLE IF EXISTS article_embeddings CASCADE`,
 	}
 

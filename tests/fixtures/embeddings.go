@@ -176,24 +176,29 @@ func sqrt64(x float64) float64 {
 	return z
 }
 
-// SimilarVector creates a vector similar to the base vector with a specified similarity.
-// The similarity parameter ranges from 0.0 (orthogonal) to 1.0 (identical).
-// Note: This is an approximation and may not produce exact similarity values.
+// SimilarVector creates a vector directionally similar to the base vector.
+// The retentionRatio parameter controls how much of the base vector is retained:
+//   - 1.0 = identical to base vector (no perturbation)
+//   - 0.0 = maximum perturbation (least similar)
+//
+// Note: This produces an approximate directionally similar vector for testing purposes.
+// It does NOT guarantee a specific cosine similarity value.
 //
 // Example:
 //
 //	base := GenerateTestVector(1536, 0.1)
-//	similar := SimilarVector(base, 0.9) // ~90% similar to base
-func SimilarVector(base []float32, similarity float32) []float32 {
+//	similar := SimilarVector(base, 0.9) // high retention, close to base
+//	dissimilar := SimilarVector(base, 0.1) // low retention, far from base
+func SimilarVector(base []float32, retentionRatio float32) []float32 {
 	dimension := len(base)
 	result := make([]float32, dimension)
 
-	// Mix the base vector with a random-ish perturbation
-	perturbation := 1.0 - similarity
+	// Mix the base vector with a deterministic perturbation
+	perturbation := 1.0 - retentionRatio
 	for i := 0; i < dimension; i++ {
 		// Add small perturbation based on index
 		noise := perturbation * float32(i%10) * 0.01
-		result[i] = base[i]*(1.0-perturbation) + noise
+		result[i] = base[i]*retentionRatio + noise
 	}
 
 	return result
