@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,10 +15,14 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 
 	"catchup-feed/internal/common/pagination"
 	pgRepo "catchup-feed/internal/infra/adapter/persistence/postgres"
 	"catchup-feed/internal/infra/db"
+	embeddingGrpc "catchup-feed/internal/interface/grpc"
+	pb "catchup-feed/internal/interface/grpc/pb/embedding"
 	"catchup-feed/pkg/config"
 	"catchup-feed/pkg/ratelimit"
 	"catchup-feed/pkg/security/csp"
@@ -148,6 +153,7 @@ func getVersion() string {
 // ServerComponents holds components needed for server operation and cleanup.
 type ServerComponents struct {
 	Handler     http.Handler
+	GRPCServer  *grpc.Server
 	IPStore     *ratelimit.InMemoryRateLimitStore
 	UserStore   *ratelimit.InMemoryRateLimitStore
 	IPWindow    time.Duration
@@ -298,15 +304,35 @@ func setupServer(logger *slog.Logger, database *sql.DB, version string) *ServerC
 	rootMux, authLimiter := setupRoutes(database, version, srcSvc, artSvc, ipExtractor, ipRateLimiter, userRateLimiter, logger)
 	handler := applyMiddleware(logger, rootMux, ipRateLimiter)
 
+	// Setup gRPC server for embedding service
+	grpcServer := setupGRPCServer(database, logger)
+
 	// Return server components including stores for cleanup
 	return &ServerComponents{
 		Handler:     handler,
+		GRPCServer:  grpcServer,
 		IPStore:     ipStore,
 		UserStore:   userStore,
 		IPWindow:    rateLimitConfig.DefaultIPWindow,
 		UserWindow:  rateLimitConfig.DefaultUserWindow,
 		AuthLimiter: authLimiter,
 	}
+}
+
+// setupGRPCServer configures and returns the gRPC server for embedding service.
+func setupGRPCServer(database *sql.DB, logger *slog.Logger) *grpc.Server {
+	grpcServer := grpc.NewServer()
+
+	// Register embedding service
+	embeddingRepo := pgRepo.NewArticleEmbeddingRepo(database)
+	embeddingService := embeddingGrpc.NewEmbeddingServer(embeddingRepo)
+	pb.RegisterEmbeddingServiceServer(grpcServer, embeddingService)
+
+	// Enable reflection for debugging (grpcurl, etc.)
+	reflection.Register(grpcServer)
+
+	logger.Info("gRPC embedding service registered")
+	return grpcServer
 }
 
 // setupRoutes registers all HTTP routes (public and protected).
@@ -458,7 +484,7 @@ func applyMiddleware(logger *slog.Logger, handler http.Handler, ipRateLimiter *m
 	return middlewareChain
 }
 
-// runServer starts the HTTP server and handles graceful shutdown.
+// runServer starts the HTTP and gRPC servers and handles graceful shutdown.
 func runServer(logger *slog.Logger, components *ServerComponents, version string) {
 	// Create a context for background goroutines
 	ctx, cancel := context.WithCancel(context.Background())
@@ -489,6 +515,33 @@ func runServer(logger *slog.Logger, components *ServerComponents, version string
 			slog.Duration("interval", cleanupCfg.Interval))
 	}
 
+	// Start gRPC server
+	grpcPort := os.Getenv("GRPC_PORT")
+	if grpcPort == "" {
+		grpcPort = "50052"
+	}
+	grpcAddr := ":" + grpcPort
+
+	// Error channel for coordinated shutdown on startup failures
+	serverErrCh := make(chan error, 2)
+
+	go func() {
+		grpcListener, err := net.Listen("tcp", grpcAddr)
+		if err != nil {
+			logger.Error("failed to listen for gRPC", slog.String("addr", grpcAddr), slog.Any("error", err))
+			serverErrCh <- fmt.Errorf("gRPC listen failed: %w", err)
+			return
+		}
+		logger.Info("gRPC server starting",
+			slog.String("addr", grpcAddr),
+			slog.String("version", version))
+		if err := components.GRPCServer.Serve(grpcListener); err != nil {
+			logger.Error("gRPC server failed", slog.Any("error", err))
+			serverErrCh <- fmt.Errorf("gRPC serve failed: %w", err)
+		}
+	}()
+
+	// Start HTTP server
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           components.Handler,
@@ -499,29 +552,51 @@ func runServer(logger *slog.Logger, components *ServerComponents, version string
 	}
 
 	go func() {
-		logger.Info("server starting",
+		logger.Info("HTTP server starting",
 			slog.String("addr", ":8080"),
 			slog.String("version", version))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("server failed", slog.Any("error", err))
-			os.Exit(1)
+			logger.Error("HTTP server failed", slog.Any("error", err))
+			serverErrCh <- fmt.Errorf("HTTP serve failed: %w", err)
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	logger.Info("shutting down server...")
+
+	// Wait for shutdown signal or server error
+	select {
+	case <-quit:
+		logger.Info("shutting down servers...")
+	case err := <-serverErrCh:
+		logger.Error("server startup failed, initiating shutdown", slog.Any("error", err))
+	}
 
 	// Cancel background goroutines (rate limit cleanup)
 	cancel()
 	logger.Debug("background cleanup goroutines cancelled")
 
+	// Graceful shutdown gRPC server with timeout
+	grpcShutdownDone := make(chan struct{})
+	go func() {
+		components.GRPCServer.GracefulStop()
+		close(grpcShutdownDone)
+	}()
+
+	select {
+	case <-grpcShutdownDone:
+		logger.Info("gRPC server stopped gracefully")
+	case <-time.After(5 * time.Second):
+		logger.Warn("gRPC server graceful shutdown timed out, forcing stop")
+		components.GRPCServer.Stop()
+		logger.Info("gRPC server force stopped")
+	}
+
 	// Shutdown HTTP server with timeout
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("server shutdown failed", slog.Any("error", err))
+		logger.Error("HTTP server shutdown failed", slog.Any("error", err))
 	}
-	logger.Info("server stopped")
+	logger.Info("HTTP server stopped")
 }

@@ -2,7 +2,7 @@
 
 **Project:** catchup-feed-backend
 **Version:** 2.0+
-**Last Updated:** 2026-01-09
+**Last Updated:** 2026-01-23
 
 ---
 
@@ -158,11 +158,34 @@ Dependency Direction: Presentation → UseCase → Domain ← Infrastructure
 └──────────────────────────┬─────────────────────────────────────────────┘
                            │
 ┌──────────────────────────┴─────────────────────────────────────────────┐
+│              AI SERVICE (catchup-ai - Python, External)                │
+│  ┌──────────────────────────────────────────────────────────────┐      │
+│  │ Embedding Generation Pipeline                                │      │
+│  │  1. Fetch articles without embeddings (via REST API)         │      │
+│  │  2. Generate embeddings via OpenAI/Voyage API                │      │
+│  │  3. Store embeddings via gRPC (EmbeddingService)             │      │
+│  └──────────────────────────────────────────────────────────────┘      │
+│                           │ gRPC                                       │
+│                           ▼                                            │
+│  ┌──────────────────────────────────────────────────────────────┐      │
+│  │ gRPC Server (Embedded in API Server)                         │      │
+│  │  • StoreEmbedding   - Store/update article embedding         │      │
+│  │  • GetEmbeddings    - Retrieve embeddings by article ID      │      │
+│  │  • SearchSimilar    - Vector similarity search (cosine)      │      │
+│  └──────────────────────────────────────────────────────────────┘      │
+└──────────────────────────┬─────────────────────────────────────────────┘
+                           │
+┌──────────────────────────┴─────────────────────────────────────────────┐
 │                    SHARED INFRASTRUCTURE                               │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  │
 │  │ PostgreSQL  │  │ Claude API  │  │ Discord API │  │ Slack API   │  │
 │  │ (Port 5432) │  │ (External)  │  │ (Webhook)   │  │ (Webhook)   │  │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘  │
+│  │             │  └─────────────┘  └─────────────┘  └─────────────┘  │
+│  │ Extensions: │                                                       │
+│  │ - pgvector  │  ┌─────────────┐  ┌─────────────┐                   │
+│  │ - pg_trgm   │  │ OpenAI API  │  │ Voyage API  │                   │
+│  │             │  │ (Embedding) │  │ (Embedding) │                   │
+│  └─────────────┘  └─────────────┘  └─────────────┘                   │
 └────────────────────────────────────────────────────────────────────────┘
 
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -193,7 +216,12 @@ Dependency Direction: Presentation → UseCase → Domain ← Infrastructure
 
 #### Database & Persistence
 - **jackc/pgx/v5** (v5.8.0) - PostgreSQL driver with connection pooling
+- **pgvector/pgvector-go** (v0.3.0) - PostgreSQL vector extension support for embeddings
 - **database/sql** (stdlib) - Database interface abstraction
+- **PostgreSQL Extensions**:
+  - `pgvector` - Vector data type and similarity search operators
+  - `pg_trgm` - Trigram matching for full-text search
+  - `ivfflat` index - Approximate nearest neighbor search
 
 #### Feed Processing
 - **mmcdole/gofeed** (v1.3.0) - RSS/Atom feed parser
@@ -223,6 +251,11 @@ Dependency Direction: Presentation → UseCase → Domain ← Infrastructure
 
 #### Utilities
 - **google/uuid** (v1.6.0) - UUID generation for request tracking
+
+#### Inter-Service Communication
+- **google.golang.org/grpc** (v1.78.0) - gRPC framework for embedding service
+- **google.golang.org/protobuf** (v1.36.11) - Protocol Buffers for gRPC messages
+- **Protocol Definition**: `proto/embedding/embedding.proto` - EmbeddingService RPC interface
 
 ---
 
@@ -1734,7 +1767,8 @@ func applyMiddleware(logger *slog.Logger, handler http.Handler, ipRateLimiter *m
 
 ---
 
-**Document Version**: 1.0
+**Document Version**: 1.1
 **Authors**: Documentation Worker (AI-generated from codebase analysis)
-**Review Status**: Initial draft
+**Review Status**: Updated for Embedding feature (2026-01-23)
+**Last Updated**: 2026-01-23
 **Next Review**: On major architecture changes

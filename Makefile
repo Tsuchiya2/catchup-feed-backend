@@ -5,7 +5,7 @@
 # No local Go installation required!
 # ============================================================
 
-.PHONY: help dev-up dev-down dev-shell test lint fmt build clean logs
+.PHONY: help dev-up dev-down dev-shell test lint fmt build clean logs proto k6-load k6-stress k6-quick
 
 # Default target
 .DEFAULT_GOAL := help
@@ -19,7 +19,7 @@ help: ## Show this help message
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Available targets:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 
 # ────────────────────────────────────────────────────────────
@@ -60,6 +60,26 @@ test-coverage: ## Generate test coverage report inside Docker
 	@echo "✅ Coverage report generated: coverage.html"
 
 # ────────────────────────────────────────────────────────────
+# Load Testing (k6)
+# ────────────────────────────────────────────────────────────
+k6-load: ## Run k6 load test for embedding service (requires running gRPC server)
+	@echo "🔥 Running k6 load test..."
+	@echo "   Note: Ensure gRPC embedding service is running on localhost:50052"
+	docker run --rm --network host -v "$(shell pwd):/app" -w /app grafana/k6:latest run tests/load/embedding_load_test.ts
+	@echo "✅ Load test completed"
+
+k6-stress: ## Run k6 stress test for embedding service (requires running gRPC server)
+	@echo "💥 Running k6 stress test..."
+	@echo "   Note: Ensure gRPC embedding service is running on localhost:50052"
+	docker run --rm --network host -v "$(shell pwd):/app" -w /app grafana/k6:latest run tests/load/embedding_stress_test.ts
+	@echo "✅ Stress test completed"
+
+k6-quick: ## Run quick k6 test (1 VU, 10 iterations) for validation
+	@echo "⚡ Running quick k6 validation test..."
+	docker run --rm --network host -v "$(shell pwd):/app" -w /app grafana/k6:latest run --vus 1 --iterations 10 tests/load/embedding_load_test.ts
+	@echo "✅ Quick test completed"
+
+# ────────────────────────────────────────────────────────────
 # Code Quality (runs inside Docker)
 # ────────────────────────────────────────────────────────────
 lint: ## Run golangci-lint inside Docker
@@ -76,6 +96,14 @@ fmt: ## Format code with gofmt inside Docker
 	@echo "🎨 Formatting code in Docker..."
 	docker compose --profile dev run --rm dev sh -c "gofmt -w ."
 	@echo "✅ Code formatting completed"
+
+# ────────────────────────────────────────────────────────────
+# Code Generation (runs inside Docker)
+# ────────────────────────────────────────────────────────────
+proto: ## Generate Go code from proto files inside Docker
+	@echo "📝 Generating proto files in Docker..."
+	docker compose --profile dev run --rm dev sh ./scripts/generate-proto.sh
+	@echo "✅ Proto generation completed"
 
 # ────────────────────────────────────────────────────────────
 # Build (runs inside Docker)

@@ -21,47 +21,7 @@ test-output.json
 __debug_bin*
 
 # Agent-generated documents (EDAF outputs)
-# Phase 1: Design
-docs/designs/*.md
-!docs/designs/README.md
-
-# Phase 2: Planning
-docs/plans/*.md
-!docs/plans/README.md
-
-# Phase 3: Code Review
-docs/reviews/*.md
-!docs/reviews/README.md
-docs/evaluations/
-docs/evaluation/
-
-# Implementation artifacts
-docs/api/
-docs/baselines/
-docs/benchmarks/
-docs/deployment/
-docs/guides/
-docs/implementation/
-docs/migrations/
-docs/observability/
-docs/operations/
-docs/performance/
-docs/reports/
-docs/research/
-docs/runbooks/
-docs/security/
-docs/testing/
-
-# Generated evaluation reports
-docs/security-evaluation-*.md
-docs/test-report.md
-docs/TEST_COMPLETION_REPORT.md
-
-# Development and deployment documentation (non-EDAF)
-docs/DEPLOYMENT_GUIDE.md
-docs/DEVELOPMENT.md
-docs/DOCKER_MIGRATION.md
-docs/MIGRATION_GUIDE.md
+.steering
 
 # Screenshots (EDAF Phase 3)
 docs/screenshots/

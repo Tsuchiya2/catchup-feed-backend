@@ -59,10 +59,10 @@ volumes:
 # ────────────────────────────────────────────────────────────
 services:
   # ──────────────────────────────────────────────────────────
-  # PostgreSQL データベース
+  # PostgreSQL データベース (pgvector対応)
   # ──────────────────────────────────────────────────────────
   postgres:
-    image: postgres:18-alpine
+    image: pgvector/pgvector:pg18
     container_name: catchup-postgres
     restart: unless-stopped
 
@@ -85,7 +85,9 @@ services:
       start_period: 10s
 
     volumes:
-      - db-data:/var/lib/postgresql/data
+      # PostgreSQL 18+ requires mount at /var/lib/postgresql (not /data)
+      # Data is stored in /var/lib/postgresql/18/docker subdirectory
+      - db-data:/var/lib/postgresql
       - db-backup:/backup
 
     ports:
@@ -216,8 +218,12 @@ services:
       # CORS設定
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
 
+      # gRPC設定
+      GRPC_PORT: ${GRPC_PORT:-50052}
+
     ports:
       - "${API_PORT:-8080}:8080"
+      - "${GRPC_PORT:-50052}:${GRPC_PORT:-50052}"
 
     # ヘルスチェック（Dockerfileで定義済み）
     healthcheck:

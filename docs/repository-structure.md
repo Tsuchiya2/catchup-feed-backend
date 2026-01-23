@@ -2,7 +2,7 @@
 
 This document provides a comprehensive overview of the catchup-feed-backend repository structure, explaining the purpose of each directory, module responsibilities, and file organization.
 
-**Last Updated:** 2026-01-09
+**Last Updated:** 2026-01-23
 **Project:** catchup-feed-backend
 **Language:** Go 1.25.4
 **Architecture Pattern:** Clean Architecture with Domain-Driven Design
@@ -230,6 +230,7 @@ internal/
 
 **Files:**
 - `article.go` - Article entity (ID, Title, URL, Summary, PublishedAt, CreatedAt)
+- `article_embedding.go` - ArticleEmbedding entity with enums and validation
 - `errors.go` - Domain-specific error types
 - `validation.go` - Entity validation logic
 
@@ -246,17 +247,51 @@ type Article struct {
 }
 ```
 
+**Key Entity: ArticleEmbedding**
+```go
+type ArticleEmbedding struct {
+    ID            int64
+    ArticleID     int64             // Foreign key to Article
+    EmbeddingType EmbeddingType     // Enum: title, content, summary
+    Provider      EmbeddingProvider // Enum: openai, voyage
+    Model         string            // e.g., "text-embedding-3-small"
+    Dimension     int32             // Vector dimension (must match len(Embedding))
+    Embedding     []float32         // Vector data
+    CreatedAt     time.Time
+    UpdatedAt     time.Time
+}
+
+type EmbeddingType string       // title | content | summary
+type EmbeddingProvider string   // openai | voyage
+```
+
 **Responsibilities:**
 - Define domain entities with business meaning
-- Entity-level validation (title length, URL format)
-- Domain-specific error types
+- Entity-level validation (title length, URL format, embedding dimension)
+- Domain-specific error types (ErrInvalidEmbeddingType, ErrEmptyEmbedding)
 - No external dependencies (standard library only)
 
 ### Repository Interfaces (`internal/repository/`)
 
 **Purpose:** Define contracts for data persistence (Dependency Inversion Principle)
 
-**Note:** Repository interface files have been moved to domain entities or removed. Interfaces are now defined where needed (use case layer).
+**Files:**
+- `article_embedding_repository.go` - ArticleEmbeddingRepository interface and SimilarArticle DTO
+
+**Key Interface: ArticleEmbeddingRepository**
+```go
+type ArticleEmbeddingRepository interface {
+    Upsert(ctx context.Context, embedding *entity.ArticleEmbedding) error
+    FindByArticleID(ctx context.Context, articleID int64) ([]*entity.ArticleEmbedding, error)
+    SearchSimilar(ctx context.Context, embedding []float32, embeddingType entity.EmbeddingType, limit int) ([]SimilarArticle, error)
+    DeleteByArticleID(ctx context.Context, articleID int64) (int64, error)
+}
+
+type SimilarArticle struct {
+    ArticleID  int64
+    Similarity float64  // Cosine similarity (0.0 to 1.0)
+}
+```
 
 **Pattern:**
 - Use cases define required repository interfaces
@@ -360,11 +395,13 @@ type Article struct {
 - Prometheus metrics (success rate, latency, rate limit hits)
 - Circuit breaker state monitoring
 
-### Presentation Layer (`internal/handler/http/`)
+### Presentation Layer
+
+#### HTTP Layer (`internal/handler/http/`)
 
 **Purpose:** HTTP request handling and response formatting
 
-#### Directory Structure
+**Directory Structure:**
 
 ```
 handler/http/
@@ -401,6 +438,39 @@ handler/http/
 └── pathutil/              # Path utilities
     ├── id.go              # ID extraction from URL
     └── normalize.go       # Path normalization
+```
+
+#### gRPC Layer (`internal/interface/grpc/`)
+
+**Purpose:** gRPC service handlers for inter-service communication
+
+**Files:**
+- `embedding_server.go` - gRPC server implementation for EmbeddingService
+- `pb/embedding/` - Generated Protocol Buffer code (from proto/)
+
+**Key Server: EmbeddingServer**
+```go
+type EmbeddingServer struct {
+    pb.UnimplementedEmbeddingServiceServer
+    repo repository.ArticleEmbeddingRepository
+}
+
+// RPC Methods:
+// - StoreEmbedding: Store or update article embedding (upsert)
+// - GetEmbeddings: Retrieve all embeddings for an article
+// - SearchSimilar: Find similar articles using vector search
+```
+
+**Integration:**
+- External AI service (`catchup-ai`) calls gRPC endpoints
+- Uses ArticleEmbeddingRepository for persistence
+- Returns validation errors as gRPC status codes
+
+**Protocol Buffers:**
+```
+proto/
+└── embedding/
+    └── embedding.proto  # Service and message definitions
 ```
 
 #### Key Middleware Components
@@ -462,6 +532,7 @@ handler/http/
 - `article_repo.go` - Article repository implementation (14,298 lines with tests)
 - `article_query_builder.go` - Dynamic SQL query builder for search
 - `source_repo.go` - Source repository implementation (8,714 lines)
+- `article_embedding_repo.go` - ArticleEmbedding repository with pgvector support
 
 **Key Implementation: ArticleRepository**
 ```go
@@ -473,6 +544,29 @@ handler/http/
 // - Delete(ctx, id) - Soft delete
 // - ExistsByURL(ctx, url) - Duplicate check
 // - ExistsByURLBatch(ctx, urls) - Batch duplicate check
+```
+
+**Key Implementation: ArticleEmbeddingRepository**
+```go
+// Methods:
+// - Upsert(ctx, embedding) - Insert or update embedding (ON CONFLICT DO UPDATE)
+// - FindByArticleID(ctx, articleID) - Retrieve all embeddings for an article
+// - SearchSimilar(ctx, embedding, type, limit) - Vector similarity search
+// - DeleteByArticleID(ctx, articleID) - Delete all embeddings for an article
+
+// Dependencies:
+// - github.com/pgvector/pgvector-go - Vector type conversion
+// - pgvector extension - Vector data type and operators
+```
+
+**Vector Search Implementation:**
+```sql
+-- Cosine distance operator (<=>)
+SELECT article_id, 1 - (embedding <=> $1) AS similarity
+FROM article_embeddings
+WHERE embedding_type = $2
+ORDER BY embedding <=> $1
+LIMIT $3
 ```
 
 **Query Builder Features:**
@@ -605,12 +699,40 @@ handler/http/
 
 **Files:**
 - `open.go` - Database connection factory
+- `migrate.go` - Database migrations including pgvector setup
 - `migrations/` - SQL migration files
 
 **Key Functions:**
 - `Open()` - Create PostgreSQL connection from `DATABASE_URL`
-- `MigrateUp()` - Apply pending migrations
+- `MigrateUp()` - Apply pending migrations (includes embedding tables)
 - Connection pool configuration
+
+**Embedding-Related Migrations:**
+```go
+// Enable pgvector extension
+_, _ = db.Exec(`CREATE EXTENSION IF NOT EXISTS vector`)
+
+// Create article_embeddings table
+db.Exec(`
+CREATE TABLE IF NOT EXISTS article_embeddings (
+    id              SERIAL PRIMARY KEY,
+    article_id      BIGINT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    embedding_type  VARCHAR(50) NOT NULL,
+    provider        VARCHAR(50) NOT NULL,
+    model           VARCHAR(100) NOT NULL,
+    dimension       INT NOT NULL,
+    embedding       vector(1536) NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(article_id, embedding_type, provider, model)
+)`)
+
+// Create IVFFlat index for vector search
+db.Exec(`
+CREATE INDEX IF NOT EXISTS idx_article_embeddings_vector
+    ON article_embeddings USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100)`)
+```
 
 ### Service Layer (`internal/service/auth/`)
 
@@ -855,16 +977,22 @@ tests/
 
 **Files:**
 - `articles.go` - Sample article fixtures (189 lines with tests)
+- `embeddings.go` - Sample embedding fixtures for testing
 
 **Key Fixtures:**
 - `SampleArticle()` - Basic article instance
 - `SampleArticles()` - Collection of test articles
+- `SampleEmbedding()` - Basic embedding instance with 1536-dim vector
+- `SampleEmbeddings()` - Collection of test embeddings
 - Builder pattern for test data customization
 
 **Usage:**
 ```go
 article := fixtures.SampleArticle()
 articles := fixtures.SampleArticles(10) // Generate 10 test articles
+
+embedding := fixtures.SampleEmbedding()
+embeddings := fixtures.SampleEmbeddings(5) // Generate 5 test embeddings
 ```
 
 ---
@@ -989,6 +1117,7 @@ monitoring/
 
 **Database:**
 - `jackc/pgx/v5` - PostgreSQL driver and toolkit
+- `pgvector/pgvector-go` - PostgreSQL vector extension support (embeddings)
 
 **HTTP & Web:**
 - `net/http` (stdlib) - HTTP server and client
@@ -1104,6 +1233,6 @@ monitoring/
 
 ---
 
-**Document Version:** 1.0
-**Last Updated:** 2026-01-09
+**Document Version:** 1.1
+**Last Updated:** 2026-01-23
 **Maintained By:** Development Team

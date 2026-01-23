@@ -37,9 +37,14 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # ────────────────────────────────────────────────────────────
 FROM deps AS dev
 
+# protoc (Protocol Buffers コンパイラ) のインストール
+RUN apk add --no-cache protobuf protobuf-dev
+
 # 開発ツールの追加インストール
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go install github.com/swaggo/swag/cmd/swag@latest
+    go install github.com/swaggo/swag/cmd/swag@latest && \
+    go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 
 # ソースコードのコピー（開発時にマウント可能）
 WORKDIR /app
