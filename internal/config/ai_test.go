@@ -320,14 +320,24 @@ func TestGetEnvHelpers(t *testing.T) {
 		assert.True(t, getEnvBool("TEST_BOOL", true))
 	})
 
-	t.Run("getEnvInt with value", func(t *testing.T) {
+	t.Run("getEnvInt32 with value", func(t *testing.T) {
 		setEnv(t, "TEST_INT", "42")
-		assert.Equal(t, 42, getEnvInt("TEST_INT", 10))
+		assert.Equal(t, int32(42), getEnvInt32("TEST_INT", 10))
 	})
 
-	t.Run("getEnvInt invalid defaults to default", func(t *testing.T) {
+	t.Run("getEnvInt32 invalid defaults to default", func(t *testing.T) {
 		setEnv(t, "TEST_INT", "invalid")
-		assert.Equal(t, 10, getEnvInt("TEST_INT", 10))
+		assert.Equal(t, int32(10), getEnvInt32("TEST_INT", 10))
+	})
+
+	t.Run("getEnvUint32 with value", func(t *testing.T) {
+		setEnv(t, "TEST_UINT", "42")
+		assert.Equal(t, uint32(42), getEnvUint32("TEST_UINT", 10))
+	})
+
+	t.Run("getEnvUint32 invalid defaults to default", func(t *testing.T) {
+		setEnv(t, "TEST_UINT", "invalid")
+		assert.Equal(t, uint32(10), getEnvUint32("TEST_UINT", 10))
 	})
 
 	t.Run("getEnvFloat with value", func(t *testing.T) {

@@ -107,14 +107,14 @@ func LoadAIConfig() (*AIConfig, error) {
 			GenerateSummary: getEnvDuration("AI_TIMEOUT_SUMMARY", 120*time.Second),
 		},
 		Search: SearchConfig{
-			DefaultLimit:         int32(getEnvInt("AI_SEARCH_DEFAULT_LIMIT", 10)),
-			MaxLimit:             int32(getEnvInt("AI_SEARCH_MAX_LIMIT", 50)),
+			DefaultLimit:         getEnvInt32("AI_SEARCH_DEFAULT_LIMIT", 10),
+			MaxLimit:             getEnvInt32("AI_SEARCH_MAX_LIMIT", 50),
 			DefaultMinSimilarity: float32(getEnvFloat("AI_SEARCH_DEFAULT_MIN_SIMILARITY", 0.7)),
-			DefaultMaxContext:    int32(getEnvInt("AI_SEARCH_DEFAULT_MAX_CONTEXT", 5)),
-			MaxContext:           int32(getEnvInt("AI_SEARCH_MAX_CONTEXT", 20)),
+			DefaultMaxContext:    getEnvInt32("AI_SEARCH_DEFAULT_MAX_CONTEXT", 5),
+			MaxContext:           getEnvInt32("AI_SEARCH_MAX_CONTEXT", 20),
 		},
 		CircuitBreaker: CircuitBreakerConfig{
-			MaxRequests:      uint32(getEnvInt("AI_CB_MAX_REQUESTS", 3)),
+			MaxRequests:      getEnvUint32("AI_CB_MAX_REQUESTS", 3),
 			Interval:         getEnvDuration("AI_CB_INTERVAL", 10*time.Second),
 			Timeout:          getEnvDuration("AI_CB_TIMEOUT", 30*time.Second),
 			FailureThreshold: 0.6,
@@ -215,16 +215,6 @@ func getEnvBool(key string, defaultValue bool) bool {
 	return defaultValue
 }
 
-// getEnvInt parses integer environment variable with default.
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		parsed, err := strconv.Atoi(value)
-		if err == nil {
-			return parsed
-		}
-	}
-	return defaultValue
-}
 
 // getEnvFloat parses float environment variable with default.
 func getEnvFloat(key string, defaultValue float64) float64 {
@@ -244,6 +234,30 @@ func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
 		parsed, err := time.ParseDuration(value)
 		if err == nil {
 			return parsed
+		}
+	}
+	return defaultValue
+}
+
+// getEnvInt32 parses integer environment variable with default.
+// Uses strconv.ParseInt with 32-bit size to avoid overflow.
+func getEnvInt32(key string, defaultValue int32) int32 {
+	if value := os.Getenv(key); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 32)
+		if err == nil {
+			return int32(parsed)
+		}
+	}
+	return defaultValue
+}
+
+// getEnvUint32 parses unsigned integer environment variable with default.
+// Uses strconv.ParseUint with 32-bit size to avoid overflow.
+func getEnvUint32(key string, defaultValue uint32) uint32 {
+	if value := os.Getenv(key); value != "" {
+		parsed, err := strconv.ParseUint(value, 10, 32)
+		if err == nil {
+			return uint32(parsed)
 		}
 	}
 	return defaultValue

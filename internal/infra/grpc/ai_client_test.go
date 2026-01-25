@@ -735,7 +735,7 @@ func TestNewGRPCAIProvider_AIDisabled(t *testing.T) {
 
 	provider, err := NewGRPCAIProvider(cfg)
 
-	assert.ErrorIs(t, err, ErrAIDisabled)
+	assert.ErrorIs(t, err, ai.ErrAIDisabled)
 	assert.Nil(t, provider)
 }
 

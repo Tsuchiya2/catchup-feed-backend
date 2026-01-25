@@ -17,22 +17,22 @@ func NewNoopAIProvider() *NoopAIProvider {
 
 // EmbedArticle returns an error indicating AI is disabled.
 func (p *NoopAIProvider) EmbedArticle(ctx context.Context, req ai.EmbedRequest) (*ai.EmbedResponse, error) {
-	return nil, ErrAIDisabled
+	return nil, ai.ErrAIDisabled
 }
 
 // SearchSimilar returns an error indicating AI is disabled.
 func (p *NoopAIProvider) SearchSimilar(ctx context.Context, req ai.SearchRequest) (*ai.SearchResponse, error) {
-	return nil, ErrAIDisabled
+	return nil, ai.ErrAIDisabled
 }
 
 // QueryArticles returns an error indicating AI is disabled.
 func (p *NoopAIProvider) QueryArticles(ctx context.Context, req ai.QueryRequest) (*ai.QueryResponse, error) {
-	return nil, ErrAIDisabled
+	return nil, ai.ErrAIDisabled
 }
 
 // GenerateSummary returns an error indicating AI is disabled.
 func (p *NoopAIProvider) GenerateSummary(ctx context.Context, req ai.SummaryRequest) (*ai.SummaryResponse, error) {
-	return nil, ErrAIDisabled
+	return nil, ai.ErrAIDisabled
 }
 
 // Health returns unhealthy status with descriptive message.

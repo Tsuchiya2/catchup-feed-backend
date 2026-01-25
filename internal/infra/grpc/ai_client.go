@@ -71,10 +71,10 @@ var (
 
 	// ErrTimeout indicates the operation exceeded its deadline.
 	ErrTimeout = errors.New("operation timed out")
-
-	// ErrAIDisabled indicates AI features are disabled by configuration.
-	ErrAIDisabled = errors.New("AI features are disabled")
 )
+
+// Note: ErrAIDisabled is defined in ai package (ai.ErrAIDisabled)
+// to avoid circular dependencies and ensure consistent error handling.
 
 // GRPCAIProvider implements AIProvider interface using gRPC client.
 type GRPCAIProvider struct {
@@ -92,7 +92,7 @@ func NewGRPCAIProvider(cfg *config.AIConfig) (*GRPCAIProvider, error) {
 	}
 
 	if !cfg.Enabled {
-		return nil, ErrAIDisabled
+		return nil, ai.ErrAIDisabled
 	}
 
 	// Create gRPC connection

@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"time"
 
@@ -104,12 +105,17 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Validate limit bounds for safe conversion
+	if limit < 0 || limit > math.MaxInt32 {
+		limit = 10 // Use default
+	}
+
 	logger.Info("Searching articles",
 		slog.String("query", query),
 		slog.Int("limit", limit),
 		slog.Float64("min_similarity", minSimilarity))
 
-	resp, err := aiService.Search(ctx, query, int32(limit), float32(minSimilarity))
+	resp, err := aiService.Search(ctx, query, int32(limit), float32(minSimilarity)) // #nosec G115 - bounds checked above
 	if err != nil {
 		logger.Error("search failed", slog.Any("error", err))
 		fmt.Fprintf(os.Stderr, "Error: Search failed: %v\n", err)

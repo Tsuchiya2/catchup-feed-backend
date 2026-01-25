@@ -58,7 +58,7 @@ message SearchSimilarRequest {
     // Optional: Maximum number of results. Default: 10, Max: 50.
     int32 limit = 2;
 
-    // Optional: Minimum similarity threshold (0.0 to 1.0). Default: 0.5.
+    // Optional: Minimum similarity threshold (0.0 to 1.0). Default: 0.7.
     float min_similarity = 3;
 }
 

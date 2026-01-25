@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/google/uuid"
 )
+
+// Note: contextKey type and requestIDKey constant are defined in embedding_hook.go
+// and shared across this package for consistency.
 
 var (
 	// ErrAIDisabled is returned when AI features are disabled.
@@ -76,7 +80,8 @@ func (s *Service) Search(ctx context.Context, query string, limit int32, minSimi
 		return nil, ErrAIDisabled
 	}
 
-	// Validate input
+	// Validate input (reject empty or whitespace-only queries)
+	query = strings.TrimSpace(query)
 	if query == "" {
 		slog.Warn("Empty search query provided",
 			slog.String("request_id", requestID))
@@ -157,7 +162,8 @@ func (s *Service) Ask(ctx context.Context, question string, maxContext int32) (*
 		return nil, ErrAIDisabled
 	}
 
-	// Validate input
+	// Validate input (reject empty or whitespace-only questions)
+	question = strings.TrimSpace(question)
 	if question == "" {
 		slog.Warn("Empty question provided",
 			slog.String("request_id", requestID))
@@ -313,8 +319,8 @@ func (s *Service) Close() error {
 
 // getOrCreateRequestID extracts request ID from context or creates a new one.
 func (s *Service) getOrCreateRequestID(ctx context.Context) string {
-	// Try to get request ID from context
-	if requestID, ok := ctx.Value("request_id").(string); ok && requestID != "" {
+	// Try to get request ID from context using typed key (defined in embedding_hook.go)
+	if requestID, ok := ctx.Value(requestIDKey).(string); ok && requestID != "" {
 		return requestID
 	}
 

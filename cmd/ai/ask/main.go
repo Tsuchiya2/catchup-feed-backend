@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"time"
 
@@ -101,11 +102,16 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	// Validate maxContext bounds for safe conversion
+	if maxContext < 0 || maxContext > math.MaxInt32 {
+		maxContext = 5 // Use default
+	}
+
 	logger.Info("Asking question",
 		slog.String("question", question),
 		slog.Int("max_context", maxContext))
 
-	resp, err := aiService.Ask(ctx, question, int32(maxContext))
+	resp, err := aiService.Ask(ctx, question, int32(maxContext)) // #nosec G115 - bounds checked above
 	if err != nil {
 		logger.Error("ask failed", slog.Any("error", err))
 		fmt.Fprintf(os.Stderr, "Error: Ask failed: %v\n", err)

@@ -2009,7 +2009,7 @@ avg(rate(ai_client_request_duration_seconds_sum[5m])
 | **Search Configuration** |
 | `AI_SEARCH_DEFAULT_LIMIT` | `10` | Default search result limit | int32 |
 | `AI_SEARCH_MAX_LIMIT` | `50` | Maximum search result limit | int32 |
-| `AI_SEARCH_DEFAULT_MIN_SIMILARITY` | `0.5` | Default similarity threshold (0.0-1.0) | float32 |
+| `AI_SEARCH_DEFAULT_MIN_SIMILARITY` | `0.7` | Default similarity threshold (0.0-1.0) | float32 |
 | `AI_SEARCH_DEFAULT_MAX_CONTEXT` | `5` | Default RAG context articles | int32 |
 | `AI_SEARCH_MAX_CONTEXT` | `20` | Maximum RAG context articles | int32 |
 | **Circuit Breaker** |

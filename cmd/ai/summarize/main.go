@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"time"
 
@@ -109,11 +110,16 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
+	// Validate maxHighlights bounds for safe conversion
+	if maxHighlights < 0 || maxHighlights > math.MaxInt32 {
+		maxHighlights = 5 // Use default
+	}
+
 	logger.Info("Generating summary",
 		slog.String("period", period),
 		slog.Int("max_highlights", maxHighlights))
 
-	resp, err := aiService.Summarize(ctx, summaryPeriod, int32(maxHighlights))
+	resp, err := aiService.Summarize(ctx, summaryPeriod, int32(maxHighlights)) // #nosec G115 - bounds checked above
 	if err != nil {
 		logger.Error("summarize failed", slog.Any("error", err))
 		fmt.Fprintf(os.Stderr, "Error: Summarize failed: %v\n", err)

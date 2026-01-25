@@ -30,7 +30,7 @@ func TestNoopAIProvider_EmbedArticle(t *testing.T) {
 	resp, err := provider.EmbedArticle(ctx, req)
 
 	assert.Nil(t, resp)
-	assert.ErrorIs(t, err, ErrAIDisabled)
+	assert.ErrorIs(t, err, ai.ErrAIDisabled)
 }
 
 func TestNoopAIProvider_SearchSimilar(t *testing.T) {
@@ -45,7 +45,7 @@ func TestNoopAIProvider_SearchSimilar(t *testing.T) {
 	resp, err := provider.SearchSimilar(ctx, req)
 
 	assert.Nil(t, resp)
-	assert.ErrorIs(t, err, ErrAIDisabled)
+	assert.ErrorIs(t, err, ai.ErrAIDisabled)
 }
 
 func TestNoopAIProvider_QueryArticles(t *testing.T) {
@@ -60,7 +60,7 @@ func TestNoopAIProvider_QueryArticles(t *testing.T) {
 	resp, err := provider.QueryArticles(ctx, req)
 
 	assert.Nil(t, resp)
-	assert.ErrorIs(t, err, ErrAIDisabled)
+	assert.ErrorIs(t, err, ai.ErrAIDisabled)
 }
 
 func TestNoopAIProvider_GenerateSummary(t *testing.T) {
@@ -75,7 +75,7 @@ func TestNoopAIProvider_GenerateSummary(t *testing.T) {
 	resp, err := provider.GenerateSummary(ctx, req)
 
 	assert.Nil(t, resp)
-	assert.ErrorIs(t, err, ErrAIDisabled)
+	assert.ErrorIs(t, err, ai.ErrAIDisabled)
 }
 
 func TestNoopAIProvider_Health(t *testing.T) {
