@@ -117,8 +117,8 @@ func LoadAIConfig() (*AIConfig, error) {
 			MaxRequests:      getEnvUint32("AI_CB_MAX_REQUESTS", 3),
 			Interval:         getEnvDuration("AI_CB_INTERVAL", 10*time.Second),
 			Timeout:          getEnvDuration("AI_CB_TIMEOUT", 30*time.Second),
-			FailureThreshold: 0.6,
-			MinRequests:      5,
+			FailureThreshold: getEnvFloat("AI_CB_FAILURE_THRESHOLD", 0.6),
+			MinRequests:      getEnvUint32("AI_CB_MIN_REQUESTS", 5),
 		},
 		Observability: ObservabilityConfig{
 			EnableTracing:   getEnvBool("AI_TRACING_ENABLED", false),
@@ -191,6 +191,14 @@ func (c *AIConfig) Validate() error {
 
 	if c.CircuitBreaker.Timeout <= 0 {
 		return fmt.Errorf("AI_CB_TIMEOUT must be positive")
+	}
+
+	if c.CircuitBreaker.FailureThreshold <= 0 || c.CircuitBreaker.FailureThreshold > 1.0 {
+		return fmt.Errorf("AI_CB_FAILURE_THRESHOLD must be between 0.0 and 1.0")
+	}
+
+	if c.CircuitBreaker.MinRequests == 0 {
+		return fmt.Errorf("AI_CB_MIN_REQUESTS must be positive")
 	}
 
 	return nil

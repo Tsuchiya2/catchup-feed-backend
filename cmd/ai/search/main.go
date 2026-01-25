@@ -105,9 +105,20 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Validate limit bounds for safe conversion
+	// Validate limit bounds for safe conversion and configured max
+	const maxLimit = 50
 	if limit < 0 || limit > math.MaxInt32 {
 		limit = 10 // Use default
+	}
+	if limit > maxLimit {
+		fmt.Fprintf(os.Stderr, "Warning: limit %d exceeds maximum %d, using %d\n", limit, maxLimit, maxLimit)
+		limit = maxLimit
+	}
+
+	// Validate similarity bounds
+	if minSimilarity < 0.0 || minSimilarity > 1.0 {
+		fmt.Fprintf(os.Stderr, "Warning: min-similarity %.2f out of range [0.0, 1.0], using default 0.7\n", minSimilarity)
+		minSimilarity = 0.7
 	}
 
 	logger.Info("Searching articles",

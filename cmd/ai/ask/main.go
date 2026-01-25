@@ -102,9 +102,14 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Validate maxContext bounds for safe conversion
+	// Validate maxContext bounds for safe conversion and configured max
+	const maxContextLimit = 20
 	if maxContext < 0 || maxContext > math.MaxInt32 {
 		maxContext = 5 // Use default
+	}
+	if maxContext > maxContextLimit {
+		fmt.Fprintf(os.Stderr, "Warning: max-context %d exceeds maximum %d, using %d\n", maxContext, maxContextLimit, maxContextLimit)
+		maxContext = maxContextLimit
 	}
 
 	logger.Info("Asking question",

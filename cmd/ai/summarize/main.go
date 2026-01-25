@@ -110,9 +110,14 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	// Validate maxHighlights bounds for safe conversion
+	// Validate maxHighlights bounds for safe conversion and configured max
+	const maxHighlightsLimit = 10
 	if maxHighlights < 0 || maxHighlights > math.MaxInt32 {
 		maxHighlights = 5 // Use default
+	}
+	if maxHighlights > maxHighlightsLimit {
+		fmt.Fprintf(os.Stderr, "Warning: highlights %d exceeds maximum %d, using %d\n", maxHighlights, maxHighlightsLimit, maxHighlightsLimit)
+		maxHighlights = maxHighlightsLimit
 	}
 
 	logger.Info("Generating summary",
