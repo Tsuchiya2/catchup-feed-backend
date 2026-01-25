@@ -4,7 +4,7 @@
 > **Architecture**: Clean Architecture
 > **Language**: Go 1.25.4
 > **Database**: PostgreSQL 18
-> **Last Updated**: 2026-01-23
+> **Last Updated**: 2026-01-24
 
 ---
 
@@ -21,6 +21,8 @@
    - [3.6 Content Enhancement](#36-content-enhancement)
    - [3.7 Search & Filtering](#37-search--filtering)
    - [3.8 Rate Limiting](#38-rate-limiting)
+   - [3.9 Embedding Storage & Vector Search](#39-embedding-storage--vector-search)
+   - [3.10 AI Integration Client](#310-ai-integration-client-catchup-ai-grpc-client)
 4. [API Specifications](#api-specifications)
 5. [Data Models](#data-models)
 6. [Business Logic](#business-logic)
@@ -2419,6 +2421,480 @@ if errors.Is(err, context.DeadlineExceeded) {
 
 ---
 
+### 3.10 AI Integration Client (catchup-ai gRPC Client)
+
+#### Purpose
+Integrate with catchup-ai (Python AI service) via gRPC to enable advanced AI-powered features including semantic search, RAG-based question answering, and article summarization.
+
+#### User Stories
+- **As a CLI user**, I can search articles semantically using natural language queries
+- **As a CLI user**, I can ask questions about my article collection and receive AI-generated answers with citations
+- **As a CLI user**, I can generate weekly/monthly digests of my articles
+- **As a system**, I automatically generate embeddings for new articles without blocking the crawl process
+
+#### Architecture
+
+**Component Diagram**
+```text
+catchup-feed-backend                          catchup-ai
++---------------------------+                 +------------------+
+|                           |   gRPC :50051   |                  |
+| CLI Commands              |---------------->| EmbedArticle     |
+| (search, ask, summarize)  |                 | SearchSimilar    |
+|                           |                 | QueryArticles    |
+| AI Use Case Service       |                 | GenerateSummary  |
+| (orchestration)           |                 |                  |
+|                           |                 |                  |
+| AI gRPC Client            |                 |                  |
+| (circuit breaker)         |                 |                  |
+|                           |                 |                  |
+| Embedding Hook            |                 |                  |
+| (async, non-blocking)     |                 |                  |
++---------------------------+                 +------------------+
+```
+
+**AIProvider Interface** (internal/usecase/ai/provider.go)
+```go
+// AIProvider defines the interface for AI service operations.
+type AIProvider interface {
+    EmbedArticle(ctx context.Context, req EmbedRequest) (*EmbedResponse, error)
+    SearchSimilar(ctx context.Context, req SearchRequest) (*SearchResponse, error)
+    QueryArticles(ctx context.Context, req QueryRequest) (*QueryResponse, error)
+    GenerateSummary(ctx context.Context, req SummaryRequest) (*SummaryResponse, error)
+    Health(ctx context.Context) (*HealthStatus, error)
+    Close() error
+}
+```
+
+#### API Operations
+
+**EmbedArticle** - Generate embedding for article
+```go
+Request:
+type EmbedRequest struct {
+    ArticleID int64   // Required: Article ID
+    Title     string  // Required: Article title
+    Content   string  // Required: Article content for embedding
+    URL       string  // Optional: Article URL for reference
+}
+
+Response:
+type EmbedResponse struct {
+    Success      bool   // True if embedding generated successfully
+    ErrorMessage string // Error message if failed
+    Dimension    int32  // Embedding dimension (e.g., 768, 1536)
+}
+```
+
+**SearchSimilar** - Find semantically similar articles
+```go
+Request:
+type SearchRequest struct {
+    Query         string  // Required: Natural language query
+    Limit         int32   // Optional: Max results (default: 10, max: 50)
+    MinSimilarity float32 // Optional: Min similarity threshold (default: 0.7)
+}
+
+Response:
+type SearchResponse struct {
+    Articles      []SimilarArticle // Ranked similar articles
+    TotalSearched int64            // Total articles searched
+}
+
+type SimilarArticle struct {
+    ArticleID  int64   // Article ID
+    Title      string  // Article title
+    URL        string  // Article URL
+    Similarity float32 // Cosine similarity score (0.0-1.0)
+    Excerpt    string  // Brief excerpt highlighting relevance
+}
+```
+
+**QueryArticles** - RAG-based Q&A
+```go
+Request:
+type QueryRequest struct {
+    Question   string // Required: Natural language question
+    MaxContext int32  // Optional: Max context articles (default: 5, max: 20)
+}
+
+Response:
+type QueryResponse struct {
+    Answer     string          // AI-generated answer
+    Sources    []SourceArticle // Source articles with relevance
+    Confidence float32         // Confidence score (0.0-1.0)
+}
+
+type SourceArticle struct {
+    ArticleID int64   // Article ID
+    Title     string  // Article title
+    URL       string  // Article URL
+    Relevance float32 // Relevance score (0.0-1.0)
+}
+```
+
+**GenerateSummary** - Generate article digest
+```go
+Request:
+type SummaryRequest struct {
+    Period        SummaryPeriod // Required: WEEK or MONTH
+    MaxHighlights int32         // Optional: Max highlights (default: 5, max: 10)
+}
+
+Response:
+type SummaryResponse struct {
+    Summary      string      // Overall summary
+    StartDate    string      // Period start (ISO 8601)
+    EndDate      string      // Period end (ISO 8601)
+    ArticleCount int32       // Articles summarized
+    Highlights   []Highlight // Key topics
+}
+
+type Highlight struct {
+    Topic        string // Topic name
+    Description  string // Brief description
+    ArticleCount int32  // Related articles count
+}
+```
+
+#### Business Logic
+
+**AI Service** (internal/usecase/ai/service.go)
+```go
+type Service struct {
+    provider  AIProvider
+    aiEnabled bool
+}
+
+func NewService(provider AIProvider, aiEnabled bool) *Service {
+    return &Service{provider: provider, aiEnabled: aiEnabled}
+}
+
+// Search performs semantic search with validation and defaults
+func (s *Service) Search(ctx context.Context, query string, limit int32, minSimilarity float32) (*SearchResponse, error) {
+    // 1. Check AI enabled
+    if !s.aiEnabled {
+        return nil, ErrAIDisabled
+    }
+
+    // 2. Validate query
+    if strings.TrimSpace(query) == "" {
+        return nil, ErrInvalidQuery
+    }
+
+    // 3. Apply defaults
+    if limit <= 0 {
+        limit = 10
+    }
+    if minSimilarity <= 0 {
+        minSimilarity = 0.7
+    }
+
+    // 4. Call provider
+    resp, err := s.provider.SearchSimilar(ctx, SearchRequest{
+        Query: query, Limit: limit, MinSimilarity: minSimilarity,
+    })
+    if err != nil {
+        return nil, fmt.Errorf("AI search failed: %w", err)
+    }
+
+    return resp, nil
+}
+```
+
+**Embedding Hook** (internal/usecase/ai/embedding_hook.go)
+```go
+type EmbeddingHook struct {
+    provider  AIProvider
+    aiEnabled bool
+}
+
+// EmbedArticleAsync generates embedding asynchronously without blocking.
+// Failures are logged but do not propagate to caller.
+func (h *EmbeddingHook) EmbedArticleAsync(ctx context.Context, article *entity.Article) {
+    if !h.aiEnabled || article == nil {
+        return
+    }
+
+    // Extract request ID for logging correlation
+    requestID, _ := ctx.Value(requestIDKey).(string)
+
+    go func() {
+        embedCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
+
+        req := EmbedRequest{
+            ArticleID: article.ID,
+            Title:     article.Title,
+            Content:   article.Summary,
+            URL:       article.URL,
+        }
+
+        resp, err := h.provider.EmbedArticle(embedCtx, req)
+        if err != nil {
+            slog.Warn("async embedding failed",
+                slog.Int64("article_id", article.ID),
+                slog.String("request_id", requestID),
+                slog.String("error", err.Error()))
+            return
+        }
+
+        if !resp.Success {
+            slog.Warn("embedding not successful",
+                slog.Int64("article_id", article.ID),
+                slog.String("error", resp.ErrorMessage))
+            return
+        }
+
+        slog.Info("article embedded successfully",
+            slog.Int64("article_id", article.ID),
+            slog.Int("dimension", int(resp.Dimension)))
+    }()
+}
+```
+
+#### HTTP Health Endpoints
+
+**Health Handler** (internal/handler/http/health_ai.go)
+```go
+// GET /health/ai - AI service health status
+func (h *AIHealthHandler) Health(w http.ResponseWriter, r *http.Request) {
+    ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+    defer cancel()
+
+    status, err := h.provider.Health(ctx)
+
+    w.Header().Set("Content-Type", "application/json")
+
+    if err != nil || !status.Healthy {
+        w.WriteHeader(http.StatusServiceUnavailable)
+        json.NewEncoder(w).Encode(AIHealthResponse{
+            Status:      "unhealthy",
+            Message:     status.Message,
+            CircuitOpen: status.CircuitOpen,
+        })
+        return
+    }
+
+    json.NewEncoder(w).Encode(AIHealthResponse{
+        Status:  "healthy",
+        Latency: status.Latency.String(),
+    })
+}
+
+// GET /ready/ai - Readiness for traffic
+func (h *AIHealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
+    ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+    defer cancel()
+
+    status, _ := h.provider.Health(ctx)
+
+    w.Header().Set("Content-Type", "application/json")
+
+    if status.CircuitOpen {
+        w.WriteHeader(http.StatusServiceUnavailable)
+        ready := false
+        json.NewEncoder(w).Encode(AIHealthResponse{
+            Ready:   &ready,
+            Message: "circuit breaker open",
+        })
+        return
+    }
+
+    ready := true
+    json.NewEncoder(w).Encode(AIHealthResponse{Ready: &ready})
+}
+```
+
+#### gRPC Client Implementation
+
+**GRPCAIProvider** (internal/infra/grpc/ai_client.go)
+```go
+type GRPCAIProvider struct {
+    conn           *grpc.ClientConn
+    client         pb.ArticleAIClient
+    circuitBreaker *gobreaker.CircuitBreaker
+    config         *config.AIConfig
+}
+
+func NewGRPCAIProvider(cfg *config.AIConfig) (*GRPCAIProvider, error) {
+    if !cfg.Enabled {
+        return nil, ErrAIDisabled
+    }
+
+    // Create gRPC connection with timeout
+    ctx, cancel := context.WithTimeout(context.Background(), cfg.ConnectionTimeout)
+    defer cancel()
+
+    conn, err := grpc.DialContext(ctx, cfg.GRPCAddress,
+        grpc.WithTransportCredentials(insecure.NewCredentials()),
+        grpc.WithBlock(),
+    )
+    if err != nil {
+        return nil, fmt.Errorf("failed to connect to AI service: %w", err)
+    }
+
+    // Configure circuit breaker
+    cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
+        Name:        "ai-service",
+        MaxRequests: cfg.CircuitBreaker.MaxRequests,
+        Interval:    cfg.CircuitBreaker.Interval,
+        Timeout:     cfg.CircuitBreaker.Timeout,
+        OnStateChange: func(name string, from, to gobreaker.State) {
+            slog.Info("AI circuit breaker state change",
+                slog.String("name", name),
+                slog.String("from", from.String()),
+                slog.String("to", to.String()))
+            updateCircuitBreakerMetric(name, to)
+        },
+    })
+
+    return &GRPCAIProvider{
+        conn:           conn,
+        client:         pb.NewArticleAIClient(conn),
+        circuitBreaker: cb,
+        config:         cfg,
+    }, nil
+}
+
+// SearchSimilar calls AI service with circuit breaker protection
+func (p *GRPCAIProvider) SearchSimilar(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
+    result, err := p.circuitBreaker.Execute(func() (interface{}, error) {
+        ctx, cancel := context.WithTimeout(ctx, p.config.Timeouts.SearchSimilar)
+        defer cancel()
+
+        resp, err := p.client.SearchSimilar(ctx, &pb.SearchSimilarRequest{
+            Query:         req.Query,
+            Limit:         req.Limit,
+            MinSimilarity: req.MinSimilarity,
+        })
+        if err != nil {
+            return nil, err
+        }
+
+        return convertSearchResponse(resp), nil
+    })
+
+    if err != nil {
+        if errors.Is(err, gobreaker.ErrOpenState) {
+            return nil, ErrCircuitBreakerOpen
+        }
+        return nil, err
+    }
+
+    return result.(*SearchResponse), nil
+}
+```
+
+**NoopAIProvider** (internal/infra/grpc/noop_ai_provider.go)
+```go
+// NoopAIProvider is used when AI features are disabled.
+type NoopAIProvider struct{}
+
+func (p *NoopAIProvider) EmbedArticle(ctx context.Context, req EmbedRequest) (*EmbedResponse, error) {
+    return nil, ErrAIDisabled
+}
+
+func (p *NoopAIProvider) Health(ctx context.Context) (*HealthStatus, error) {
+    return &HealthStatus{
+        Healthy: false,
+        Message: "AI features are disabled",
+    }, nil
+}
+
+// ... other methods return ErrAIDisabled
+```
+
+#### Error Handling
+
+**Error Types** (internal/usecase/ai/errors.go)
+```go
+var (
+    ErrAIDisabled        = errors.New("AI features are disabled")
+    ErrInvalidQuery      = errors.New("invalid query: query cannot be empty")
+    ErrInvalidQuestion   = errors.New("invalid question: question cannot be empty")
+    ErrInvalidPeriod     = errors.New("invalid period: must be week or month")
+    ErrCircuitBreakerOpen = errors.New("AI service temporarily unavailable")
+)
+```
+
+**Error Mapping**
+```go
+// Map gRPC errors to domain errors
+switch status.Code(err) {
+case codes.DeadlineExceeded:
+    return nil, fmt.Errorf("AI service timeout: %w", err)
+case codes.Unavailable:
+    return nil, fmt.Errorf("AI service unavailable: %w", err)
+case codes.InvalidArgument:
+    return nil, fmt.Errorf("invalid request: %w", err)
+default:
+    return nil, fmt.Errorf("AI service error: %w", err)
+}
+```
+
+#### Configuration
+
+**Environment Variables**
+```bash
+AI_GRPC_ADDRESS=localhost:50051    # catchup-ai gRPC server address
+AI_ENABLED=true                     # Enable/disable AI features
+AI_CONNECTION_TIMEOUT=10s           # gRPC connection timeout
+AI_TIMEOUT_EMBED=30s                # EmbedArticle timeout
+AI_TIMEOUT_SEARCH=30s               # SearchSimilar timeout
+AI_TIMEOUT_QUERY=60s                # QueryArticles timeout
+AI_TIMEOUT_SUMMARY=120s             # GenerateSummary timeout
+AI_CB_MAX_REQUESTS=3                # Circuit breaker half-open probes
+AI_CB_INTERVAL=10s                  # Circuit breaker interval
+AI_CB_TIMEOUT=30s                   # Circuit breaker open duration
+```
+
+**AIConfig Struct** (internal/config/ai.go)
+```go
+type AIConfig struct {
+    GRPCAddress       string
+    Enabled           bool
+    ConnectionTimeout time.Duration
+    Timeouts          TimeoutConfig
+    CircuitBreaker    CircuitBreakerConfig
+}
+
+type TimeoutConfig struct {
+    EmbedArticle    time.Duration // Default: 30s
+    SearchSimilar   time.Duration // Default: 30s
+    QueryArticles   time.Duration // Default: 60s
+    GenerateSummary time.Duration // Default: 120s
+}
+
+type CircuitBreakerConfig struct {
+    MaxRequests uint32        // Default: 3
+    Interval    time.Duration // Default: 10s
+    Timeout     time.Duration // Default: 30s
+}
+```
+
+#### Metrics
+
+**Prometheus Metrics**
+```promql
+# Request metrics
+ai_client_requests_total{method="SearchSimilar",status="success"}
+ai_client_requests_total{method="SearchSimilar",status="error"}
+ai_client_request_duration_seconds{method="SearchSimilar"}
+
+# Circuit breaker state (0=closed, 1=open, 2=half-open)
+ai_client_circuit_breaker_state{name="ai-service"}
+
+# Embedding metrics
+ai_embedding_processed_total{status="success"}
+ai_embedding_processed_total{status="error"}
+
+# Health check metrics
+ai_health_check_latency_seconds
+```
+
+---
+
 ## 4. API Specifications
 
 ### Base URL
@@ -2771,7 +3247,7 @@ Layer 3 (Endpoint-specific):
 
 ---
 
-**Document Version**: 1.0
-**Generated**: 2026-01-09
-**Total Features Documented**: 8 core features + 6 advanced features
-**Total API Endpoints**: 15 endpoints
+**Document Version**: 1.1
+**Generated**: 2026-01-24
+**Total Features Documented**: 10 core features + 6 advanced features
+**Total API Endpoints**: 17 endpoints (including AI health endpoints)

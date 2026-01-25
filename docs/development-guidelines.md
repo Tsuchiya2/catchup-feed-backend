@@ -1549,6 +1549,449 @@ Keep documentation up-to-date:
 
 ---
 
+## AI Integration Development
+
+### Overview
+
+The AI integration provides semantic search, RAG-based Q&A, and article summarization via gRPC communication with catchup-ai service. Follow these guidelines when working with AI features.
+
+### AIProvider Interface
+
+All AI operations go through the `AIProvider` interface for abstraction and testability:
+
+```go
+// internal/usecase/ai/provider.go
+type AIProvider interface {
+    EmbedArticle(ctx context.Context, req EmbedRequest) (*EmbedResponse, error)
+    SearchSimilar(ctx context.Context, req SearchRequest) (*SearchResponse, error)
+    QueryArticles(ctx context.Context, req QueryRequest) (*QueryResponse, error)
+    GenerateSummary(ctx context.Context, req SummaryRequest) (*SummaryResponse, error)
+    Health(ctx context.Context) (*HealthStatus, error)
+    Close() error
+}
+```
+
+**Implementations:**
+- `GRPCAIProvider` - Primary implementation (gRPC client)
+- `NoopAIProvider` - No-op stub for testing
+
+### Adding New AI Features
+
+**Step 1**: Define request/response DTOs in `provider.go`:
+
+```go
+// New request type
+type NewFeatureRequest struct {
+    // Request fields
+}
+
+// New response type
+type NewFeatureResponse struct {
+    // Response fields
+}
+```
+
+**Step 2**: Add method to `AIProvider` interface:
+
+```go
+type AIProvider interface {
+    // ... existing methods ...
+    NewFeature(ctx context.Context, req NewFeatureRequest) (*NewFeatureResponse, error)
+}
+```
+
+**Step 3**: Implement in `GRPCAIProvider`:
+
+```go
+// internal/infra/grpc/ai_client.go
+func (p *GRPCAIProvider) NewFeature(ctx context.Context, req ai.NewFeatureRequest) (*ai.NewFeatureResponse, error) {
+    // 1. Validate input
+    if err := validateNewFeatureRequest(req); err != nil {
+        return nil, fmt.Errorf("%w: %v", ErrInvalidQuery, err)
+    }
+
+    // 2. Apply defaults and limits
+    // ...
+
+    // 3. Create context with timeout
+    ctx, cancel := context.WithTimeout(ctx, p.config.Timeouts.NewFeature)
+    defer cancel()
+
+    // 4. Track request duration
+    start := time.Now()
+    defer func() {
+        aiClientRequestDuration.WithLabelValues("NewFeature").Observe(time.Since(start).Seconds())
+    }()
+
+    // 5. Execute through circuit breaker
+    result, err := p.circuitBreaker.Execute(func() (any, error) {
+        pbReq := &pb.NewFeatureRequest{ /* ... */ }
+        pbResp, err := p.client.NewFeature(ctx, pbReq)
+        if err != nil {
+            return nil, p.mapGRPCError(err)
+        }
+        return &ai.NewFeatureResponse{ /* ... */ }, nil
+    })
+
+    // 6. Record request metrics
+    status := "success"
+    if err != nil {
+        status = "error"
+        if errors.Is(err, gobreaker.ErrOpenState) {
+            aiClientRequestsTotal.WithLabelValues("NewFeature", "circuit_breaker_open").Inc()
+            return nil, ErrCircuitBreakerOpen
+        }
+    }
+    aiClientRequestsTotal.WithLabelValues("NewFeature", status).Inc()
+
+    if err != nil {
+        return nil, err
+    }
+
+    return result.(*ai.NewFeatureResponse), nil
+}
+```
+
+**Step 4**: Implement in `NoopAIProvider`:
+
+```go
+// internal/infra/grpc/noop_ai_provider.go
+func (n *NoopAIProvider) NewFeature(ctx context.Context, req ai.NewFeatureRequest) (*ai.NewFeatureResponse, error) {
+    return &ai.NewFeatureResponse{ /* stub data */ }, nil
+}
+```
+
+**Step 5**: Add orchestration in `Service`:
+
+```go
+// internal/usecase/ai/service.go
+func (s *Service) NewFeature(ctx context.Context, params SomeParams) (*NewFeatureResponse, error) {
+    requestID := s.getOrCreateRequestID(ctx)
+
+    // Check feature flag
+    if !s.aiEnabled {
+        slog.Warn("AI feature requested but disabled", slog.String("request_id", requestID))
+        return nil, ErrAIDisabled
+    }
+
+    // Validate input
+    // ...
+
+    // Log request
+    slog.Info("Executing new feature", slog.String("request_id", requestID))
+
+    // Call provider
+    resp, err := s.provider.NewFeature(ctx, NewFeatureRequest{ /* ... */ })
+    if err != nil {
+        slog.Error("New feature failed", slog.String("request_id", requestID), slog.Any("error", err))
+        return nil, fmt.Errorf("AI new feature failed: %w", err)
+    }
+
+    return resp, nil
+}
+```
+
+### Input Validation
+
+Always validate inputs before sending to AI service:
+
+```go
+func validateSearchRequest(req ai.SearchRequest) error {
+    if strings.TrimSpace(req.Query) == "" {
+        return fmt.Errorf("query cannot be empty")
+    }
+    if len(req.Query) > 1000 {
+        return fmt.Errorf("query exceeds maximum length of 1000 characters")
+    }
+    if req.Limit < 0 {
+        return fmt.Errorf("limit must be non-negative")
+    }
+    if req.MinSimilarity < 0 || req.MinSimilarity > 1 {
+        return fmt.Errorf("min_similarity must be between 0.0 and 1.0")
+    }
+    return nil
+}
+```
+
+**Validation Rules:**
+- Empty strings → `fmt.Errorf("field cannot be empty")`
+- String length → Enforce maximum (prevent DoS)
+- Numeric ranges → Validate bounds (0.0-1.0 for similarity, positive for IDs)
+- Special characters → Allow only safe characters
+
+### Circuit Breaker Best Practices
+
+**When to use circuit breaker:**
+- All external service calls (gRPC, HTTP APIs)
+- Operations that can fail repeatedly
+- Resource-intensive operations
+
+**Circuit breaker configuration:**
+
+```go
+CircuitBreakerConfig{
+    Name:             "service-name",
+    MaxRequests:      3,              // Half-open probes
+    Interval:         10 * time.Second,
+    Timeout:          30 * time.Second,
+    FailureThreshold: 0.6,            // 60% failure rate
+    MinRequests:      5,              // Minimum before tripping
+}
+```
+
+**Testing circuit breaker:**
+
+```go
+func TestCircuitBreakerOpens(t *testing.T) {
+    // Simulate failures
+    for i := 0; i < 10; i++ {
+        _, err := provider.SearchSimilar(ctx, SearchRequest{...})
+        // Circuit should open after 60% failure rate
+    }
+
+    // Verify circuit is open
+    _, err := provider.SearchSimilar(ctx, SearchRequest{...})
+    assert.ErrorIs(t, err, ErrCircuitBreakerOpen)
+}
+```
+
+### Timeout Configuration
+
+**Timeout Guidelines:**
+
+| Operation | Timeout | Rationale |
+|-----------|---------|-----------|
+| `EmbedArticle` | 30s | Embedding generation is CPU-bound |
+| `SearchSimilar` | 30s | Vector search is I/O-bound |
+| `QueryArticles` | 60s | RAG involves LLM inference (slower) |
+| `GenerateSummary` | 120s | Summary generation processes many articles |
+| `Health` | 5s | Health checks should be fast |
+| `Connection` | 10s | Connection establishment timeout |
+
+**Setting timeouts:**
+
+```go
+// Always use context.WithTimeout
+ctx, cancel := context.WithTimeout(ctx, p.config.Timeouts.SearchSimilar)
+defer cancel()
+
+resp, err := p.client.SearchSimilar(ctx, req)
+```
+
+### Error Handling
+
+**Error Mapping:**
+
+```go
+// Map gRPC errors to domain errors
+func (p *GRPCAIProvider) mapGRPCError(err error) error {
+    st, ok := status.FromError(err)
+    if !ok {
+        return fmt.Errorf("%w: %v", ErrAIServiceUnavailable, err)
+    }
+
+    switch st.Code() {
+    case codes.DeadlineExceeded:
+        return ErrTimeout
+    case codes.Unavailable:
+        return ErrAIServiceUnavailable
+    case codes.InvalidArgument:
+        return fmt.Errorf("%w: %s", ErrInvalidQuery, st.Message())
+    default:
+        return fmt.Errorf("AI service error: %s", st.Message())
+    }
+}
+```
+
+**User-facing errors:**
+
+```go
+// CLI commands should provide clear error messages
+if errors.Is(err, ErrAIDisabled) {
+    fmt.Fprintln(os.Stderr, "Error: AI features are disabled")
+    fmt.Fprintln(os.Stderr, "Enable with: AI_ENABLED=true")
+    os.Exit(1)
+}
+
+if errors.Is(err, ErrCircuitBreakerOpen) {
+    fmt.Fprintln(os.Stderr, "Error: AI service is temporarily unavailable")
+    fmt.Fprintln(os.Stderr, "The service is experiencing issues. Please try again later.")
+    os.Exit(1)
+}
+```
+
+### Metrics and Observability
+
+**Required metrics for AI operations:**
+
+1. **Request counter** - Track success/failure/circuit_open
+2. **Duration histogram** - Track latency distribution
+3. **Circuit breaker state** - Track circuit state (0=closed, 1=open, 2=half-open)
+
+```go
+var (
+    aiClientRequestsTotal = promauto.NewCounterVec(
+        prometheus.CounterOpts{
+            Name: "ai_client_requests_total",
+            Help: "Total number of AI client requests",
+        },
+        []string{"method", "status"},
+    )
+
+    aiClientRequestDuration = promauto.NewHistogramVec(
+        prometheus.HistogramOpts{
+            Name:    "ai_client_request_duration_seconds",
+            Help:    "AI client request duration in seconds",
+            Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120},
+        },
+        []string{"method"},
+    )
+)
+```
+
+**Logging best practices:**
+
+```go
+// ✅ Good - Structured logging with request ID
+slog.Info("Performing semantic search",
+    slog.String("request_id", requestID),
+    slog.String("query", query),
+    slog.Int("limit", int(limit)))
+
+// ❌ Bad - Unstructured logging without context
+log.Println("Searching for:", query)
+```
+
+### Testing AI Features
+
+**Unit Tests** - Mock AIProvider:
+
+```go
+type MockAIProvider struct {
+    SearchFunc func(ctx context.Context, req SearchRequest) (*SearchResponse, error)
+}
+
+func (m *MockAIProvider) SearchSimilar(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
+    if m.SearchFunc != nil {
+        return m.SearchFunc(ctx, req)
+    }
+    return &SearchResponse{}, nil
+}
+
+func TestService_Search(t *testing.T) {
+    mockProvider := &MockAIProvider{
+        SearchFunc: func(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
+            return &SearchResponse{
+                Articles: []SimilarArticle{{ArticleID: 1, Similarity: 0.95}},
+            }, nil
+        },
+    }
+
+    service := NewService(mockProvider, true)
+    resp, err := service.Search(context.Background(), "test", 10, 0.7)
+
+    require.NoError(t, err)
+    assert.Len(t, resp.Articles, 1)
+}
+```
+
+**Integration Tests** - Require running catchup-ai:
+
+```go
+//go:build integration
+
+func TestGRPCAIProvider_Integration(t *testing.T) {
+    // Requires catchup-ai running on localhost:50051
+    cfg := &config.AIConfig{
+        Enabled:      true,
+        GRPCAddress:  "localhost:50051",
+        // ... other config ...
+    }
+
+    provider, err := NewGRPCAIProvider(cfg)
+    require.NoError(t, err)
+    defer provider.Close()
+
+    // Test actual gRPC call
+    resp, err := provider.SearchSimilar(context.Background(), ai.SearchRequest{
+        Query: "Go programming",
+        Limit: 10,
+    })
+
+    require.NoError(t, err)
+    assert.NotNil(t, resp)
+}
+```
+
+### Common Pitfalls
+
+**❌ Don't block main thread with AI calls:**
+
+```go
+// ❌ Bad - Blocking crawl pipeline
+article, _ := createArticle(ctx, data)
+embedResp, err := aiProvider.EmbedArticle(ctx, EmbedRequest{...})
+if err != nil {
+    return err // Crawl fails if embedding fails
+}
+```
+
+```go
+// ✅ Good - Async embedding with fire-and-forget
+article, _ := createArticle(ctx, data)
+go func() {
+    ctx := context.Background() // Detached context
+    _, err := aiProvider.EmbedArticle(ctx, EmbedRequest{...})
+    if err != nil {
+        slog.Warn("Embedding failed", slog.Any("error", err))
+    }
+}()
+```
+
+**❌ Don't ignore circuit breaker state:**
+
+```go
+// ❌ Bad - Retry without checking circuit state
+for i := 0; i < 3; i++ {
+    _, err := aiProvider.SearchSimilar(ctx, req)
+    if err == nil {
+        break
+    }
+}
+```
+
+```go
+// ✅ Good - Respect circuit breaker
+resp, err := aiProvider.SearchSimilar(ctx, req)
+if errors.Is(err, ErrCircuitBreakerOpen) {
+    return fmt.Errorf("AI service unavailable: %w", err)
+}
+```
+
+**❌ Don't use AI_ENABLED flag incorrectly:**
+
+```go
+// ❌ Bad - Checking flag in infrastructure layer
+func (p *GRPCAIProvider) SearchSimilar(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
+    if !p.config.Enabled {
+        return nil, ErrAIDisabled
+    }
+    // ...
+}
+```
+
+```go
+// ✅ Good - Check flag in use case layer
+func (s *Service) Search(ctx context.Context, query string) (*SearchResponse, error) {
+    if !s.aiEnabled {
+        return nil, ErrAIDisabled
+    }
+    return s.provider.SearchSimilar(ctx, SearchRequest{Query: query})
+}
+```
+
+---
+
 ## Summary
 
 This document outlines the development standards for the catchup-feed project. Key takeaways:

@@ -15,14 +15,17 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/robfig/cron/v3"
 
+	"catchup-feed/internal/config"
 	hhttp "catchup-feed/internal/handler/http/respond"
 	pgRepo "catchup-feed/internal/infra/adapter/persistence/postgres"
 	"catchup-feed/internal/infra/db"
 	"catchup-feed/internal/infra/fetcher"
+	"catchup-feed/internal/infra/grpc"
 	"catchup-feed/internal/infra/notifier"
 	"catchup-feed/internal/infra/scraper"
 	"catchup-feed/internal/infra/summarizer"
 	workerPkg "catchup-feed/internal/infra/worker"
+	aiUC "catchup-feed/internal/usecase/ai"
 	fetchUC "catchup-feed/internal/usecase/fetch"
 	"catchup-feed/internal/usecase/notify"
 )
@@ -115,7 +118,9 @@ func main() {
 	}()
 	logger.Info("health check server started", slog.String("addr", healthAddr))
 
-	svc := setupFetchService(logger, database, notifyService)
+	svc, aiCleanup := setupFetchService(logger, database, notifyService)
+	defer aiCleanup()
+
 	startCronWorker(logger, svc, workerConfig, workerMetrics, healthServer)
 }
 
@@ -140,7 +145,8 @@ func initDatabase(logger *slog.Logger) *sql.DB {
 }
 
 // setupFetchService creates and configures the fetch service with all dependencies.
-func setupFetchService(logger *slog.Logger, database *sql.DB, notifyService notify.Service) fetchUC.Service {
+// Returns the service and a cleanup function for graceful shutdown.
+func setupFetchService(logger *slog.Logger, database *sql.DB, notifyService notify.Service) (fetchUC.Service, func()) {
 	srcRepo := pgRepo.NewSourceRepo(database)
 	artRepo := pgRepo.NewArticleRepo(database)
 
@@ -186,7 +192,10 @@ func setupFetchService(logger *slog.Logger, database *sql.DB, notifyService noti
 		Threshold:   contentFetchConfig.Threshold,
 	}
 
-	return fetchUC.NewService(
+	// Setup AI embedding hook
+	embeddingHook, aiCleanup := setupEmbeddingHook(logger)
+
+	service := fetchUC.NewService(
 		srcRepo,
 		artRepo,
 		sum,
@@ -194,8 +203,55 @@ func setupFetchService(logger *slog.Logger, database *sql.DB, notifyService noti
 		webScrapers, // NEW: Web scraper registry
 		contentFetcher,
 		notifyService,
+		embeddingHook, // NEW: AI embedding hook
 		fetchConfig,
 	)
+
+	return service, aiCleanup
+}
+
+// setupEmbeddingHook creates an AI embedding hook and returns a cleanup function.
+// The cleanup function should be called during shutdown to close the gRPC connection.
+func setupEmbeddingHook(logger *slog.Logger) (fetchUC.EmbeddingHook, func()) {
+	// Load AI configuration
+	aiConfig, err := config.LoadAIConfig()
+	if err != nil {
+		logger.Warn("Failed to load AI configuration, AI features disabled", slog.Any("error", err))
+		return nil, func() {}
+	}
+
+	// Validate configuration
+	if err := aiConfig.Validate(); err != nil {
+		logger.Warn("Invalid AI configuration, AI features disabled", slog.Any("error", err))
+		return nil, func() {}
+	}
+
+	// Check if AI is enabled
+	if !aiConfig.Enabled {
+		logger.Info("AI features disabled via configuration")
+		return nil, func() {}
+	}
+
+	// Create AI provider
+	provider, err := grpc.NewGRPCAIProvider(aiConfig)
+	if err != nil {
+		logger.Warn("Failed to create AI provider, AI features disabled", slog.Any("error", err))
+		return nil, func() {}
+	}
+
+	logger.Info("AI embedding hook initialized",
+		slog.String("grpc_address", aiConfig.GRPCAddress))
+
+	// Return cleanup function to close gRPC connection
+	cleanup := func() {
+		if err := provider.Close(); err != nil {
+			logger.Error("failed to close AI provider", slog.Any("error", err))
+		} else {
+			logger.Info("AI provider closed")
+		}
+	}
+
+	return aiUC.NewEmbeddingHook(provider, aiConfig.Enabled), cleanup
 }
 
 // createSummarizer creates a summarizer based on the SUMMARIZER_TYPE environment variable.

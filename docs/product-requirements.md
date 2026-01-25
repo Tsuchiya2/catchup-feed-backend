@@ -1,8 +1,8 @@
 # Product Requirements Document
 
 **Project:** Catchup Feed Backend
-**Version:** 2.1
-**Last Updated:** 2026-01-23
+**Version:** 2.2
+**Last Updated:** 2026-01-24
 **Status:** Active Development
 
 ---
@@ -1339,6 +1339,105 @@ And feed_crawl_duration_seconds should record duration
 LOG_LEVEL=info  # debug, info, warn, error
 ```
 
+### 3.10 AI Integration (gRPC Client for catchup-ai)
+
+#### 3.10.1 Overview
+**Status**: ✅ Implemented
+
+**Description**: Integration with catchup-ai (Python AI service) via gRPC to enable advanced AI-powered features including semantic search, RAG-based question answering, and article summarization.
+
+**Functional Requirements**:
+- FR-AI-001: System SHALL connect to catchup-ai service via gRPC
+- FR-AI-002: System SHALL support semantic article search via natural language queries
+- FR-AI-003: System SHALL support RAG-based Q&A over article collection
+- FR-AI-004: System SHALL support weekly/monthly article digest generation
+- FR-AI-005: System SHALL generate embeddings asynchronously after article creation
+- FR-AI-006: System SHALL provide health check endpoints for AI service status
+- FR-AI-007: System SHALL implement circuit breaker pattern for AI service resilience
+- FR-AI-008: System SHALL support AI_ENABLED feature flag for graceful degradation
+
+#### 3.10.2 AI Service Operations
+
+| Operation | Description | Timeout |
+|-----------|-------------|---------|
+| EmbedArticle | Generate embedding for article content | 30s |
+| SearchSimilar | Find semantically similar articles | 30s |
+| QueryArticles | RAG-based Q&A with source citations | 60s |
+| GenerateSummary | Weekly/monthly article digest | 120s |
+
+#### 3.10.3 CLI Commands
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `search "query"` | Semantic article search | `search "machine learning frameworks"` |
+| `ask "question"` | RAG-based Q&A | `ask "What are the latest AI trends?"` |
+| `summarize` | Generate article summary | `summarize --period=week` |
+
+**Acceptance Criteria**:
+```gherkin
+Given AI service is enabled and healthy
+When user runs semantic search command
+Then system should return ranked articles by similarity
+And similarity scores should be between 0.0 and 1.0
+And results should complete within 30 seconds
+
+Given AI service is unavailable
+When user runs AI command
+Then circuit breaker should prevent cascade failures
+And user should receive graceful error message
+And system should continue normal operations
+
+Given new article is created
+When AI embedding hook executes
+Then embedding should be generated asynchronously
+And article creation should not be blocked
+And embedding failure should not affect article persistence
+```
+
+#### 3.10.4 Health Check Endpoints
+
+| Endpoint | Purpose | Response |
+|----------|---------|----------|
+| `GET /health/ai` | AI service health status | `{"status": "healthy", "latency": "15ms"}` |
+| `GET /ready/ai` | Readiness for traffic | `{"ready": true}` or `{"ready": false, "message": "circuit breaker open"}` |
+
+#### 3.10.5 Configuration
+
+**Environment Variables**:
+```bash
+AI_GRPC_ADDRESS=localhost:50051    # catchup-ai gRPC server address
+AI_ENABLED=true                     # Enable/disable AI features
+AI_CONNECTION_TIMEOUT=10s           # gRPC connection timeout
+AI_TIMEOUT_EMBED=30s                # EmbedArticle timeout
+AI_TIMEOUT_SEARCH=30s               # SearchSimilar timeout
+AI_TIMEOUT_QUERY=60s                # QueryArticles timeout
+AI_TIMEOUT_SUMMARY=120s             # GenerateSummary timeout
+AI_CB_MAX_REQUESTS=3                # Circuit breaker half-open probes
+AI_CB_INTERVAL=10s                  # Circuit breaker interval
+AI_CB_TIMEOUT=30s                   # Circuit breaker open duration
+```
+
+**Non-Functional Requirements**:
+- NFR-AI-001: Search response time SHALL be < 3 seconds (P95)
+- NFR-AI-002: Ask response time SHALL be < 10 seconds (P95)
+- NFR-AI-003: Summarize response time SHALL be < 30 seconds (P95)
+- NFR-AI-004: Embedding hook overhead SHALL be < 100ms sync
+- NFR-AI-005: Circuit breaker SHALL prevent cascade failures
+- NFR-AI-006: Crawl process SHALL continue when AI service unavailable
+
+**Metrics**:
+```promql
+# AI client request metrics
+ai_client_requests_total{method="SearchSimilar",status="success"}
+ai_client_request_duration_seconds{method="SearchSimilar"}
+
+# Circuit breaker state
+ai_client_circuit_breaker_state{name="ai-service"}
+
+# Embedding metrics
+ai_embedding_processed_total{status="success"}
+```
+
 ---
 
 ## 4. User Stories
@@ -1780,5 +1879,6 @@ Acceptance Criteria:
 - v1.0 (2025-12-01): Initial MVP requirements
 - v2.0 (2026-01-09): Added content enhancement, notifications, RBAC, web scraping
 - v2.1 (2026-01-23): Added embedding storage and vector similarity search
+- v2.2 (2026-01-24): Added AI Integration (gRPC client for catchup-ai semantic search, RAG Q&A, summarization)
 
 **Next Review Date**: 2026-04-01

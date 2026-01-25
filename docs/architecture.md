@@ -160,18 +160,19 @@ Dependency Direction: Presentation → UseCase → Domain ← Infrastructure
 ┌──────────────────────────┴─────────────────────────────────────────────┐
 │              AI SERVICE (catchup-ai - Python, External)                │
 │  ┌──────────────────────────────────────────────────────────────┐      │
-│  │ Embedding Generation Pipeline                                │      │
-│  │  1. Fetch articles without embeddings (via REST API)         │      │
-│  │  2. Generate embeddings via OpenAI/Voyage API                │      │
-│  │  3. Store embeddings via gRPC (EmbeddingService)             │      │
+│  │ AI-Powered Features via gRPC (Port 50051)                    │      │
+│  │  • EmbedArticle          - Generate article embeddings       │      │
+│  │  • SearchSimilar         - Semantic search with vectors      │      │
+│  │  • QueryArticles         - RAG-based Q&A                     │      │
+│  │  • GenerateWeeklySummary - Digest generation                 │      │
 │  └──────────────────────────────────────────────────────────────┘      │
 │                           │ gRPC                                       │
 │                           ▼                                            │
 │  ┌──────────────────────────────────────────────────────────────┐      │
-│  │ gRPC Server (Embedded in API Server)                         │      │
-│  │  • StoreEmbedding   - Store/update article embedding         │      │
-│  │  • GetEmbeddings    - Retrieve embeddings by article ID      │      │
-│  │  • SearchSimilar    - Vector similarity search (cosine)      │      │
+│  │ gRPC Client (in catchup-feed-backend)                        │      │
+│  │  • Circuit breaker pattern for resilience                    │      │
+│  │  • Async embedding hook (non-blocking)                       │      │
+│  │  • Prometheus metrics & health checks                        │      │
 │  └──────────────────────────────────────────────────────────────┘      │
 └──────────────────────────┬─────────────────────────────────────────────┘
                            │
@@ -222,6 +223,11 @@ Dependency Direction: Presentation → UseCase → Domain ← Infrastructure
   - `pgvector` - Vector data type and similarity search operators
   - `pg_trgm` - Trigram matching for full-text search
   - `ivfflat` index - Approximate nearest neighbor search
+
+#### AI Integration
+- **google.golang.org/grpc** (v1.78.0) - gRPC framework for catchup-ai communication
+- **google.golang.org/protobuf** (v1.36.11) - Protocol Buffers for gRPC messages
+- **Protocol Definition**: `proto/catchup/ai/v1/article.proto` - AI service RPC interface
 
 #### Feed Processing
 - **mmcdole/gofeed** (v1.3.0) - RSS/Atom feed parser
@@ -1767,8 +1773,521 @@ func applyMiddleware(logger *slog.Logger, handler http.Handler, ipRateLimiter *m
 
 ---
 
-**Document Version**: 1.1
+## AI Integration Architecture
+
+### Overview
+
+catchup-feed-backend integrates with catchup-ai (Python AI service) via gRPC to provide AI-powered features including semantic search, RAG-based Q&A, and article summarization. The integration uses Clean Architecture principles with a provider abstraction layer for flexibility and testability.
+
+### Components
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ catchup-feed-backend (Go)                                 │
+│                                                            │
+│  ┌──────────────────────────────────────────────────┐     │
+│  │ CLI Commands (cmd/ai/)                           │     │
+│  │  • search/main.go      - Semantic search CLI     │     │
+│  │  • ask/main.go         - RAG-based Q&A CLI       │     │
+│  │  • summarize/main.go   - Weekly/monthly digest   │     │
+│  └────────────────┬─────────────────────────────────┘     │
+│                   │                                        │
+│                   ▼                                        │
+│  ┌──────────────────────────────────────────────────┐     │
+│  │ AI Use Case (internal/usecase/ai/)               │     │
+│  │  service.go:                                     │     │
+│  │   • Search()     - Validate + orchestrate search │     │
+│  │   • Ask()        - Validate + orchestrate Q&A    │     │
+│  │   • Summarize()  - Validate + orchestrate digest │     │
+│  │   • Health()     - Provider health check         │     │
+│  └────────────────┬─────────────────────────────────┘     │
+│                   │                                        │
+│                   ▼                                        │
+│  ┌──────────────────────────────────────────────────┐     │
+│  │ AIProvider Interface (provider.go)               │     │
+│  │  • EmbedArticle(req) → response                  │     │
+│  │  • SearchSimilar(req) → response                 │     │
+│  │  • QueryArticles(req) → response                 │     │
+│  │  • GenerateSummary(req) → response               │     │
+│  │  • Health(ctx) → status                          │     │
+│  │  • Close() → error                               │     │
+│  │                                                   │     │
+│  │  Implementations:                                │     │
+│  │  • GRPCAIProvider  - Primary (catchup-ai gRPC)   │     │
+│  │  • NoopAIProvider  - Stub (when AI disabled)     │     │
+│  └────────────────┬─────────────────────────────────┘     │
+│                   │                                        │
+│                   ▼                                        │
+│  ┌──────────────────────────────────────────────────┐     │
+│  │ GRPCAIProvider (internal/infra/grpc/ai_client.go)│     │
+│  │  • Circuit breaker (sony/gobreaker)              │     │
+│  │  • Prometheus metrics (3 metrics)                │     │
+│  │  • Input validation (4 validators)               │     │
+│  │  • gRPC error mapping                            │     │
+│  │  • Connection health check                       │     │
+│  └────────────────┬─────────────────────────────────┘     │
+│                   │ gRPC (insecure credentials)           │
+│                   │ Protocol Buffers                       │
+└───────────────────┼────────────────────────────────────────┘
+                    │
+                    ▼
+   ┌────────────────────────────────────────────────┐
+   │ catchup-ai (Python AI Service)                 │
+   │  gRPC Server (Port 50051)                      │
+   │                                                 │
+   │  proto/catchup/ai/v1/article.proto:            │
+   │   • EmbedArticle          (30s timeout)        │
+   │   • SearchSimilar         (30s timeout)        │
+   │   • QueryArticles         (60s timeout)        │
+   │   • GenerateWeeklySummary (120s timeout)       │
+   │                                                 │
+   │  Features:                                      │
+   │   • Vector embeddings (OpenAI/Voyage)          │
+   │   • Semantic search (pgvector)                 │
+   │   • RAG pipeline (LangChain)                   │
+   │   • LLM summarization (Claude/GPT)             │
+   └────────────────────────────────────────────────┘
+```
+
+### Key Files and Responsibilities
+
+| File | Purpose | Key Functions |
+|------|---------|---------------|
+| `internal/usecase/ai/service.go` | Business logic orchestration | Search(), Ask(), Summarize(), Health() |
+| `internal/usecase/ai/provider.go` | Provider interface definition | AIProvider interface + DTOs |
+| `internal/usecase/ai/embedding_hook.go` | Async embedding generation | EmbedArticleAsync() |
+| `internal/infra/grpc/ai_client.go` | gRPC client implementation | GRPCAIProvider methods + validation |
+| `internal/infra/grpc/noop_ai_provider.go` | No-op implementation | NoopAIProvider for testing |
+| `internal/handler/http/health_ai.go` | Health check endpoints | GET /health/ai, GET /ready/ai |
+| `internal/config/ai.go` | AI configuration | LoadAIConfig(), AIConfig struct |
+| `proto/catchup/ai/v1/article.proto` | Protocol Buffers definition | Service + message definitions |
+| `cmd/ai/search/main.go` | Search CLI command | Semantic search CLI |
+| `cmd/ai/ask/main.go` | Ask CLI command | RAG-based Q&A CLI |
+| `cmd/ai/summarize/main.go` | Summarize CLI command | Weekly/monthly digest CLI |
+
+### Async Embedding Hook
+
+```
+┌──────────────────────────────────────────────────────┐
+│ Fetch Service (internal/usecase/fetch/)             │
+│                                                      │
+│  1. Crawl sources                                   │
+│  2. Extract content                                 │
+│  3. AI summarization (Claude/OpenAI)                │
+│  4. Create article (INSERT INTO articles)           │
+│  5. ✨ Async embedding hook (non-blocking)          │
+│     └──> goroutine spawned                          │
+│          └──> EmbeddingHook.EmbedArticleAsync()     │
+│                └──> Check AI_ENABLED flag           │
+│                └──> GRPCAIProvider.EmbedArticle()   │
+│                     └──> catchup-ai gRPC            │
+│                          └──> OpenAI/Voyage API     │
+│                               └──> Store via        │
+│                                    EmbeddingService │
+│                                                      │
+│  6. Notification dispatch (Discord/Slack)           │
+│  7. Continue to next article                        │
+└──────────────────────────────────────────────────────┘
+```
+
+**Architecture Decisions:**
+
+1. **Non-blocking execution**: Embedding hook runs in a separate goroutine to prevent crawl pipeline degradation when AI service is unavailable
+2. **Fire-and-forget pattern**: Failures are logged but do not propagate to caller
+3. **Detached context**: Uses `context.Background()` with 30s timeout (not inherited from crawl context)
+4. **Feature flag**: Respects `AI_ENABLED` configuration to disable embedding when needed
+
+### Health Check Endpoints
+
+New endpoints for monitoring AI service health:
+
+- **GET /health/ai** - AI service health status
+  - Returns 200 if healthy, 503 if unavailable
+  - Response includes circuit breaker state and latency
+  - Implementation: `internal/handler/http/health_ai.go`
+
+- **GET /ready/ai** - Readiness for traffic
+  - Returns 200 if ready, 503 if circuit breaker is open
+  - Used by Kubernetes readiness probes
+
+**Example Response (Healthy):**
+```json
+{
+  "status": "healthy",
+  "latency": "15ms"
+}
+```
+
+**Example Response (Unhealthy):**
+```json
+{
+  "status": "unhealthy",
+  "message": "connection state: TRANSIENT_FAILURE",
+  "circuit_open": false
+}
+```
+
+**Example Response (Circuit Open):**
+```json
+{
+  "status": "unhealthy",
+  "message": "circuit breaker is open",
+  "circuit_open": true
+}
+```
+
+### Prometheus Metrics
+
+#### AI Client Metrics
+
+```promql
+# Request metrics
+ai_client_requests_total{method="EmbedArticle",status="success"}
+ai_client_requests_total{method="SearchSimilar",status="error"}
+ai_client_requests_total{method="QueryArticles",status="circuit_breaker_open"}
+ai_client_requests_total{method="GenerateSummary",status="success"}
+
+# Request duration histogram (buckets: 0.1, 0.5, 1, 2, 5, 10, 30, 60, 120 seconds)
+ai_client_request_duration_seconds{method="EmbedArticle"}
+ai_client_request_duration_seconds{method="SearchSimilar"}
+ai_client_request_duration_seconds{method="QueryArticles"}
+ai_client_request_duration_seconds{method="GenerateSummary"}
+
+# Circuit breaker state (0=closed, 1=open, 2=half-open)
+ai_client_circuit_breaker_state{name="ai-service"}
+```
+
+**Metric Labels:**
+- `method`: gRPC method name (EmbedArticle, SearchSimilar, QueryArticles, GenerateSummary)
+- `status`: success, error, circuit_breaker_open
+- `name`: Circuit breaker name (ai-service)
+
+#### Example Queries
+
+```promql
+# AI request rate by method
+sum(rate(ai_client_requests_total[5m])) by (method)
+
+# AI error rate (excluding circuit breaker open)
+sum(rate(ai_client_requests_total{status="error"}[5m]))
+/ sum(rate(ai_client_requests_total[5m]))
+
+# Circuit breaker open rate
+sum(rate(ai_client_requests_total{status="circuit_breaker_open"}[5m]))
+
+# P95 latency by method
+histogram_quantile(0.95,
+  rate(ai_client_request_duration_seconds_bucket[5m])
+) by (method)
+
+# P99 latency by method
+histogram_quantile(0.99,
+  rate(ai_client_request_duration_seconds_bucket[5m])
+) by (method)
+
+# Average request duration by method
+avg(rate(ai_client_request_duration_seconds_sum[5m])
+  / rate(ai_client_request_duration_seconds_count[5m])
+) by (method)
+```
+
+### Configuration
+
+#### Environment Variables
+
+| Variable | Default | Description | Type |
+|----------|---------|-------------|------|
+| **Connection** |
+| `AI_GRPC_ADDRESS` | `localhost:50051` | catchup-ai gRPC server address | string |
+| `AI_ENABLED` | `true` | Enable/disable AI features | bool |
+| `AI_CONNECTION_TIMEOUT` | `10s` | gRPC connection timeout | duration |
+| **Timeouts** |
+| `AI_TIMEOUT_EMBED` | `30s` | EmbedArticle timeout | duration |
+| `AI_TIMEOUT_SEARCH` | `30s` | SearchSimilar timeout | duration |
+| `AI_TIMEOUT_QUERY` | `60s` | QueryArticles timeout | duration |
+| `AI_TIMEOUT_SUMMARY` | `120s` | GenerateSummary timeout | duration |
+| **Search Configuration** |
+| `AI_SEARCH_DEFAULT_LIMIT` | `10` | Default search result limit | int32 |
+| `AI_SEARCH_MAX_LIMIT` | `50` | Maximum search result limit | int32 |
+| `AI_SEARCH_DEFAULT_MIN_SIMILARITY` | `0.7` | Default similarity threshold (0.0-1.0) | float32 |
+| `AI_SEARCH_DEFAULT_MAX_CONTEXT` | `5` | Default RAG context articles | int32 |
+| `AI_SEARCH_MAX_CONTEXT` | `20` | Maximum RAG context articles | int32 |
+| **Circuit Breaker** |
+| `AI_CB_MAX_REQUESTS` | `3` | Circuit breaker half-open probes | uint32 |
+| `AI_CB_INTERVAL` | `10s` | Circuit breaker interval | duration |
+| `AI_CB_TIMEOUT` | `30s` | Circuit breaker open duration | duration |
+| `AI_CB_FAILURE_THRESHOLD` | `0.6` | Failure ratio to trip circuit (0.0-1.0) | float64 |
+| `AI_CB_MIN_REQUESTS` | `5` | Minimum requests before threshold | uint32 |
+| **Observability** |
+| `AI_TRACING_ENABLED` | `false` | Enable OpenTelemetry tracing | bool |
+| `AI_TRACING_ENDPOINT` | `localhost:4317` | OTLP exporter endpoint | string |
+| `AI_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) | string |
+| `AI_METRICS_ENABLED` | `true` | Enable Prometheus metrics | bool |
+
+**Configuration Loading:**
+- Configuration is loaded via `internal/config/ai.go`
+- Environment variables are parsed on startup
+- Invalid values fall back to defaults (fail-open strategy)
+- Validation ensures critical values are within acceptable ranges
+
+### Resilience Patterns
+
+#### Circuit Breaker Configuration
+
+```go
+// internal/infra/grpc/ai_client.go
+CircuitBreakerConfig:
+  Name: "ai-service"
+  MaxRequests: 3           // Half-open state probes
+  Interval: 10s            // Failure rate window
+  Timeout: 30s             // Open → half-open transition
+  FailureThreshold: 0.6    // 60% failure rate trips circuit
+  MinRequests: 5           // Minimum requests before threshold
+  ReadyToTrip: func(counts gobreaker.Counts) bool {
+      // Only trip if minimum request threshold met
+      if counts.Requests < 5 {
+          return false
+      }
+      // Calculate failure ratio
+      failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
+      return failureRatio >= 0.6
+  }
+  OnStateChange: func(name, from, to gobreaker.State) {
+      // Log state transitions
+      slog.Info("circuit breaker state changed",
+          slog.String("name", name),
+          slog.String("from", from.String()),
+          slog.String("to", to.String()))
+      // Update Prometheus metric
+      updateCircuitBreakerMetric(name, to)
+  }
+```
+
+**Circuit Breaker States:**
+- **Closed**: Normal operation (0-60% failure rate)
+- **Open**: All requests fail immediately (>60% failure rate for 5+ requests)
+- **Half-Open**: Testing recovery (3 probe requests allowed)
+
+**Transition Logic:**
+1. Closed → Open: When failure rate ≥ 60% (with ≥5 requests in 10s window)
+2. Open → Half-Open: After 30 seconds timeout
+3. Half-Open → Closed: When 3 consecutive probe requests succeed
+4. Half-Open → Open: When any probe request fails
+
+#### Graceful Degradation
+
+| Scenario | Behavior | Impact |
+|----------|----------|--------|
+| **AI service unavailable** | Circuit breaker opens after 60% failure rate | CLI commands return `ErrCircuitBreakerOpen` |
+| **Embedding hook failures** | Log warning, continue crawl | Crawl pipeline unaffected |
+| **CLI command failures** | User-friendly error messages | Clear guidance for users |
+| **Connection timeout** | Return `ErrAIServiceUnavailable` | Immediate feedback |
+| **gRPC errors** | Map to domain errors | Consistent error handling |
+
+**Error Mapping:**
+```go
+// gRPC → Domain Error Mapping
+codes.DeadlineExceeded  → ErrTimeout
+codes.Unavailable       → ErrAIServiceUnavailable
+codes.InvalidArgument   → ErrInvalidQuery
+gobreaker.ErrOpenState  → ErrCircuitBreakerOpen
+```
+
+### CLI Commands
+
+Three standalone CLI commands provide direct access to AI features:
+
+#### cmd/ai/search - Semantic Article Search
+
+**File:** `cmd/ai/search/main.go`
+
+```bash
+# Semantic search for articles
+./catchup-ai-search "Kubernetes deployment strategies"
+./catchup-ai-search "AI trends" --limit 20 --min-similarity 0.7
+./catchup-ai-search "Go programming" --output json
+```
+
+**Flags:**
+- `--limit int`: Maximum number of results (default: 10, max: 50)
+- `--min-similarity float`: Minimum similarity threshold (default: 0.7, range: 0.0-1.0)
+- `--output string`: Output format (text, json)
+
+**Example Output:**
+```
+Searching for: "Kubernetes deployment strategies"
+
+Found 5 similar articles (searched 3,247 articles):
+
+1. [92%] Blue-Green Deployments in K8s
+   URL: https://example.com/bg-deploy
+   "...discusses blue-green deployment patterns..."
+
+2. [87%] Canary Releases with Kubernetes
+   URL: https://example.com/canary
+   "...canary deployment strategy for..."
+```
+
+#### cmd/ai/ask - RAG-based Question Answering
+
+**File:** `cmd/ai/ask/main.go`
+
+```bash
+# RAG-based question answering
+./catchup-ai-ask "What are the best practices for Kubernetes security?"
+./catchup-ai-ask "Explain microservices" --context 10
+./catchup-ai-ask "Latest AI news" --output json
+```
+
+**Flags:**
+- `--context int`: Maximum number of articles to use as context (default: 5, max: 20)
+- `--output string`: Output format (text, json)
+
+**Example Output:**
+```
+Question: What are the best practices for Kubernetes security?
+
+Answer:
+Based on your article collection, the key Kubernetes security best practices include:
+
+1. **RBAC Configuration**: Implement least-privilege access using Role-Based Access Control
+2. **Network Policies**: Use Kubernetes NetworkPolicies to restrict pod communication
+3. **Pod Security Standards**: Apply restricted pod security policies
+
+Sources:
+- [95%] Kubernetes Security Best Practices 2026 (https://example.com/k8s-security)
+- [89%] Hardening Your K8s Cluster (https://example.com/k8s-hardening)
+
+Confidence: 88%
+```
+
+#### cmd/ai/summarize - Weekly/Monthly Digest
+
+**File:** `cmd/ai/summarize/main.go`
+
+```bash
+# Generate weekly/monthly summaries
+./catchup-ai-summarize                    # Default: weekly
+./catchup-ai-summarize --period month
+./catchup-ai-summarize --highlights 10
+./catchup-ai-summarize --output json
+```
+
+**Flags:**
+- `--period string`: Time period (week, month) (default: week)
+- `--highlights int`: Maximum number of highlights (default: 5, max: 10)
+- `--output string`: Output format (text, json)
+
+**Example Output:**
+```
+Weekly Summary (Jan 17 - Jan 24, 2026)
+=====================================
+
+47 articles summarized
+
+Summary:
+This week featured significant developments across AI, cloud computing, and
+software engineering. Key themes included the release of new open-source LLMs,
+Kubernetes 1.30 beta features, and emerging security frameworks.
+
+Top Highlights:
+
+1. LLM Developments (12 articles)
+   Multiple open-source LLM releases with improved capabilities
+
+2. Cloud Security (8 articles)
+   New security frameworks and vulnerability disclosures
+```
+
+### Testing Strategy
+
+#### Unit Tests
+
+Mock AIProvider interface for isolated testing of business logic:
+
+```go
+// internal/usecase/ai/service_test.go
+type MockAIProvider struct {
+    SearchFunc    func(ctx context.Context, req SearchRequest) (*SearchResponse, error)
+    AskFunc       func(ctx context.Context, req QueryRequest) (*QueryResponse, error)
+    SummarizeFunc func(ctx context.Context, req SummaryRequest) (*SummaryResponse, error)
+    HealthFunc    func(ctx context.Context) (*HealthStatus, error)
+}
+
+func TestService_Search_AIDisabled(t *testing.T) {
+    mockProvider := &MockAIProvider{}
+    service := NewService(mockProvider, false) // AI disabled
+
+    _, err := service.Search(context.Background(), "test", 10, 0.7)
+
+    assert.ErrorIs(t, err, ErrAIDisabled)
+}
+```
+
+**Test Coverage:**
+- Input validation (empty query, invalid limits, invalid similarity)
+- Feature flag behavior (AI_ENABLED = false)
+- Request ID generation
+- Provider error handling
+
+#### Integration Tests
+
+Require running catchup-ai instance (build tag `integration`):
+
+```go
+//go:build integration
+
+// internal/infra/grpc/ai_client_integration_test.go
+func TestGRPCAIProvider_SearchSimilar_Integration(t *testing.T) {
+    // Setup
+    cfg := config.LoadAIConfig() // From environment
+    provider, err := NewGRPCAIProvider(cfg)
+    require.NoError(t, err)
+    defer provider.Close()
+
+    // Execute
+    resp, err := provider.SearchSimilar(context.Background(), SearchRequest{
+        Query: "Go programming",
+        Limit: 10,
+    })
+
+    // Verify
+    require.NoError(t, err)
+    assert.NotEmpty(t, resp.Articles)
+}
+```
+
+**Run Integration Tests:**
+```bash
+# Ensure catchup-ai is running
+docker compose up -d catchup-ai
+
+# Run integration tests
+go test -tags=integration ./internal/infra/grpc/
+```
+
+#### E2E Tests
+
+Full system tests with database + catchup-ai (build tag `e2e`):
+
+```bash
+# Run full E2E test suite
+go test -tags=e2e ./cmd/ai/...
+
+# Test specific CLI command
+go test -tags=e2e ./cmd/ai/search/
+```
+
+**Test Files:**
+- `internal/infra/grpc/ai_client_test.go` - Unit tests
+- `internal/infra/grpc/noop_ai_provider_test.go` - Noop implementation tests
+- `internal/handler/http/health_ai_test.go` - Health endpoint tests
+- `cmd/ai/*/main_test.go` - CLI command E2E tests (future)
+
+---
+
+**Document Version**: 1.2
 **Authors**: Documentation Worker (AI-generated from codebase analysis)
-**Review Status**: Updated for Embedding feature (2026-01-23)
-**Last Updated**: 2026-01-23
+**Review Status**: Updated for AI Integration feature (2026-01-24)
+**Last Updated**: 2026-01-24
 **Next Review**: On major architecture changes

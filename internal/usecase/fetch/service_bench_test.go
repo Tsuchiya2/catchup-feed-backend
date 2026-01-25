@@ -43,9 +43,10 @@ func BenchmarkCrawlAllSources_SmallFeed(b *testing.B) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // ContentFetcher
 		nil, // webScrapers
+		nil, // ContentFetcher
 		&mockNotifyService{},
+		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -95,9 +96,10 @@ func BenchmarkCrawlAllSources_LargeFeed(b *testing.B) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // ContentFetcher
 		nil, // webScrapers
+		nil, // ContentFetcher
 		&mockNotifyService{},
+		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -152,9 +154,10 @@ func BenchmarkCrawlAllSources_MultipleSources(b *testing.B) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // ContentFetcher
 		nil, // webScrapers
+		nil, // ContentFetcher
 		&mockNotifyService{},
+		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -210,9 +213,10 @@ func BenchmarkCrawlAllSources_WithDuplicates(b *testing.B) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // ContentFetcher
 		nil, // webScrapers
+		nil, // ContentFetcher
 		&mockNotifyService{},
+		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,

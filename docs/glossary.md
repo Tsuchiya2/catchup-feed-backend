@@ -1009,6 +1009,273 @@ service EmbeddingService {
 
 ---
 
+---
+
+## AI Integration Terms
+
+### AIProvider
+Interface abstraction for AI service operations in catchup-feed-backend. Enables switching between different AI backends without changing business logic.
+
+**Interface Methods:**
+- `EmbedArticle(ctx, req)` - Generate embeddings for articles
+- `SearchSimilar(ctx, req)` - Semantic similarity search
+- `QueryArticles(ctx, req)` - RAG-based question answering
+- `GenerateSummary(ctx, req)` - Weekly/monthly digest generation
+- `Health(ctx)` - Health check
+- `Close()` - Resource cleanup
+
+**Implementations:**
+- **GRPCAIProvider**: Primary implementation using gRPC client to catchup-ai service
+- **NoopAIProvider**: Stub implementation for testing and when AI disabled
+
+**Location:** `internal/usecase/ai/provider.go`
+
+**Related Terms:** GRPCAIProvider, Semantic Search, RAG
+
+---
+
+### GRPCAIProvider
+Primary implementation of AIProvider interface that communicates with catchup-ai service via gRPC.
+
+**Key Features:**
+- Circuit breaker protection (sony/gobreaker)
+- Prometheus metrics collection
+- Input validation before gRPC calls
+- Context timeout management
+- gRPC error mapping to domain errors
+- Connection health checking
+
+**Configuration:**
+```go
+GRPCAddress:       "localhost:50051"
+ConnectionTimeout: 10s
+CircuitBreaker:    MaxRequests=3, Timeout=30s, FailureThreshold=0.6
+```
+
+**Timeouts:**
+- EmbedArticle: 30s
+- SearchSimilar: 30s
+- QueryArticles: 60s
+- GenerateSummary: 120s
+
+**Location:** `internal/infra/grpc/ai_client.go`
+
+**Related Terms:** AIProvider, Circuit Breaker, gRPC
+
+---
+
+### NoopAIProvider
+Stub implementation of AIProvider interface that returns empty responses. Used for testing and when AI features are disabled.
+
+**Behavior:**
+- All methods return successful responses with empty data
+- Health() always returns healthy status
+- No external dependencies or network calls
+
+**Use Cases:**
+1. Unit testing without AI service dependency
+2. Development when catchup-ai is unavailable
+3. Feature flag disabled (AI_ENABLED=false)
+
+**Location:** `internal/infra/grpc/noop_ai_provider.go`
+
+**Related Terms:** AIProvider, Feature Flag
+
+---
+
+### Semantic Search
+Search technique that finds articles by meaning rather than exact keyword matching. Uses vector embeddings to calculate semantic similarity.
+
+**How It Works:**
+1. Query is converted to embedding vector (e.g., 1536 dimensions)
+2. Cosine similarity calculated against all article embeddings
+3. Results ranked by similarity score (0.0 to 1.0)
+4. Results above minimum threshold returned
+
+**Example:**
+```text
+Query: "Kubernetes deployment strategies"
+Results:
+1. "Blue-Green Deployments in K8s" (0.92 similarity)
+2. "Canary Releases with Kubernetes" (0.87 similarity)
+3. "Rolling Updates for K8s" (0.84 similarity)
+```
+
+**Configuration:**
+- Default limit: 10 results
+- Max limit: 50 results
+- Default min similarity: 0.5 (50%)
+- Timeout: 30 seconds
+
+**Related Terms:** Embedding, Cosine Similarity, Vector Search
+
+---
+
+### RAG (Retrieval-Augmented Generation)
+AI technique that combines information retrieval with language model generation to answer questions using relevant context.
+
+**Pipeline:**
+1. **Retrieval**: Search for relevant articles using semantic search
+2. **Context**: Extract top N articles as context (default: 5, max: 20)
+3. **Augmentation**: Combine question + article context into prompt
+4. **Generation**: LLM generates answer based on provided context
+5. **Citation**: Return answer with source articles and relevance scores
+
+**Example:**
+```text
+Question: "What are best practices for Kubernetes security?"
+
+Retrieved Context:
+- Article 1: "K8s Security Best Practices 2026" (relevance: 0.95)
+- Article 2: "Hardening Your Kubernetes Cluster" (relevance: 0.89)
+
+Generated Answer:
+"Based on your article collection, the key Kubernetes security
+best practices include:
+1. RBAC Configuration: Implement least-privilege access...
+2. Network Policies: Use Kubernetes NetworkPolicies..."
+
+Sources:
+- K8s Security Best Practices 2026 (relevance: 95%)
+- Hardening Your Kubernetes Cluster (relevance: 89%)
+```
+
+**Configuration:**
+- Default max context: 5 articles
+- Max context: 20 articles
+- Timeout: 60 seconds
+- Confidence score: 0.0 to 1.0
+
+**Related Terms:** Semantic Search, LLM, Context Window
+
+---
+
+### Embedding Hook
+Asynchronous mechanism for generating article embeddings during feed crawling without blocking the main pipeline.
+
+**Implementation:**
+```go
+// internal/usecase/ai/embedding_hook.go
+type EmbeddingHook struct {
+    aiProvider AIProvider
+    aiEnabled  bool
+}
+
+func (h *EmbeddingHook) EmbedArticleAsync(article entity.Article) {
+    go func() {
+        // Non-blocking goroutine
+        ctx := context.Background() // Detached context
+        _, err := h.aiProvider.EmbedArticle(ctx, ...)
+        if err != nil {
+            slog.Warn("Embedding failed", slog.Any("error", err))
+        }
+    }()
+}
+```
+
+**Key Characteristics:**
+- **Fire-and-forget pattern**: Does not block crawl pipeline
+- **Detached context**: Uses `context.Background()` with 30s timeout
+- **Error logging**: Logs warnings but doesn't propagate errors
+- **Feature flag**: Respects AI_ENABLED configuration
+
+**Location:** `internal/usecase/ai/embedding_hook.go`
+
+**Related Terms:** Embedding, Async Processing, Fire-and-forget
+
+---
+
+### catchup-ai
+External Python AI service that provides embedding generation, semantic search, RAG-based Q&A, and summarization via gRPC.
+
+**gRPC Service Definition:**
+```protobuf
+service ArticleAI {
+    rpc EmbedArticle(EmbedArticleRequest) returns (EmbedArticleResponse);
+    rpc SearchSimilar(SearchSimilarRequest) returns (SearchSimilarResponse);
+    rpc QueryArticles(QueryArticlesRequest) returns (QueryArticlesResponse);
+    rpc GenerateWeeklySummary(GenerateWeeklySummaryRequest) returns (GenerateWeeklySummaryResponse);
+}
+```
+
+**Features:**
+- Vector embedding generation (OpenAI, Voyage AI)
+- Semantic search using pgvector
+- RAG pipeline with LangChain
+- LLM-powered summarization (Claude, GPT)
+
+**Default Address:** `localhost:50051`
+
+**Protocol Buffers:** `proto/catchup/ai/v1/article.proto`
+
+**Related Terms:** GRPCAIProvider, gRPC, Protocol Buffers
+
+---
+
+### AI Feature Flag
+Configuration flag that enables or disables AI features throughout the system.
+
+**Environment Variable:** `AI_ENABLED` (default: true)
+
+**Behavior:**
+- When `true`: All AI features available (search, ask, summarize)
+- When `false`: AI service returns `ErrAIDisabled` error
+
+**Implementation:**
+```go
+// internal/usecase/ai/service.go
+func (s *Service) Search(ctx, query) (*SearchResponse, error) {
+    if !s.aiEnabled {
+        return nil, ErrAIDisabled
+    }
+    // ...
+}
+```
+
+**Use Cases:**
+1. Disable AI during development without catchup-ai
+2. Disable AI in environments without AI service
+3. Feature toggle for gradual rollout
+
+**Related Terms:** Feature Flag, AIProvider, NoopAIProvider
+
+---
+
+### AI Health Check
+Endpoints for monitoring the health of AI service integration.
+
+**Endpoints:**
+- `GET /health/ai` - AI service health status
+- `GET /ready/ai` - Readiness for traffic
+
+**Response (Healthy):**
+```json
+{
+  "status": "healthy",
+  "latency": "15ms"
+}
+```
+
+**Response (Unhealthy):**
+```json
+{
+  "status": "unhealthy",
+  "message": "circuit breaker is open",
+  "circuit_open": true
+}
+```
+
+**Health Check Logic:**
+1. Check circuit breaker state (open → unhealthy)
+2. Check gRPC connection state (READY → healthy)
+3. Measure latency
+
+**Location:** `internal/handler/http/health_ai.go`
+
+**Related Terms:** Circuit Breaker, gRPC, Health Check
+
+---
+
 ### Upsert
 Database operation that combines INSERT and UPDATE: inserts a new record if it doesn't exist, or updates the existing record if it does. Named from "UPDATE or INSERT".
 

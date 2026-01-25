@@ -11,6 +11,10 @@ config/environments/*.env
 /api
 /worker
 /bin
+/ask
+/search
+/summarize
+/crawl-once
 
 # Test coverage and outputs
 coverage*.out
