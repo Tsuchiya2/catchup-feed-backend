@@ -84,9 +84,16 @@ The `cmd/` directory contains the application's main entrypoints. Each subdirect
 cmd/
 ├── api/                    # REST API server (port 8080)
 │   └── main.go            # HTTP server, routing, middleware setup
-└── worker/                 # Background job worker
-    ├── main.go            # Cron scheduler, feed crawling
-    └── metrics_server.go  # Metrics HTTP server (port 9091)
+├── worker/                 # Background job worker
+│   ├── main.go            # Cron scheduler, feed crawling
+│   └── metrics_server.go  # Metrics HTTP server (port 9091)
+└── ai/                     # AI CLI commands (semantic search, Q&A, summarization)
+    ├── search/            # Semantic article search CLI
+    │   └── main.go
+    ├── ask/               # RAG-based Q&A CLI
+    │   └── main.go
+    └── summarize/         # Weekly/monthly digest CLI
+        └── main.go
 ```
 
 ### `cmd/api/main.go` - REST API Server
@@ -194,13 +201,30 @@ internal/
 │   ├── article/           # Article management use cases
 │   ├── source/            # Source management use cases
 │   ├── fetch/             # Feed fetching and processing
-│   └── notify/            # Multi-channel notification system
+│   ├── notify/            # Multi-channel notification system
+│   └── ai/                # AI-powered features (NEW)
+│       ├── service.go            # AI service orchestration
+│       ├── provider.go           # AIProvider interface
+│       └── embedding_hook.go     # Async embedding generation
 ├── handler/               # Presentation layer (HTTP handlers)
 │   └── http/              # HTTP-specific handlers and utilities
+│       └── health_ai.go          # AI health check endpoints (NEW)
+├── interface/             # Interface adapters (NEW)
+│   └── grpc/              # gRPC service interfaces
+│       ├── embedding_server.go   # Legacy embedding gRPC server
+│       └── pb/                   # Generated Protocol Buffer code
+│           ├── embedding/        # Embedding service proto
+│           └── ai/               # AI service proto (NEW)
+│               ├── article.pb.go
+│               └── article_grpc.pb.go
 ├── infra/                 # Infrastructure layer (adapters)
 │   ├── adapter/           # Persistence adapters (PostgreSQL, SQLite)
 │   ├── db/                # Database utilities and migrations
+│   ├── grpc/              # gRPC client implementations (NEW)
+│   │   ├── ai_client.go          # GRPCAIProvider implementation
+│   │   └── noop_ai_provider.go   # NoopAIProvider stub
 │   ├── summarizer/        # AI summarization implementations
+│   │   └── noop.go               # NoopSummarizer (NEW)
 │   ├── fetcher/           # Content fetching implementations
 │   ├── notifier/          # Notification service implementations
 │   ├── scraper/           # RSS/Atom feed parsers and web scrapers
@@ -208,6 +232,7 @@ internal/
 ├── service/               # Domain services
 │   └── auth/              # Authentication service
 ├── config/                # Configuration loading and validation
+│   └── ai.go              # AI configuration (NEW)
 ├── observability/         # Monitoring, logging, tracing
 │   ├── logging/           # Structured logging utilities
 │   ├── metrics/           # Prometheus metrics
@@ -395,6 +420,91 @@ type SimilarArticle struct {
 - Prometheus metrics (success rate, latency, rate limit hits)
 - Circuit breaker state monitoring
 
+#### `internal/usecase/ai/` - AI-Powered Features
+
+**Files:**
+- `service.go` - AI service orchestration (324 lines)
+- `provider.go` - AIProvider interface and DTOs (130 lines)
+- `embedding_hook.go` - Async embedding generation
+
+**Key Component: AI Service**
+
+**Responsibilities:**
+1. **Search()** - Semantic article search with validation and logging
+2. **Ask()** - RAG-based Q&A with context management
+3. **Summarize()** - Weekly/monthly digest generation
+4. **Health()** - AI provider health check
+
+**Architecture:**
+- Feature flag support (AI_ENABLED)
+- Request ID generation for tracing
+- Input validation before provider calls
+- Structured logging for all operations
+- Error wrapping with context
+
+**AIProvider Interface:**
+
+The `AIProvider` interface abstracts AI backend implementations:
+
+```go
+type AIProvider interface {
+    EmbedArticle(ctx, req) → response    // Generate embeddings
+    SearchSimilar(ctx, req) → response   // Semantic search
+    QueryArticles(ctx, req) → response   // RAG-based Q&A
+    GenerateSummary(ctx, req) → response // Digest generation
+    Health(ctx) → status                 // Health check
+    Close() → error                      // Cleanup
+}
+```
+
+**Implementations:**
+- **GRPCAIProvider**: Primary implementation (gRPC client to catchup-ai)
+- **NoopAIProvider**: Stub for testing and when AI disabled
+
+**DTOs (Data Transfer Objects):**
+- `EmbedRequest/Response` - Embedding generation
+- `SearchRequest/Response` - Semantic search
+- `QueryRequest/Response` - Q&A with sources
+- `SummaryRequest/Response` - Digest with highlights
+- `HealthStatus` - Provider health
+
+**Embedding Hook:**
+
+`embedding_hook.go` provides async embedding generation during article creation:
+
+```go
+type EmbeddingHook struct {
+    aiProvider AIProvider
+    aiEnabled  bool
+}
+
+func (h *EmbeddingHook) EmbedArticleAsync(article entity.Article) {
+    // Fire-and-forget goroutine
+    go func() {
+        ctx := context.Background() // Detached context
+        ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+        defer cancel()
+
+        _, err := h.aiProvider.EmbedArticle(ctx, EmbedRequest{
+            ArticleID: article.ID,
+            Title:     article.Title,
+            Content:   article.Content,
+            URL:       article.URL,
+        })
+
+        if err != nil {
+            slog.Warn("Embedding failed", slog.Any("error", err))
+        }
+    }()
+}
+```
+
+**Key Features:**
+- Non-blocking execution (goroutine)
+- Detached context (not inherited from crawl context)
+- 30s timeout for embedding generation
+- Logs warnings but doesn't propagate errors
+
 ### Presentation Layer
 
 #### HTTP Layer (`internal/handler/http/`)
@@ -524,6 +634,78 @@ proto/
 
 **Purpose:** External service adapters and infrastructure implementations
 
+#### `internal/infra/grpc/` - gRPC Client Implementations
+
+**Files:**
+- `ai_client.go` - GRPCAIProvider implementation (599 lines)
+- `noop_ai_provider.go` - NoopAIProvider stub for testing
+
+**Key Implementation: GRPCAIProvider**
+
+Provides gRPC client for catchup-ai service with resilience patterns:
+
+**Features:**
+- Circuit breaker (sony/gobreaker)
+- Prometheus metrics (3 metrics)
+- Input validation (4 validators)
+- gRPC error mapping
+- Connection health check
+- Context timeout management
+
+**Configuration:**
+```go
+type GRPCAIProvider struct {
+    conn           *grpc.ClientConn
+    client         pb.ArticleAIClient
+    config         *config.AIConfig
+    circuitBreaker *gobreaker.CircuitBreaker
+    logger         *slog.Logger
+}
+```
+
+**Methods:**
+1. **EmbedArticle()** - Generate embeddings (30s timeout)
+2. **SearchSimilar()** - Semantic search (30s timeout)
+3. **QueryArticles()** - RAG-based Q&A (60s timeout)
+4. **GenerateSummary()** - Weekly/monthly digest (120s timeout)
+5. **Health()** - Check gRPC connection state and circuit breaker
+
+**Validation Functions:**
+- `validateEmbedRequest()` - ArticleID positive, title/content not empty, length limits
+- `validateSearchRequest()` - Query not empty, limit non-negative, similarity 0.0-1.0
+- `validateQueryRequest()` - Question not empty, max length 2000, context non-negative
+- `validateSummaryRequest()` - Period is WEEK or MONTH, highlights non-negative
+
+**Error Mapping:**
+```go
+codes.DeadlineExceeded  → ErrTimeout
+codes.Unavailable       → ErrAIServiceUnavailable
+codes.InvalidArgument   → ErrInvalidQuery
+gobreaker.ErrOpenState  → ErrCircuitBreakerOpen
+```
+
+**Metrics:**
+```go
+ai_client_requests_total{method, status}
+ai_client_request_duration_seconds{method}
+ai_client_circuit_breaker_state{name}
+```
+
+**Key Implementation: NoopAIProvider**
+
+Stub implementation for testing and when AI disabled:
+
+```go
+type NoopAIProvider struct{}
+
+func (n *NoopAIProvider) SearchSimilar(ctx, req) → empty response
+func (n *NoopAIProvider) QueryArticles(ctx, req) → empty response
+func (n *NoopAIProvider) GenerateSummary(ctx, req) → empty response
+func (n *NoopAIProvider) Health(ctx) → healthy status
+```
+
+**Usage:** Development and testing when catchup-ai is unavailable
+
 #### `internal/infra/adapter/persistence/` - Data Persistence
 
 **PostgreSQL Adapter (`postgres/`):**
@@ -592,6 +774,7 @@ LIMIT $3
 **Files:**
 - `claude.go` - Anthropic Claude API client (274 lines)
 - `openai.go` - OpenAI API client
+- `noop.go` - No-op summarizer for testing
 - `metrics.go` - Summarizer metrics
 
 **Key Implementation: Claude Summarizer**
@@ -754,9 +937,51 @@ CREATE INDEX IF NOT EXISTS idx_article_embeddings_vector
 **Purpose:** Configuration loading and validation
 
 **Files:**
+- `ai.go` - AI configuration (NEW)
 - Security configuration (CSP, CORS, authentication)
 - Rate limiting configuration
 - Environment variable parsing
+
+**AI Configuration (`ai.go`):**
+
+```go
+type AIConfig struct {
+    Enabled           bool
+    GRPCAddress       string
+    ConnectionTimeout time.Duration
+
+    Timeouts struct {
+        EmbedArticle    time.Duration
+        SearchSimilar   time.Duration
+        QueryArticles   time.Duration
+        GenerateSummary time.Duration
+    }
+
+    Search struct {
+        DefaultLimit         int32
+        MaxLimit             int32
+        DefaultMinSimilarity float32
+        DefaultMaxContext    int32
+        MaxContext           int32
+    }
+
+    CircuitBreaker struct {
+        MaxRequests      uint32
+        Interval         time.Duration
+        Timeout          time.Duration
+        FailureThreshold float64
+        MinRequests      uint32
+    }
+}
+```
+
+**Environment Variables:**
+- `AI_ENABLED` - Enable/disable AI features (default: true)
+- `AI_GRPC_ADDRESS` - catchup-ai gRPC address (default: localhost:50051)
+- `AI_CONNECTION_TIMEOUT` - Connection timeout (default: 10s)
+- `AI_TIMEOUT_*` - Operation-specific timeouts
+- `AI_SEARCH_*` - Search configuration
+- `AI_CB_*` - Circuit breaker configuration
 
 **Configuration Sources:**
 1. Environment variables (highest priority)

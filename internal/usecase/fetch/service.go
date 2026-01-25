@@ -43,6 +43,12 @@ type FeedItem struct {
 	PublishedAt time.Time
 }
 
+// EmbeddingHook is an interface for asynchronous article embedding.
+// This is used to decouple the fetch service from AI implementation.
+type EmbeddingHook interface {
+	EmbedArticleAsync(ctx context.Context, article *entity.Article)
+}
+
 // Service provides feed crawling and article fetching use cases.
 // It orchestrates the process of fetching feeds, summarizing content, and storing articles.
 type Service struct {
@@ -53,7 +59,8 @@ type Service struct {
 	WebScrapers    map[string]FeedFetcher // NEW: Web scraper registry for non-RSS sources
 	ContentFetcher ContentFetcher         // NEW: Content enhancement for B-rated feeds
 	NotifyService  notify.Service
-	contentConfig  ContentFetchConfig // Configuration for content fetching behavior
+	EmbeddingHook  EmbeddingHook          // NEW: AI embedding hook for async embedding generation
+	contentConfig  ContentFetchConfig     // Configuration for content fetching behavior
 }
 
 // Summarizer is an interface for AI-powered text summarization.
@@ -72,6 +79,7 @@ type Summarizer interface {
 //   - webScrapers: Map of web scrapers for non-RSS sources (can be nil to disable)
 //   - contentFetcher: Service for fetching full article content (can be nil to disable)
 //   - notifyService: Service for sending notifications
+//   - embeddingHook: Hook for async embedding generation (can be nil to disable)
 //   - contentConfig: Configuration for content fetching behavior (parallelism, threshold)
 //
 // Returns:
@@ -81,7 +89,7 @@ type Summarizer interface {
 //
 //	config := ContentFetchConfig{Parallelism: 10, Threshold: 1500}
 //	scrapers := scraperFactory.CreateScrapers()
-//	service := NewService(sourceRepo, articleRepo, summarizer, feedFetcher, scrapers, contentFetcher, notifyService, config)
+//	service := NewService(sourceRepo, articleRepo, summarizer, feedFetcher, scrapers, contentFetcher, notifyService, embeddingHook, config)
 func NewService(
 	sourceRepo repository.SourceRepository,
 	articleRepo repository.ArticleRepository,
@@ -90,6 +98,7 @@ func NewService(
 	webScrapers map[string]FeedFetcher,
 	contentFetcher ContentFetcher,
 	notifyService notify.Service,
+	embeddingHook EmbeddingHook,
 	contentConfig ContentFetchConfig,
 ) Service {
 	return Service{
@@ -100,6 +109,7 @@ func NewService(
 		WebScrapers:    webScrapers,
 		ContentFetcher: contentFetcher,
 		NotifyService:  notifyService,
+		EmbeddingHook:  embeddingHook,
 		contentConfig:  contentConfig,
 	}
 }
@@ -343,6 +353,12 @@ func (s *Service) processFeedItems(
 				return fmt.Errorf("create article in repository: %w", err)
 			}
 			atomic.AddInt64(&stats.Inserted, 1)
+
+			// Generate embedding asynchronously (non-blocking)
+			// Note: EmbeddingHook spawns goroutine internally, no need for go func() here
+			if s.EmbeddingHook != nil {
+				s.EmbeddingHook.EmbedArticleAsync(egCtx, art)
+			}
 
 			// Notify about new article (non-blocking)
 			// Note: NotifyService handles goroutines internally, no need for go func() here

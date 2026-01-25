@@ -1,0 +1,170 @@
+// Copyright 2026 catchup-feed. All rights reserved.
+// AI service protocol buffer definitions for gRPC communication.
+
+syntax = "proto3";
+
+package catchup.ai.v1;
+
+option go_package = "catchup-feed/internal/interface/grpc/pb/ai";
+
+// ArticleAI provides AI-powered operations on articles.
+service ArticleAI {
+    // EmbedArticle generates an embedding vector for an article.
+    // The embedding is stored by catchup-ai in the vector database.
+    rpc EmbedArticle(EmbedArticleRequest) returns (EmbedArticleResponse);
+
+    // SearchSimilar finds articles semantically similar to a query.
+    rpc SearchSimilar(SearchSimilarRequest) returns (SearchSimilarResponse);
+
+    // QueryArticles performs RAG-based question answering over articles.
+    rpc QueryArticles(QueryArticlesRequest) returns (QueryArticlesResponse);
+
+    // GenerateWeeklySummary generates a summary of recent articles.
+    rpc GenerateWeeklySummary(GenerateWeeklySummaryRequest) returns (GenerateWeeklySummaryResponse);
+}
+
+// EmbedArticleRequest contains article content for embedding generation.
+message EmbedArticleRequest {
+    // Required: Unique article identifier.
+    int64 article_id = 1;
+
+    // Required: Article title.
+    string title = 2;
+
+    // Required: Article content or summary for embedding.
+    string content = 3;
+
+    // Optional: Article URL for reference.
+    string url = 4;
+}
+
+// EmbedArticleResponse contains the result of embedding generation.
+message EmbedArticleResponse {
+    // True if embedding was generated and stored successfully.
+    bool success = 1;
+
+    // Error message if success is false.
+    string error_message = 2;
+
+    // Dimension of the generated embedding (e.g., 1536 for OpenAI).
+    int32 dimension = 3;
+}
+
+// SearchSimilarRequest contains the query for semantic search.
+message SearchSimilarRequest {
+    // Required: Natural language query.
+    string query = 1;
+
+    // Optional: Maximum number of results. Default: 10, Max: 50.
+    int32 limit = 2;
+
+    // Optional: Minimum similarity threshold (0.0 to 1.0). Default: 0.5.
+    float min_similarity = 3;
+}
+
+// SearchSimilarResponse contains search results.
+message SearchSimilarResponse {
+    // List of similar articles sorted by similarity (highest first).
+    repeated SimilarArticle articles = 1;
+
+    // Total number of articles searched.
+    int64 total_searched = 2;
+}
+
+// SimilarArticle represents an article with similarity score.
+message SimilarArticle {
+    // Article ID for fetching full article from repository.
+    int64 article_id = 1;
+
+    // Article title.
+    string title = 2;
+
+    // Article URL.
+    string url = 3;
+
+    // Cosine similarity score (0.0 to 1.0).
+    float similarity = 4;
+
+    // Brief excerpt highlighting relevance.
+    string excerpt = 5;
+}
+
+// QueryArticlesRequest contains the question for RAG-based Q&A.
+message QueryArticlesRequest {
+    // Required: Natural language question.
+    string question = 1;
+
+    // Optional: Maximum articles to use as context. Default: 5, Max: 20.
+    int32 max_context = 2;
+}
+
+// QueryArticlesResponse contains the AI-generated answer.
+message QueryArticlesResponse {
+    // AI-generated answer to the question.
+    string answer = 1;
+
+    // Source articles used to generate the answer.
+    repeated SourceArticle sources = 2;
+
+    // Confidence score (0.0 to 1.0).
+    float confidence = 3;
+}
+
+// SourceArticle represents an article cited in the answer.
+message SourceArticle {
+    // Article ID.
+    int64 article_id = 1;
+
+    // Article title.
+    string title = 2;
+
+    // Article URL.
+    string url = 3;
+
+    // Relevance to the answer (0.0 to 1.0).
+    float relevance = 4;
+}
+
+// GenerateWeeklySummaryRequest contains parameters for summary generation.
+message GenerateWeeklySummaryRequest {
+    // Required: Summary period type.
+    SummaryPeriod period = 1;
+
+    // Optional: Maximum highlights to include. Default: 5, Max: 10.
+    int32 max_highlights = 2;
+}
+
+// SummaryPeriod defines the time range for summarization.
+enum SummaryPeriod {
+    SUMMARY_PERIOD_UNSPECIFIED = 0;
+    SUMMARY_PERIOD_WEEK = 1;
+    SUMMARY_PERIOD_MONTH = 2;
+}
+
+// GenerateWeeklySummaryResponse contains the generated summary.
+message GenerateWeeklySummaryResponse {
+    // Overall summary of articles in the period.
+    string summary = 1;
+
+    // Key highlights/topics from the period.
+    repeated Highlight highlights = 2;
+
+    // Number of articles summarized.
+    int32 article_count = 3;
+
+    // Date range covered (ISO 8601).
+    string start_date = 4;
+    string end_date = 5;
+}
+
+// Highlight represents a key topic or trend.
+message Highlight {
+    // Topic name or title.
+    string topic = 1;
+
+    // Brief description.
+    string description = 2;
+
+    // Number of related articles.
+    int32 article_count = 3;
+}
