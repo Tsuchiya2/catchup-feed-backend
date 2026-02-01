@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
@@ -95,13 +97,27 @@ func NewGRPCAIProvider(cfg *config.AIConfig) (*GRPCAIProvider, error) {
 		return nil, ai.ErrAIDisabled
 	}
 
-	// Create gRPC connection
+	// Create gRPC connection with TLS support
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.ConnectionTimeout)
 	defer cancel()
 
+	var opts []grpc.DialOption
+	if cfg.UseTLS {
+		// TLS enabled (for Cloud Run connection)
+		// Uses system CA certificates
+		tlsConfig := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+		creds := credentials.NewTLS(tlsConfig)
+		opts = append(opts, grpc.WithTransportCredentials(creds))
+	} else {
+		// TLS disabled (for local development)
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
 	conn, err := grpc.NewClient(
 		cfg.GRPCAddress,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		opts...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gRPC connection: %w", err)

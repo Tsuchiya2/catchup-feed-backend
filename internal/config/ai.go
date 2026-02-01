@@ -14,6 +14,11 @@ type AIConfig struct {
 	// Default: "localhost:50051"
 	GRPCAddress string
 
+	// UseTLS enables TLS for gRPC connection.
+	// Set to true for Cloud Run connections (uses system CA certificates).
+	// Default: false
+	UseTLS bool
+
 	// Enabled controls whether AI features are active.
 	// When false, embedding hook is skipped and CLI commands return error.
 	// Default: true
@@ -98,6 +103,7 @@ type CircuitBreakerConfig struct {
 func LoadAIConfig() (*AIConfig, error) {
 	config := &AIConfig{
 		GRPCAddress:       getEnvOrDefault("AI_GRPC_ADDRESS", "localhost:50051"),
+		UseTLS:            getEnvBool("AI_GRPC_TLS", false),
 		Enabled:           getEnvBool("AI_ENABLED", true),
 		ConnectionTimeout: getEnvDuration("AI_CONNECTION_TIMEOUT", 10*time.Second),
 		Timeouts: TimeoutConfig{
