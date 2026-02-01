@@ -19,6 +19,7 @@ func TestLoadAIConfig_Defaults(t *testing.T) {
 
 	// Verify defaults
 	assert.Equal(t, "localhost:50051", config.GRPCAddress)
+	assert.False(t, config.UseTLS) // TLS disabled by default
 	assert.True(t, config.Enabled)
 	assert.Equal(t, 10*time.Second, config.ConnectionTimeout)
 
@@ -54,6 +55,7 @@ func TestLoadAIConfig_CustomValues(t *testing.T) {
 
 	// Set custom environment variables
 	setEnv(t, "AI_GRPC_ADDRESS", "ai-service:9090")
+	setEnv(t, "AI_GRPC_TLS", "true")
 	setEnv(t, "AI_ENABLED", "false")
 	setEnv(t, "AI_CONNECTION_TIMEOUT", "20s")
 	setEnv(t, "AI_TIMEOUT_EMBED", "45s")
@@ -77,6 +79,7 @@ func TestLoadAIConfig_CustomValues(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "ai-service:9090", config.GRPCAddress)
+	assert.True(t, config.UseTLS)
 	assert.False(t, config.Enabled)
 	assert.Equal(t, 20*time.Second, config.ConnectionTimeout)
 	assert.Equal(t, 45*time.Second, config.Timeouts.EmbedArticle)
@@ -362,6 +365,7 @@ func clearAIEnvVars(t *testing.T) {
 	t.Helper()
 	envVars := []string{
 		"AI_GRPC_ADDRESS",
+		"AI_GRPC_TLS",
 		"AI_ENABLED",
 		"AI_CONNECTION_TIMEOUT",
 		"AI_TIMEOUT_EMBED",
