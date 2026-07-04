@@ -510,29 +510,6 @@ func TestCSPMiddleware_HeaderValueFormatCorrectness(t *testing.T) {
 	}
 }
 
-// TestCSPMiddleware_WithMetrics tests WithMetrics method
-func TestCSPMiddleware_WithMetrics(t *testing.T) {
-	config := CSPMiddlewareConfig{
-		Enabled:       true,
-		DefaultPolicy: csp.StrictPolicy(),
-	}
-
-	middleware := NewCSPMiddleware(config)
-
-	// Verify initial metrics is nil
-	if middleware.metrics != nil {
-		t.Error("Expected initial metrics to be nil")
-	}
-
-	// Mock metrics (we can't test the actual metrics recording here)
-	// but we can verify the method chain works
-	result := middleware.WithMetrics(nil)
-
-	if result != middleware {
-		t.Error("WithMetrics should return the middleware instance for method chaining")
-	}
-}
-
 // TestCSPMiddleware_EmptyPolicySkipped tests that empty policies are skipped
 func TestCSPMiddleware_EmptyPolicySkipped(t *testing.T) {
 	emptyPolicy := csp.NewCSPBuilder() // No directives added

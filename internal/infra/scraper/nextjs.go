@@ -12,34 +12,27 @@ import (
 	"time"
 
 	"catchup-feed/internal/domain/entity"
-	"catchup-feed/internal/resilience/circuitbreaker"
-	"catchup-feed/internal/resilience/retry"
 	"catchup-feed/internal/usecase/fetch"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/sony/gobreaker"
 )
 
 // NextJSScraper implements FeedFetcher for Next.js-based websites.
 // It extracts JSON data from the __NEXT_DATA__ script tag and parses it into feed items.
 type NextJSScraper struct {
-	client         *http.Client
-	circuitBreaker *circuitbreaker.CircuitBreaker
-	retryConfig    retry.Config
+	client *http.Client
 }
 
 // NewNextJSScraper creates a new NextJSScraper with the given HTTP client.
-// It automatically configures circuit breaker and retry logic for resilience.
 func NewNextJSScraper(client *http.Client) *NextJSScraper {
 	return &NextJSScraper{
-		client:         client,
-		circuitBreaker: circuitbreaker.New(circuitbreaker.WebScraperConfig()),
-		retryConfig:    retry.WebScraperConfig(),
+		client: client,
 	}
 }
 
 // Fetch retrieves and parses articles from a Next.js website.
 // It extracts the __NEXT_DATA__ JSON from the page and parses it into feed items.
+// Failures are returned as-is; the hourly cron simply retries on the next run.
 func (n *NextJSScraper) Fetch(ctx context.Context, sourceURL string) ([]fetch.FeedItem, error) {
 	// Extract scraper config from context
 	config, ok := ctx.Value(ScraperConfigKey).(*entity.ScraperConfig)
@@ -47,39 +40,10 @@ func (n *NextJSScraper) Fetch(ctx context.Context, sourceURL string) ([]fetch.Fe
 		return nil, errors.New("scraper_config not found in context")
 	}
 
-	var items []fetch.FeedItem
-
-	// Wrap with retry logic
-	retryErr := retry.WithBackoff(ctx, n.retryConfig, func() error {
-		// Execute through circuit breaker
-		cbResult, err := n.circuitBreaker.Execute(func() (interface{}, error) {
-			return n.doFetch(ctx, sourceURL, config)
-		})
-
-		// Handle circuit breaker open state
-		if err != nil {
-			if errors.Is(err, gobreaker.ErrOpenState) {
-				slog.Warn("nextjs scraper circuit breaker open, request rejected",
-					slog.String("service", "nextjs-scraper"),
-					slog.String("url", sourceURL),
-					slog.String("state", n.circuitBreaker.State().String()))
-				return err
-			}
-			return err
-		}
-
-		items = cbResult.([]fetch.FeedItem)
-		return nil
-	})
-
-	if retryErr != nil {
-		return nil, retryErr
-	}
-
-	return items, nil
+	return n.doFetch(ctx, sourceURL, config)
 }
 
-// doFetch performs the actual scraping without retry or circuit breaker.
+// doFetch performs the actual scraping.
 func (n *NextJSScraper) doFetch(ctx context.Context, sourceURL string, config *entity.ScraperConfig) ([]fetch.FeedItem, error) {
 	// Step 1: Validate URL (SSRF prevention)
 	if err := validateURL(sourceURL); err != nil {
@@ -127,10 +91,7 @@ func (n *NextJSScraper) fetchHTML(ctx context.Context, urlStr string) (string, e
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", &retry.HTTPError{
-			StatusCode: resp.StatusCode,
-			Message:    fmt.Sprintf("unexpected status: %s", resp.Status),
-		}
+		return "", fmt.Errorf("unexpected status: %s", resp.Status)
 	}
 
 	// Limit body size to prevent memory exhaustion

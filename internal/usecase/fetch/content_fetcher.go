@@ -50,7 +50,6 @@ type ContentFetcher interface {
 	//   - ErrBodyTooLarge: Response body exceeds size limit
 	//   - ErrTimeout: Request timed out
 	//   - ErrReadabilityFailed: Content extraction failed
-	//   - gobreaker.ErrOpenState: Circuit breaker is open (too many failures)
 	//
 	// The caller should handle errors gracefully and fall back to RSS content.
 	FetchContent(ctx context.Context, url string) (string, error)

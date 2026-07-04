@@ -187,30 +187,3 @@ func TestTruncationLogic(t *testing.T) {
 		})
 	}
 }
-
-// TestMetricsRecorderInterface tests that both implementations work
-func TestMetricsRecorderInterface(t *testing.T) {
-	t.Run("MockMetricsRecorder", func(t *testing.T) {
-		var recorder SummaryMetricsRecorder = &MockMetricsRecorder{}
-
-		// Should not panic
-		assert.NotPanics(t, func() {
-			recorder.RecordLength(900)
-			recorder.RecordDuration(1)
-			recorder.RecordCompliance(true)
-			recorder.RecordLimitExceeded()
-		})
-	})
-
-	t.Run("PrometheusSummaryMetrics", func(t *testing.T) {
-		var recorder SummaryMetricsRecorder = NewPrometheusSummaryMetrics()
-
-		// Should not panic
-		assert.NotPanics(t, func() {
-			recorder.RecordLength(900)
-			recorder.RecordDuration(1)
-			recorder.RecordCompliance(true)
-			recorder.RecordLimitExceeded()
-		})
-	})
-}

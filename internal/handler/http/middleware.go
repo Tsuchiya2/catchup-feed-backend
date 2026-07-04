@@ -12,14 +12,10 @@ import (
 	"catchup-feed/internal/handler/http/requestid"
 	"catchup-feed/internal/handler/http/respond"
 	"catchup-feed/internal/handler/http/responsewriter"
-
-	"go.opentelemetry.io/otel/trace"
 )
 
 // Logging returns middleware that logs HTTP requests with structured logging.
 // It captures request details, response status, size, and processing duration.
-// The middleware also extracts and logs the trace ID from the OpenTelemetry span context
-// to enable correlation between logs and distributed traces.
 func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -34,17 +30,12 @@ func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 			// Extract request ID
 			reqID := requestid.FromContext(r.Context())
 
-			// Extract trace ID from OpenTelemetry span context
-			span := trace.SpanFromContext(r.Context())
-			traceID := span.SpanContext().TraceID().String()
-
 			// Calculate processing duration
 			duration := time.Since(start)
 
 			// Log request completion with structured fields
 			logger.Info("request completed",
 				slog.String("request_id", reqID),
-				slog.String("trace_id", traceID),
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.String("query", r.URL.RawQuery),

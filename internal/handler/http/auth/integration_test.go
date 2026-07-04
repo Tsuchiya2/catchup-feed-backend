@@ -715,7 +715,6 @@ func TestIntegration_PublicEndpointsNoAuth(t *testing.T) {
 		"/health",
 		"/ready",
 		"/live",
-		"/metrics",
 		"/swagger/index.html",
 		"/auth/token",
 	}

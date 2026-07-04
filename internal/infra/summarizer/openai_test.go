@@ -195,37 +195,6 @@ func TestOpenAI_ContextTimeout(t *testing.T) {
 	})
 }
 
-// TestOpenAI_CircuitBreakerIntegration tests integration with circuit breaker
-func TestOpenAI_CircuitBreakerIntegration(t *testing.T) {
-	t.Run("circuit breaker opens after failures", func(t *testing.T) {
-		// This test demonstrates circuit breaker behavior
-		// Multiple consecutive failures should open the circuit
-		// Subsequent requests should be rejected immediately
-	})
-
-	t.Run("circuit breaker state transitions", func(t *testing.T) {
-		// States: Closed -> Open -> Half-Open -> Closed/Open
-		// This test would verify proper state transitions
-	})
-}
-
-// TestOpenAI_RetryLogic tests retry behavior
-func TestOpenAI_RetryLogic(t *testing.T) {
-	t.Run("retries on transient errors", func(t *testing.T) {
-		// Transient errors (500, 503, network errors) should trigger retries
-		// The retry config specifies max attempts and backoff strategy
-	})
-
-	t.Run("no retry on permanent errors", func(t *testing.T) {
-		// Permanent errors (400, 401, 404) should not be retried
-	})
-
-	t.Run("exponential backoff between retries", func(t *testing.T) {
-		// Verify increasing delays between retry attempts
-		// Should follow exponential backoff pattern
-	})
-}
-
 // TestOpenAI_ModelConfiguration tests model parameter
 func TestOpenAI_ModelConfiguration(t *testing.T) {
 	t.Run("uses gpt-3.5-turbo model", func(t *testing.T) {

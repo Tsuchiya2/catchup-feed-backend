@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"catchup-feed/internal/domain/entity"
-	"catchup-feed/internal/observability/metrics"
 	"catchup-feed/internal/repository"
 	"catchup-feed/internal/usecase/notify"
 
@@ -43,12 +42,6 @@ type FeedItem struct {
 	PublishedAt time.Time
 }
 
-// EmbeddingHook is an interface for asynchronous article embedding.
-// This is used to decouple the fetch service from AI implementation.
-type EmbeddingHook interface {
-	EmbedArticleAsync(ctx context.Context, article *entity.Article)
-}
-
 // Service provides feed crawling and article fetching use cases.
 // It orchestrates the process of fetching feeds, summarizing content, and storing articles.
 type Service struct {
@@ -56,11 +49,10 @@ type Service struct {
 	ArticleRepo    repository.ArticleRepository
 	Summarizer     Summarizer
 	FeedFetcher    FeedFetcher
-	WebScrapers    map[string]FeedFetcher // NEW: Web scraper registry for non-RSS sources
-	ContentFetcher ContentFetcher         // NEW: Content enhancement for B-rated feeds
+	WebScrapers    map[string]FeedFetcher // Web scraper registry for non-RSS sources
+	ContentFetcher ContentFetcher         // Content enhancement for B-rated feeds
 	NotifyService  notify.Service
-	EmbeddingHook  EmbeddingHook          // NEW: AI embedding hook for async embedding generation
-	contentConfig  ContentFetchConfig     // Configuration for content fetching behavior
+	contentConfig  ContentFetchConfig // Configuration for content fetching behavior
 }
 
 // Summarizer is an interface for AI-powered text summarization.
@@ -79,7 +71,6 @@ type Summarizer interface {
 //   - webScrapers: Map of web scrapers for non-RSS sources (can be nil to disable)
 //   - contentFetcher: Service for fetching full article content (can be nil to disable)
 //   - notifyService: Service for sending notifications
-//   - embeddingHook: Hook for async embedding generation (can be nil to disable)
 //   - contentConfig: Configuration for content fetching behavior (parallelism, threshold)
 //
 // Returns:
@@ -89,7 +80,7 @@ type Summarizer interface {
 //
 //	config := ContentFetchConfig{Parallelism: 10, Threshold: 1500}
 //	scrapers := scraperFactory.CreateScrapers()
-//	service := NewService(sourceRepo, articleRepo, summarizer, feedFetcher, scrapers, contentFetcher, notifyService, embeddingHook, config)
+//	service := NewService(sourceRepo, articleRepo, summarizer, feedFetcher, scrapers, contentFetcher, notifyService, config)
 func NewService(
 	sourceRepo repository.SourceRepository,
 	articleRepo repository.ArticleRepository,
@@ -98,7 +89,6 @@ func NewService(
 	webScrapers map[string]FeedFetcher,
 	contentFetcher ContentFetcher,
 	notifyService notify.Service,
-	embeddingHook EmbeddingHook,
 	contentConfig ContentFetchConfig,
 ) Service {
 	return Service{
@@ -109,7 +99,6 @@ func NewService(
 		WebScrapers:    webScrapers,
 		ContentFetcher: contentFetcher,
 		NotifyService:  notifyService,
-		EmbeddingHook:  embeddingHook,
 		contentConfig:  contentConfig,
 	}
 }
@@ -207,8 +196,6 @@ func (s *Service) processSingleSource(ctx context.Context, src *entity.Source, s
 			slog.Int64("source_id", src.ID),
 			slog.String("feed_url", src.FeedURL),
 			slog.Any("error", err))
-		// Record fetch error metric
-		metrics.RecordFeedCrawlError(src.ID, "fetch_failed")
 		// Continue with other sources even if one fails
 		return nil
 	}
@@ -230,18 +217,15 @@ func (s *Service) processSingleSource(ctx context.Context, src *entity.Source, s
 		logger.Warn("failed to batch check URLs",
 			slog.Int64("source_id", src.ID),
 			slog.Any("error", err))
-		// Record batch check error metric
-		metrics.RecordFeedCrawlError(src.ID, "batch_check_failed")
 		// Continue with other sources even if batch check fails
 		return nil
 	}
 
-	// Track stats before processing for metrics
+	// Track stats before processing for logging
 	beforeInserted := atomic.LoadInt64(&stats.Inserted)
 	beforeDuplicated := atomic.LoadInt64(&stats.Duplicated)
 
 	if err := s.processFeedItems(ctx, src, feedItems, existsMap, stats); err != nil {
-		metrics.RecordFeedCrawlError(src.ID, "process_items_failed")
 		return fmt.Errorf("process feed items: %w", err)
 	}
 
@@ -254,9 +238,6 @@ func (s *Service) processSingleSource(ctx context.Context, src *entity.Source, s
 	itemsFound := int64(len(feedItems))
 	itemsInserted := atomic.LoadInt64(&stats.Inserted) - beforeInserted
 	itemsDuplicated := atomic.LoadInt64(&stats.Duplicated) - beforeDuplicated
-
-	// Record metrics for this source crawl
-	metrics.RecordFeedCrawl(src.ID, sourceDuration, itemsFound, itemsInserted, itemsDuplicated)
 
 	logger.Info("source crawl completed",
 		slog.Int64("source_id", src.ID),
@@ -309,23 +290,14 @@ func (s *Service) processFeedItems(
 			summarySem <- struct{}{}
 			defer func() { <-summarySem }()
 
-			// Measure summarization duration
-			summaryStart := time.Now()
 			summary, err := s.Summarizer.Summarize(egCtx, content)
-			summaryDuration := time.Since(summaryStart)
-
 			if err != nil {
 				// Context cancellation is critical - propagate immediately
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return err
 				}
 
-				// TODO(FEAT-CRAWL-RESILIENCE-001-Phase2): [DEFERRED 2025-12-15] Replace inline error handling with ResilientProcessor.
-				// Rationale: Current inline error handling is sufficient for current scale.
-				// See design: docs/designs/security-and-quality-improvements.md Section 3.2.5
 				atomic.AddInt64(&stats.SummarizeError, 1)
-				metrics.RecordArticleSummarized(false)
-				metrics.RecordSummarizationDuration(summaryDuration)
 
 				// Log warning and skip this article instead of stopping entire crawl
 				logger := slog.Default()
@@ -336,10 +308,6 @@ func (s *Service) processFeedItems(
 					slog.Any("error", err))
 				return nil // Continue processing other articles
 			}
-
-			// Record successful summarization
-			metrics.RecordArticleSummarized(true)
-			metrics.RecordSummarizationDuration(summaryDuration)
 
 			art := &entity.Article{
 				SourceID:    src.ID,
@@ -353,12 +321,6 @@ func (s *Service) processFeedItems(
 				return fmt.Errorf("create article in repository: %w", err)
 			}
 			atomic.AddInt64(&stats.Inserted, 1)
-
-			// Generate embedding asynchronously (non-blocking)
-			// Note: EmbeddingHook spawns goroutine internally, no need for go func() here
-			if s.EmbeddingHook != nil {
-				s.EmbeddingHook.EmbedArticleAsync(egCtx, art)
-			}
 
 			// Notify about new article (non-blocking)
 			// Note: NotifyService handles goroutines internally, no need for go func() here
@@ -426,7 +388,6 @@ func (s *Service) enhanceContent(ctx context.Context, item FeedItem) string {
 			slog.String("url", item.URL),
 			slog.Int("rss_length", rssLength),
 			slog.Int("threshold", s.contentConfig.Threshold))
-		metrics.RecordContentFetchSkipped()
 		return item.Content
 	}
 
@@ -445,7 +406,6 @@ func (s *Service) enhanceContent(ctx context.Context, item FeedItem) string {
 			slog.String("url", item.URL),
 			slog.Any("error", err),
 			slog.Duration("fetch_duration", fetchDuration))
-		metrics.RecordContentFetchFailed(fetchDuration)
 		return item.Content
 	}
 
@@ -456,7 +416,6 @@ func (s *Service) enhanceContent(ctx context.Context, item FeedItem) string {
 		slog.Int("rss_length", rssLength),
 		slog.Int("fetched_length", fetchedLength),
 		slog.Duration("fetch_duration", fetchDuration))
-	metrics.RecordContentFetchSuccess(fetchDuration, fetchedLength)
 
 	// Use fetched content only if it's longer than RSS content
 	// This prevents using truncated or poor-quality extracted content

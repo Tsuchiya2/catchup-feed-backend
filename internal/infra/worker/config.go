@@ -24,7 +24,7 @@ import (
 //	config := DefaultConfig()
 //
 //	// Load from environment with fallback
-//	config, err := LoadConfigFromEnv(logger, metrics)
+//	config, err := LoadConfigFromEnv(logger)
 //	if err != nil {
 //	    // This should never happen with fail-open strategy
 //	    log.Fatal("Unexpected configuration error: %v", err)
@@ -159,7 +159,7 @@ func (c *WorkerConfig) Validate() error {
 //  1. Start with DefaultConfig() as base
 //  2. Load each field from environment variables
 //  3. Validate each loaded value
-//  4. If validation fails: use default value, log warning, increment metrics
+//  4. If validation fails: use default value, log warning
 //  5. Never return error - always return a valid configuration
 //
 // Environment variables:
@@ -169,15 +169,8 @@ func (c *WorkerConfig) Validate() error {
 //   - CRAWL_TIMEOUT: Duration string, e.g., "30m" (default: 30 minutes)
 //   - WORKER_HEALTH_PORT: Integer 1024-65535 (default: 9091)
 //
-// Metrics updated:
-//   - ValidationErrorsTotal: Incremented for each validation failure
-//   - FallbacksTotal: Incremented for each fallback applied
-//   - FallbackActive: Set to 1 if any fallback is active, 0 otherwise
-//   - LoadTimestamp: Set to current time after successful load
-//
 // Parameters:
 //   - logger: Structured logger for warnings
-//   - metrics: Metrics instance for tracking fallbacks
 //
 // Returns:
 //   - *WorkerConfig: Valid configuration (never nil)
@@ -186,8 +179,7 @@ func (c *WorkerConfig) Validate() error {
 // Example:
 //
 //	logger := slog.Default()
-//	metrics := NewWorkerMetrics()
-//	config, _ := LoadConfigFromEnv(logger, metrics)
+//	config, _ := LoadConfigFromEnv(logger)
 //	// config is always valid and ready to use
 //
 // Warning log format:
@@ -198,7 +190,7 @@ func (c *WorkerConfig) Validate() error {
 //	    slog.String("invalid_value", "bad cron"),
 //	    slog.String("default_value", "30 5 * * *"),
 //	    slog.String("error", "validation error message"))
-func LoadConfigFromEnv(logger *slog.Logger, metrics *WorkerMetrics) (*WorkerConfig, error) {
+func LoadConfigFromEnv(logger *slog.Logger) (*WorkerConfig, error) {
 	// Start with default config
 	cfg := DefaultConfig()
 	fallbackApplied := false
@@ -208,8 +200,6 @@ func LoadConfigFromEnv(logger *slog.Logger, metrics *WorkerMetrics) (*WorkerConf
 	cfg.CronSchedule = result.Value.(string)
 	if result.FallbackApplied {
 		fallbackApplied = true
-		metrics.RecordValidationError("cron_schedule")
-		metrics.RecordFallback("cron_schedule", "default")
 		for _, warning := range result.Warnings {
 			logger.Warn("Configuration fallback applied",
 				slog.String("field", "CronSchedule"),
@@ -222,8 +212,6 @@ func LoadConfigFromEnv(logger *slog.Logger, metrics *WorkerMetrics) (*WorkerConf
 	cfg.Timezone = result.Value.(string)
 	if result.FallbackApplied {
 		fallbackApplied = true
-		metrics.RecordValidationError("timezone")
-		metrics.RecordFallback("timezone", "default")
 		for _, warning := range result.Warnings {
 			logger.Warn("Configuration fallback applied",
 				slog.String("field", "Timezone"),
@@ -238,8 +226,6 @@ func LoadConfigFromEnv(logger *slog.Logger, metrics *WorkerMetrics) (*WorkerConf
 	cfg.NotifyMaxConcurrent = result.Value.(int)
 	if result.FallbackApplied {
 		fallbackApplied = true
-		metrics.RecordValidationError("notify_max_concurrent")
-		metrics.RecordFallback("notify_max_concurrent", "default")
 		for _, warning := range result.Warnings {
 			logger.Warn("Configuration fallback applied",
 				slog.String("field", "NotifyMaxConcurrent"),
@@ -254,8 +240,6 @@ func LoadConfigFromEnv(logger *slog.Logger, metrics *WorkerMetrics) (*WorkerConf
 	cfg.CrawlTimeout = result.Value.(time.Duration)
 	if result.FallbackApplied {
 		fallbackApplied = true
-		metrics.RecordValidationError("crawl_timeout")
-		metrics.RecordFallback("crawl_timeout", "default")
 		for _, warning := range result.Warnings {
 			logger.Warn("Configuration fallback applied",
 				slog.String("field", "CrawlTimeout"),
@@ -270,8 +254,6 @@ func LoadConfigFromEnv(logger *slog.Logger, metrics *WorkerMetrics) (*WorkerConf
 	cfg.HealthPort = result.Value.(int)
 	if result.FallbackApplied {
 		fallbackApplied = true
-		metrics.RecordValidationError("health_port")
-		metrics.RecordFallback("health_port", "default")
 		for _, warning := range result.Warnings {
 			logger.Warn("Configuration fallback applied",
 				slog.String("field", "HealthPort"),
@@ -279,9 +261,9 @@ func LoadConfigFromEnv(logger *slog.Logger, metrics *WorkerMetrics) (*WorkerConf
 		}
 	}
 
-	// Update metrics
-	metrics.SetFallbackActive("", fallbackApplied)
-	metrics.RecordLoadTimestamp()
+	if fallbackApplied {
+		logger.Warn("worker configuration loaded with fallbacks applied")
+	}
 
 	// Always return valid config (fail-open strategy)
 	return &cfg, nil

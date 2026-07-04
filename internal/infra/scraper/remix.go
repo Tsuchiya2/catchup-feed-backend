@@ -12,33 +12,25 @@ import (
 	"time"
 
 	"catchup-feed/internal/domain/entity"
-	"catchup-feed/internal/resilience/circuitbreaker"
-	"catchup-feed/internal/resilience/retry"
 	"catchup-feed/internal/usecase/fetch"
-
-	"github.com/sony/gobreaker"
 )
 
 // RemixScraper implements FeedFetcher for Remix-based websites.
 // It extracts JSON data from the window.__remixContext embedded script.
 type RemixScraper struct {
-	client         *http.Client
-	circuitBreaker *circuitbreaker.CircuitBreaker
-	retryConfig    retry.Config
+	client *http.Client
 }
 
 // NewRemixScraper creates a new RemixScraper with the given HTTP client.
-// It automatically configures circuit breaker and retry logic for resilience.
 func NewRemixScraper(client *http.Client) *RemixScraper {
 	return &RemixScraper{
-		client:         client,
-		circuitBreaker: circuitbreaker.New(circuitbreaker.WebScraperConfig()),
-		retryConfig:    retry.WebScraperConfig(),
+		client: client,
 	}
 }
 
 // Fetch retrieves and parses articles from a Remix website.
 // It extracts the window.__remixContext JSON from the page and parses it into feed items.
+// Failures are returned as-is; the hourly cron simply retries on the next run.
 func (r *RemixScraper) Fetch(ctx context.Context, sourceURL string) ([]fetch.FeedItem, error) {
 	// Extract scraper config from context
 	config, ok := ctx.Value(ScraperConfigKey).(*entity.ScraperConfig)
@@ -46,39 +38,10 @@ func (r *RemixScraper) Fetch(ctx context.Context, sourceURL string) ([]fetch.Fee
 		return nil, errors.New("scraper_config not found in context")
 	}
 
-	var items []fetch.FeedItem
-
-	// Wrap with retry logic
-	retryErr := retry.WithBackoff(ctx, r.retryConfig, func() error {
-		// Execute through circuit breaker
-		cbResult, err := r.circuitBreaker.Execute(func() (interface{}, error) {
-			return r.doFetch(ctx, sourceURL, config)
-		})
-
-		// Handle circuit breaker open state
-		if err != nil {
-			if errors.Is(err, gobreaker.ErrOpenState) {
-				slog.Warn("remix scraper circuit breaker open, request rejected",
-					slog.String("service", "remix-scraper"),
-					slog.String("url", sourceURL),
-					slog.String("state", r.circuitBreaker.State().String()))
-				return err
-			}
-			return err
-		}
-
-		items = cbResult.([]fetch.FeedItem)
-		return nil
-	})
-
-	if retryErr != nil {
-		return nil, retryErr
-	}
-
-	return items, nil
+	return r.doFetch(ctx, sourceURL, config)
 }
 
-// doFetch performs the actual scraping without retry or circuit breaker.
+// doFetch performs the actual scraping.
 func (r *RemixScraper) doFetch(ctx context.Context, sourceURL string, config *entity.ScraperConfig) ([]fetch.FeedItem, error) {
 	// Step 1: Validate URL (SSRF prevention)
 	if err := validateURL(sourceURL); err != nil {
@@ -126,10 +89,7 @@ func (r *RemixScraper) fetchHTML(ctx context.Context, urlStr string) (string, er
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", &retry.HTTPError{
-			StatusCode: resp.StatusCode,
-			Message:    fmt.Sprintf("unexpected status: %s", resp.Status),
-		}
+		return "", fmt.Errorf("unexpected status: %s", resp.Status)
 	}
 
 	// Limit body size to prevent memory exhaustion

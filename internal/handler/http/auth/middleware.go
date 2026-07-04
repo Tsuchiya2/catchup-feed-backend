@@ -74,15 +74,9 @@ func Authz(next http.Handler) http.Handler {
 		logger.Debug("authorization check started", slog.String("role", role))
 
 		// Step 3: Check if user has permission for this request
-		// Track authorization check duration
-		authzStart := time.Now()
 		hasPermission := checkRolePermission(role, r.Method, r.URL.Path)
-		RecordAuthzCheckDuration(time.Since(authzStart).Seconds())
 
 		if !hasPermission {
-			// Record forbidden access attempt
-			RecordForbiddenAttempt(role, r.Method)
-
 			logger.Warn("authorization denied",
 				slog.String("user_email", user),
 				slog.String("role", role),

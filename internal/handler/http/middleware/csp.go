@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"catchup-feed/pkg/ratelimit"
 	"catchup-feed/pkg/security/csp"
 )
 
@@ -38,8 +37,7 @@ type CSPMiddlewareConfig struct {
 // CSPMiddleware applies Content-Security-Policy headers to HTTP responses.
 // It supports path-based policy selection and report-only mode.
 type CSPMiddleware struct {
-	config  CSPMiddlewareConfig
-	metrics ratelimit.RateLimitMetrics // Reuse for CSP violation counting (if report endpoint configured)
+	config CSPMiddlewareConfig
 }
 
 // NewCSPMiddleware creates a new CSP middleware with the provided configuration.
@@ -64,8 +62,7 @@ type CSPMiddleware struct {
 //	handler = cspMiddleware.Middleware()(handler)
 func NewCSPMiddleware(config CSPMiddlewareConfig) *CSPMiddleware {
 	return &CSPMiddleware{
-		config:  config,
-		metrics: nil, // Optional: can be injected for violation metrics
+		config: config,
 	}
 }
 
@@ -176,23 +173,6 @@ func (m *CSPMiddleware) selectPolicy(path string) *csp.CSPBuilder {
 	}
 
 	return m.config.DefaultPolicy
-}
-
-// WithMetrics sets the metrics recorder for CSP violation tracking.
-// This is optional and only needed if CSP violation reporting is configured.
-//
-// Parameters:
-//   - metrics: Metrics recorder interface
-//
-// Returns:
-//   - *CSPMiddleware: The middleware instance for method chaining
-//
-// Example:
-//
-//	cspMiddleware.WithMetrics(prometheusMetrics)
-func (m *CSPMiddleware) WithMetrics(metrics ratelimit.RateLimitMetrics) *CSPMiddleware {
-	m.metrics = metrics
-	return m
 }
 
 // ShouldApplyCSP checks if CSP should be applied to the given path.

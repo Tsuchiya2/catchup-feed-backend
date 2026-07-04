@@ -86,94 +86,9 @@ BEGIN
 END $$;
 `)
 
-	// Embedding Feature: pgvector拡張を有効化
-	// Note: エラーをログ出力するが、処理は継続（既存環境では既にインストール済みの場合がある）
-	if _, err := db.Exec(`CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
-		// pgvector拡張がインストールされていない場合は警告を出力
-		// ベクトル検索機能は使用不可となるが、他の機能は正常に動作する
-		println("WARNING: Failed to create pgvector extension:", err.Error())
-		println("         Vector search functionality will not be available.")
-	}
-
-	// Embedding Feature: article_embeddings テーブル作成
-	// Note: article_id is INTEGER to match articles.id (SERIAL = INTEGER)
-	// Note: vector(1536) is fixed size for OpenAI text-embedding-3-small model
-	//       The dimension column stores metadata for validation purposes
-	//       If multi-dimension support is needed, consider separate tables per dimension
-	if _, err := db.Exec(`
-CREATE TABLE IF NOT EXISTS article_embeddings (
-    id              SERIAL PRIMARY KEY,
-    article_id      INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
-    embedding_type  VARCHAR(50) NOT NULL,
-    provider        VARCHAR(50) NOT NULL,
-    model           VARCHAR(100) NOT NULL,
-    dimension       INT NOT NULL,
-    embedding       vector(1536) NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(article_id, embedding_type, provider, model)
-)`); err != nil {
-		return err
-	}
-
-	// Embedding Feature: article_embeddings インデックス追加
-	embeddingIndexes := []string{
-		// article_id による検索用 B-tree インデックス
-		`CREATE INDEX IF NOT EXISTS idx_article_embeddings_article_id ON article_embeddings(article_id)`,
-	}
-	for _, idx := range embeddingIndexes {
-		if _, err := db.Exec(idx); err != nil {
-			return err
-		}
-	}
-
-	// Embedding Feature: IVFFlat ベクトル類似検索インデックス
-	// Note: エラーをログ出力するが、処理は継続（pgvector拡張がない場合は作成不可）
-	// lists=100 は <1M レコードに適した値
-	if _, err := db.Exec(`
-CREATE INDEX IF NOT EXISTS idx_article_embeddings_vector
-    ON article_embeddings USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100)`); err != nil {
-		// IVFFlatインデックスが作成できない場合は警告を出力
-		// ベクトル検索は動作するが、パフォーマンスが低下する（フルスキャン）
-		println("WARNING: Failed to create IVFFlat index:", err.Error())
-		println("         Vector search will work but may be slower (full table scan).")
-	}
-
 	// シードデータの投入(重複は自動的にスキップ)
 	if _, err := db.Exec(seedSourcesSQL); err != nil {
 		return err
-	}
-
-	return nil
-}
-
-// MigrateDown rolls back the embedding feature schema.
-// This function removes embedding-related tables and indexes only.
-// Core tables (sources, articles) are intentionally preserved.
-// Use with caution: this will delete all embedding data.
-func MigrateDown(db *sql.DB) error {
-	return MigrateDownEmbeddingsOnly(db)
-}
-
-// MigrateDownEmbeddingsOnly rolls back only the embedding feature.
-// This is a targeted rollback that preserves other schema elements.
-// Drops: article_embeddings table, idx_article_embeddings_vector, idx_article_embeddings_article_id
-// Preserves: sources, articles tables, vector extension
-func MigrateDownEmbeddingsOnly(db *sql.DB) error {
-	dropStatements := []string{
-		// Drop IVFFlat vector index
-		`DROP INDEX IF EXISTS idx_article_embeddings_vector`,
-		// Drop article_id index
-		`DROP INDEX IF EXISTS idx_article_embeddings_article_id`,
-		// Drop article_embeddings table (CASCADE to handle foreign key references)
-		`DROP TABLE IF EXISTS article_embeddings CASCADE`,
-	}
-
-	for _, stmt := range dropStatements {
-		if _, err := db.Exec(stmt); err != nil {
-			return err
-		}
 	}
 
 	return nil

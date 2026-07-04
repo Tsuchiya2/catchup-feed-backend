@@ -27,10 +27,6 @@ volumes:
     driver: local
   db-backup:
     driver: local
-  prometheus-data:
-    driver: local
-  grafana-data:
-    driver: local
   # 開発用キャッシュ
   go-mod-cache:
     driver: local
@@ -218,12 +214,8 @@ services:
       # CORS設定
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
 
-      # gRPC設定
-      GRPC_PORT: ${GRPC_PORT:-50052}
-
     ports:
       - "${API_PORT:-8080}:8080"
-      - "${GRPC_PORT:-50052}:${GRPC_PORT:-50052}"
 
     # ヘルスチェック（Dockerfileで定義済み）
     healthcheck:
@@ -349,121 +341,3 @@ services:
     read_only: false
     tmpfs:
       - /tmp:size=200M,mode=1777
-
-  # ──────────────────────────────────────────────────────────
-  # Prometheus（メトリクス収集）
-  # ──────────────────────────────────────────────────────────
-  prometheus:
-    image: prom/prometheus:v3.2.0
-    container_name: catchup-prometheus
-    restart: unless-stopped
-
-    networks:
-      - backend
-
-    depends_on:
-      app:
-        condition: service_healthy
-
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-      - '--web.enable-lifecycle'
-
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/alerts:/etc/prometheus/alerts:ro
-      - prometheus-data:/prometheus
-
-    ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
-
-    # リソース制限
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 128M
-
-    # ログ設定
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "5m"
-        max-file: "3"
-        labels: "service=prometheus"
-
-    # セキュリティ設定
-    security_opt:
-      - no-new-privileges:true
-    user: "65534:65534"  # nobody:nobody
-
-  # ──────────────────────────────────────────────────────────
-  # Grafana（可視化ダッシュボード）
-  # ──────────────────────────────────────────────────────────
-  grafana:
-    image: grafana/grafana:11.5.2
-    container_name: catchup-grafana
-    restart: unless-stopped
-
-    networks:
-      - backend
-
-    depends_on:
-      - prometheus
-
-    environment:
-      # 管理者設定
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
-
-      # 匿名アクセス無効化
-      GF_AUTH_ANONYMOUS_ENABLED: "false"
-
-      # データソース自動設定
-      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
-
-    volumes:
-      - grafana-data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-
-    ports:
-      - "${GRAFANA_PORT:-3000}:3000"
-
-    # ヘルスチェック
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-    # リソース制限
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-        reservations:
-          cpus: '0.1'
-          memory: 64M
-
-    # ログ設定
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "5m"
-        max-file: "3"
-        labels: "service=grafana"
-
-    # セキュリティ設定
-    security_opt:
-      - no-new-privileges:true
-    user: "472:472"  # grafana:grafana

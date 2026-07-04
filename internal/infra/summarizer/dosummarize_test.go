@@ -9,7 +9,6 @@ import (
 	"catchup-feed/internal/utils/text"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 /* ───────── doSummarize Internal Logic Tests ───────── */
@@ -167,56 +166,6 @@ func TestDoSummarize_EmptyResponseHandling(t *testing.T) {
 			t.Error("Should have detected empty content")
 		}
 	})
-}
-
-// TestDoSummarize_MetricsRecording tests metrics recording logic
-func TestDoSummarize_MetricsRecording(t *testing.T) {
-	mock := &MockMetricsRecorder{}
-
-	tests := []struct {
-		name           string
-		summaryLength  int
-		characterLimit int
-		duration       time.Duration
-		withinLimit    bool
-	}{
-		{
-			name:           "within limit - should record compliance",
-			summaryLength:  800,
-			characterLimit: 900,
-			duration:       1 * time.Second,
-			withinLimit:    true,
-		},
-		{
-			name:           "exceeds limit - should record excess",
-			summaryLength:  1200,
-			characterLimit: 900,
-			duration:       2 * time.Second,
-			withinLimit:    false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Simulate metrics recording from doSummarize
-			mock.RecordLength(tt.summaryLength)
-			mock.RecordDuration(tt.duration)
-			mock.RecordCompliance(tt.withinLimit)
-
-			if !tt.withinLimit {
-				mock.RecordLimitExceeded()
-			}
-
-			// Verify metrics were recorded
-			assert.Contains(t, mock.RecordedLengths, tt.summaryLength)
-			assert.Contains(t, mock.RecordedDurations, tt.duration)
-			assert.Contains(t, mock.RecordedCompliance, tt.withinLimit)
-
-			if !tt.withinLimit {
-				assert.Greater(t, mock.RecordedExceeded, 0)
-			}
-		})
-	}
 }
 
 // TestDoSummarize_PromptBuilding tests prompt building with truncated text
@@ -387,8 +336,6 @@ func TestDoSummarize_ErrorCases(t *testing.T) {
 
 // TestDoSummarize_SuccessPath tests the happy path through doSummarize
 func TestDoSummarize_SuccessPath(t *testing.T) {
-	mock := &MockMetricsRecorder{}
-
 	// Simulate successful API call
 	inputText := "これはテスト用の記事です。"
 	const maxChars = 10000
@@ -420,26 +367,10 @@ func TestDoSummarize_SuccessPath(t *testing.T) {
 	summaryLength := text.CountRunes(mockSummary)
 	withinLimit := summaryLength <= charLimit
 	assert.True(t, withinLimit)
-
-	// Step 7: Record metrics
-	duration := 1 * time.Second
-	mock.RecordLength(summaryLength)
-	mock.RecordDuration(duration)
-	mock.RecordCompliance(withinLimit)
-
-	// Verify metrics recorded
-	require.Len(t, mock.RecordedLengths, 1)
-	assert.Equal(t, summaryLength, mock.RecordedLengths[0])
-	require.Len(t, mock.RecordedDurations, 1)
-	assert.Equal(t, duration, mock.RecordedDurations[0])
-	require.Len(t, mock.RecordedCompliance, 1)
-	assert.True(t, mock.RecordedCompliance[0])
 }
 
 // TestDoSummarize_LimitExceededPath tests the path when summary exceeds limit
 func TestDoSummarize_LimitExceededPath(t *testing.T) {
-	mock := &MockMetricsRecorder{}
-
 	// Simulate summary that exceeds limit
 	const charLimit = 900
 	mockSummary := strings.Repeat("あ", 1200)
@@ -453,17 +384,4 @@ func TestDoSummarize_LimitExceededPath(t *testing.T) {
 	// Calculate excess
 	excess := summaryLength - charLimit
 	assert.Equal(t, 300, excess)
-
-	// Record metrics including limit exceeded
-	duration := 2 * time.Second
-	mock.RecordLength(summaryLength)
-	mock.RecordDuration(duration)
-	mock.RecordCompliance(withinLimit)
-	mock.RecordLimitExceeded()
-
-	// Verify all metrics recorded
-	assert.Contains(t, mock.RecordedLengths, summaryLength)
-	assert.Contains(t, mock.RecordedDurations, duration)
-	assert.Contains(t, mock.RecordedCompliance, false)
-	assert.Equal(t, 1, mock.RecordedExceeded)
 }

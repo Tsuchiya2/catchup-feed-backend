@@ -114,7 +114,6 @@ func TestServiceIntegration_ContentEnhancement(t *testing.T) {
 		nil, // webScrapers
 		contentFetcher,
 		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,

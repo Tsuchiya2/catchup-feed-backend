@@ -258,7 +258,6 @@ func TestService_CrawlAllSources_HappyPath(t *testing.T) {
 		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -342,7 +341,6 @@ func TestService_CrawlAllSources_DuplicateHandling(t *testing.T) {
 		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -399,7 +397,6 @@ func TestService_CrawlAllSources_EmptyFeed(t *testing.T) {
 		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -453,7 +450,6 @@ func TestService_CrawlAllSources_FetchError(t *testing.T) {
 		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -516,7 +512,6 @@ func TestService_CrawlAllSources_SummarizerError(t *testing.T) {
 		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -580,7 +575,6 @@ func TestService_CrawlAllSources_ExistsByURLBatchError(t *testing.T) {
 		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -619,7 +613,6 @@ func TestService_CrawlAllSources_NoActiveSources(t *testing.T) {
 		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -659,7 +652,6 @@ func TestService_CrawlAllSources_ListActiveError(t *testing.T) {
 		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -723,7 +715,6 @@ func TestService_CrawlAllSources_PartialSummarizationFailure(t *testing.T) {
 		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -804,7 +795,6 @@ func TestService_CrawlAllSources_DatabaseError(t *testing.T) {
 		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -875,7 +865,6 @@ func TestService_CrawlAllSources_ContextCancellation(t *testing.T) {
 		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,

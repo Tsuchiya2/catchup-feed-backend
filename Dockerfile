@@ -37,14 +37,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # ────────────────────────────────────────────────────────────
 FROM deps AS dev
 
-# protoc (Protocol Buffers コンパイラ) のインストール
-RUN apk add --no-cache protobuf protobuf-dev
-
 # 開発ツールの追加インストール
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go install github.com/swaggo/swag/cmd/swag@latest && \
-    go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
-    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+    go install github.com/swaggo/swag/cmd/swag@latest
 
 # ソースコードのコピー（開発時にマウント可能）
 WORKDIR /app
@@ -72,7 +67,6 @@ ARG GIT_COMMIT=unknown
 ARG BUILD_DATE
 ARG LDFLAGS="-s -w -X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildDate=${BUILD_DATE}"
 
-# CGO有効（modernc.org/sqlite のため必須）
 # セキュリティ強化: -buildmode=pie (Position Independent Executable)
 # マルチアーキテクチャ対応: TARGETARCH を使用
 ARG TARGETARCH
@@ -113,7 +107,6 @@ LABEL maintainer="catchup-feed team" \
 RUN apk upgrade --no-cache && \
     apk add --no-cache \
       ca-certificates \
-      sqlite-libs \
       libgcc \
       libstdc++ \
       tzdata \

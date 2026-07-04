@@ -1,12 +1,11 @@
 // Package summarizer provides AI-powered text summarization implementations.
-// It includes adapters for Claude (Anthropic) and OpenAI APIs with reliability patterns.
-// This package supports configurable character limits for summaries with comprehensive
-// observability through structured logging and Prometheus metrics.
+// It includes adapters for Claude (Anthropic) and OpenAI APIs.
+// This package supports configurable character limits for summaries with
+// structured logging.
 package summarizer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,10 +15,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/google/uuid"
-	"github.com/sony/gobreaker"
 
-	"catchup-feed/internal/resilience/circuitbreaker"
-	"catchup-feed/internal/resilience/retry"
 	"catchup-feed/internal/utils/text"
 )
 
@@ -90,19 +86,13 @@ func LoadClaudeConfig() ClaudeConfig {
 }
 
 // Claude implements the Summarizer interface using Anthropic's Claude API.
-// It includes circuit breaker and retry logic for improved reliability,
-// and supports configurable character limits with comprehensive observability.
+// It supports configurable character limits with structured logging.
 type Claude struct {
-	client          anthropic.Client
-	circuitBreaker  *circuitbreaker.CircuitBreaker
-	retryConfig     retry.Config
-	config          ClaudeConfig
-	metricsRecorder SummaryMetricsRecorder
+	client anthropic.Client
+	config ClaudeConfig
 }
 
 // NewClaude creates a new Claude summarizer with the given API key.
-// It automatically configures circuit breaker, retry logic, character limit configuration,
-// and metrics recording.
 func NewClaude(apiKey string) *Claude {
 	config := LoadClaudeConfig()
 
@@ -112,51 +102,20 @@ func NewClaude(apiKey string) *Claude {
 		slog.String("model", config.Model))
 
 	return &Claude{
-		client:          anthropic.NewClient(option.WithAPIKey(apiKey)),
-		circuitBreaker:  circuitbreaker.New(circuitbreaker.ClaudeAPIConfig()),
-		retryConfig:     retry.AIAPIConfig(),
-		config:          config,
-		metricsRecorder: NewPrometheusSummaryMetrics(),
+		client: anthropic.NewClient(option.WithAPIKey(apiKey)),
+		config: config,
 	}
 }
 
 // Summarize generates a summary of the given text using Claude AI.
-// It uses circuit breaker and retry logic for improved reliability.
+// Errors are returned as-is; retrying is left to the caller (or the next cron run).
 // Returns the summarized text in Japanese.
 func (c *Claude) Summarize(ctx context.Context, text string) (string, error) {
 	// Set individual timeout (60 seconds)
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	var result string
-
-	// Wrap with retry logic
-	retryErr := retry.WithBackoff(ctx, c.retryConfig, func() error {
-		// Execute through circuit breaker
-		cbResult, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-			return c.doSummarize(ctx, text)
-		})
-
-		// Handle circuit breaker open state
-		if err != nil {
-			if errors.Is(err, gobreaker.ErrOpenState) {
-				slog.Warn("claude api circuit breaker open, request rejected",
-					slog.String("service", "claude-api"),
-					slog.String("state", c.circuitBreaker.State().String()))
-				return fmt.Errorf("claude api unavailable: circuit breaker open")
-			}
-			return err
-		}
-
-		result = cbResult.(string)
-		return nil
-	})
-
-	if retryErr != nil {
-		return "", fmt.Errorf("claude summarize failed after retries: %w", retryErr)
-	}
-
-	return result, nil
+	return c.doSummarize(ctx, text)
 }
 
 // buildPrompt constructs the summarization prompt using configured parameters.
@@ -170,8 +129,8 @@ func (c *Claude) buildPrompt(text string) string {
 		c.config.Language, c.config.CharacterLimit, text)
 }
 
-// doSummarize performs the actual API call without retry or circuit breaker.
-// It includes comprehensive structured logging and metrics recording for observability.
+// doSummarize performs the actual API call.
+// It includes structured logging for observability.
 func (c *Claude) doSummarize(ctx context.Context, inputText string) (string, error) {
 	// Generate unique request ID for tracing
 	requestID := uuid.New().String()
@@ -259,14 +218,6 @@ func (c *Claude) doSummarize(ctx context.Context, inputText string) (string, err
 			slog.Int("summary_length", summaryLength),
 			slog.Int("limit", c.config.CharacterLimit),
 			slog.Int("excess", excess))
-	}
-
-	// Record metrics
-	c.metricsRecorder.RecordLength(summaryLength)
-	c.metricsRecorder.RecordDuration(duration)
-	c.metricsRecorder.RecordCompliance(withinLimit)
-	if !withinLimit {
-		c.metricsRecorder.RecordLimitExceeded()
 	}
 
 	return summary, nil

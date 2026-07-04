@@ -2,7 +2,6 @@ package summarizer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -10,10 +9,7 @@ import (
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
-	"github.com/sony/gobreaker"
 
-	"catchup-feed/internal/resilience/circuitbreaker"
-	"catchup-feed/internal/resilience/retry"
 	"catchup-feed/internal/utils/text"
 )
 
@@ -121,69 +117,32 @@ func LoadOpenAIConfig() (*OpenAIConfig, error) {
 }
 
 // OpenAI implements the Summarizer interface using OpenAI's GPT API.
-// It includes circuit breaker and retry logic for improved reliability,
-// and supports configurable character limits with comprehensive observability.
+// It supports configurable character limits with structured logging.
 type OpenAI struct {
-	client          *openai.Client
-	circuitBreaker  *circuitbreaker.CircuitBreaker
-	retryConfig     retry.Config
-	config          SummarizerConfig
-	metricsRecorder SummaryMetricsRecorder
+	client *openai.Client
+	config SummarizerConfig
 }
 
 // NewOpenAI creates a new OpenAI summarizer with the given API key.
-// It automatically configures circuit breaker, retry logic, character limit configuration,
-// and metrics recording.
 func NewOpenAI(apiKey string, config SummarizerConfig) *OpenAI {
 	slog.Info("Initialized OpenAI summarizer with configuration",
 		slog.Int("character_limit", config.GetCharacterLimit()))
 
 	return &OpenAI{
-		client:          openai.NewClient(apiKey),
-		circuitBreaker:  circuitbreaker.New(circuitbreaker.OpenAIAPIConfig()),
-		retryConfig:     retry.AIAPIConfig(),
-		config:          config,
-		metricsRecorder: NewPrometheusSummaryMetrics(),
+		client: openai.NewClient(apiKey),
+		config: config,
 	}
 }
 
 // Summarize generates a summary of the given text using OpenAI's GPT API.
-// It uses circuit breaker and retry logic for improved reliability.
+// Errors are returned as-is; retrying is left to the caller (or the next cron run).
 // Returns the summarized text in Japanese.
 func (o *OpenAI) Summarize(ctx context.Context, text string) (string, error) {
 	// Set individual timeout (60 seconds)
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	var result string
-
-	// Wrap with retry logic
-	retryErr := retry.WithBackoff(ctx, o.retryConfig, func() error {
-		// Execute through circuit breaker
-		cbResult, err := o.circuitBreaker.Execute(func() (interface{}, error) {
-			return o.doSummarize(ctx, text)
-		})
-
-		// Handle circuit breaker open state
-		if err != nil {
-			if errors.Is(err, gobreaker.ErrOpenState) {
-				slog.Warn("openai api circuit breaker open, request rejected",
-					slog.String("service", "openai-api"),
-					slog.String("state", o.circuitBreaker.State().String()))
-				return fmt.Errorf("openai api unavailable: circuit breaker open")
-			}
-			return err
-		}
-
-		result = cbResult.(string)
-		return nil
-	})
-
-	if retryErr != nil {
-		return "", fmt.Errorf("openai summarize failed after retries: %w", retryErr)
-	}
-
-	return result, nil
+	return o.doSummarize(ctx, text)
 }
 
 // buildPrompt constructs the summarization prompt using configured parameters.
@@ -197,8 +156,8 @@ func (o *OpenAI) buildPrompt(text string) string {
 		o.config.GetCharacterLimit(), text)
 }
 
-// doSummarize performs the actual API call without retry or circuit breaker.
-// It includes comprehensive structured logging and metrics recording for observability.
+// doSummarize performs the actual API call.
+// It includes structured logging for observability.
 func (o *OpenAI) doSummarize(ctx context.Context, inputText string) (string, error) {
 	// Truncate text to avoid token limit (gpt-3.5-turbo max: 16,385 tokens)
 	// Safe limit: ~10,000 chars (~2,500 tokens) to account for system prompt and response
@@ -267,14 +226,6 @@ func (o *OpenAI) doSummarize(ctx context.Context, inputText string) (string, err
 			slog.Int("summary_length", summaryLength),
 			slog.Int("limit", o.config.GetCharacterLimit()),
 			slog.Int("excess", excess))
-	}
-
-	// Record metrics
-	o.metricsRecorder.RecordLength(summaryLength)
-	o.metricsRecorder.RecordDuration(duration)
-	o.metricsRecorder.RecordCompliance(withinLimit)
-	if !withinLimit {
-		o.metricsRecorder.RecordLimitExceeded()
 	}
 
 	return summary, nil

@@ -48,7 +48,6 @@ func TestAuthz_PublicEndpoints(t *testing.T) {
 		{"health check", "GET", "/health"},
 		{"readiness probe", "GET", "/ready"},
 		{"liveness probe", "GET", "/live"},
-		{"metrics endpoint", "GET", "/metrics"},
 		{"swagger ui", "GET", "/swagger/"},
 		{"swagger doc", "GET", "/swagger/index.html"},
 		{"auth token", "POST", "/auth/token"},
@@ -430,7 +429,6 @@ func TestAuthz_GET_RequiresAuthentication(t *testing.T) {
 
 		// Public endpoints - should succeed without auth
 		{"GET health without auth", "/health", false, http.StatusOK},
-		{"GET metrics without auth", "/metrics", false, http.StatusOK},
 	}
 
 	// Create valid admin token for authenticated tests
@@ -475,7 +473,6 @@ func TestIsPublicEndpoint(t *testing.T) {
 		{"health check", "/health", true},
 		{"readiness probe", "/ready", true},
 		{"liveness probe", "/live", true},
-		{"metrics", "/metrics", true},
 		{"swagger root", "/swagger/", true},
 		{"swagger doc", "/swagger/index.html", true},
 		{"swagger resource", "/swagger/swagger-ui.css", true},

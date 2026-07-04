@@ -5,86 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 )
 
 /* ───────── Coverage Improvement Tests ───────── */
-
-// TestGetOrCreateHistogram_AlreadyRegistered tests the AlreadyRegisteredError path
-func TestGetOrCreateHistogram_AlreadyRegistered(t *testing.T) {
-	// Register a histogram first
-	opts := prometheus.HistogramOpts{
-		Name:    "test_histogram_already_registered",
-		Help:    "Test histogram for already registered case",
-		Buckets: prometheus.DefBuckets,
-	}
-
-	h1 := prometheus.NewHistogram(opts)
-	err := prometheus.Register(h1)
-	if err != nil {
-		// Already registered, that's ok for this test
-		t.Logf("Histogram already registered: %v", err)
-	}
-
-	// Now call getOrCreateHistogram - should return existing collector
-	h2 := getOrCreateHistogram(opts)
-	assert.NotNil(t, h2)
-
-	// Both should work without panic
-	assert.NotPanics(t, func() {
-		h1.Observe(100)
-		h2.Observe(200)
-	})
-}
-
-// TestGetOrCreateCounter_AlreadyRegistered tests the AlreadyRegisteredError path
-func TestGetOrCreateCounter_AlreadyRegistered(t *testing.T) {
-	opts := prometheus.CounterOpts{
-		Name: "test_counter_already_registered",
-		Help: "Test counter for already registered case",
-	}
-
-	c1 := prometheus.NewCounter(opts)
-	err := prometheus.Register(c1)
-	if err != nil {
-		t.Logf("Counter already registered: %v", err)
-	}
-
-	// Now call getOrCreateCounter - should return existing collector
-	c2 := getOrCreateCounter(opts)
-	assert.NotNil(t, c2)
-
-	// Both should work without panic
-	assert.NotPanics(t, func() {
-		c1.Inc()
-		c2.Inc()
-	})
-}
-
-// TestGetOrCreateGauge_AlreadyRegistered tests the AlreadyRegisteredError path
-func TestGetOrCreateGauge_AlreadyRegistered(t *testing.T) {
-	opts := prometheus.GaugeOpts{
-		Name: "test_gauge_already_registered",
-		Help: "Test gauge for already registered case",
-	}
-
-	g1 := prometheus.NewGauge(opts)
-	err := prometheus.Register(g1)
-	if err != nil {
-		t.Logf("Gauge already registered: %v", err)
-	}
-
-	// Now call getOrCreateGauge - should return existing collector
-	g2 := getOrCreateGauge(opts)
-	assert.NotNil(t, g2)
-
-	// Both should work without panic
-	assert.NotPanics(t, func() {
-		g1.Set(100)
-		g2.Set(200)
-	})
-}
 
 // TestTextTruncation_LongInput tests that very long input gets truncated
 func TestTextTruncation_LongInput(t *testing.T) {
@@ -208,40 +132,6 @@ func TestSummaryLengthExceedsLimit(t *testing.T) {
 				excess := tt.summaryLength - tt.charLimit
 				assert.Greater(t, excess, 0, "Excess should be positive when exceeding limit")
 			}
-		})
-	}
-}
-
-// TestMetricsRecordingWorkflow tests the complete metrics recording workflow
-func TestMetricsRecordingWorkflow(t *testing.T) {
-	metrics := NewPrometheusSummaryMetrics()
-
-	scenarios := []struct {
-		name          string
-		summaryLength int
-		charLimit     int
-		duration      time.Duration
-	}{
-		{"successful short summary", 500, 900, 800 * time.Millisecond},
-		{"successful medium summary", 900, 900, 1200 * time.Millisecond},
-		{"exceeded limit", 1200, 900, 1500 * time.Millisecond},
-		{"way over limit", 2000, 900, 2000 * time.Millisecond},
-	}
-
-	for _, scenario := range scenarios {
-		t.Run(scenario.name, func(t *testing.T) {
-			withinLimit := scenario.summaryLength <= scenario.charLimit
-
-			// Record metrics as would be done in doSummarize
-			assert.NotPanics(t, func() {
-				metrics.RecordLength(scenario.summaryLength)
-				metrics.RecordDuration(scenario.duration)
-				metrics.RecordCompliance(withinLimit)
-
-				if !withinLimit {
-					metrics.RecordLimitExceeded()
-				}
-			})
 		})
 	}
 }

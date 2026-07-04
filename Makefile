@@ -5,7 +5,7 @@
 # No local Go installation required!
 # ============================================================
 
-.PHONY: help dev-up dev-down dev-shell test lint fmt build clean logs proto k6-load k6-stress k6-quick
+.PHONY: help dev-up dev-down dev-shell test lint fmt build clean logs
 
 # Default target
 .DEFAULT_GOAL := help
@@ -60,26 +60,6 @@ test-coverage: ## Generate test coverage report inside Docker
 	@echo "✅ Coverage report generated: coverage.html"
 
 # ────────────────────────────────────────────────────────────
-# Load Testing (k6)
-# ────────────────────────────────────────────────────────────
-k6-load: ## Run k6 load test for embedding service (requires running gRPC server)
-	@echo "🔥 Running k6 load test..."
-	@echo "   Note: Ensure gRPC embedding service is running on localhost:50052"
-	docker run --rm --network host -v "$(shell pwd):/app" -w /app grafana/k6:latest run tests/load/embedding_load_test.ts
-	@echo "✅ Load test completed"
-
-k6-stress: ## Run k6 stress test for embedding service (requires running gRPC server)
-	@echo "💥 Running k6 stress test..."
-	@echo "   Note: Ensure gRPC embedding service is running on localhost:50052"
-	docker run --rm --network host -v "$(shell pwd):/app" -w /app grafana/k6:latest run tests/load/embedding_stress_test.ts
-	@echo "✅ Stress test completed"
-
-k6-quick: ## Run quick k6 test (1 VU, 10 iterations) for validation
-	@echo "⚡ Running quick k6 validation test..."
-	docker run --rm --network host -v "$(shell pwd):/app" -w /app grafana/k6:latest run --vus 1 --iterations 10 tests/load/embedding_load_test.ts
-	@echo "✅ Quick test completed"
-
-# ────────────────────────────────────────────────────────────
 # Code Quality (runs inside Docker)
 # ────────────────────────────────────────────────────────────
 lint: ## Run golangci-lint inside Docker
@@ -98,14 +78,6 @@ fmt: ## Format code with gofmt inside Docker
 	@echo "✅ Code formatting completed"
 
 # ────────────────────────────────────────────────────────────
-# Code Generation (runs inside Docker)
-# ────────────────────────────────────────────────────────────
-proto: ## Generate Go code from proto files inside Docker
-	@echo "📝 Generating proto files in Docker..."
-	docker compose --profile dev run --rm dev sh ./scripts/generate-proto.sh
-	@echo "✅ Proto generation completed"
-
-# ────────────────────────────────────────────────────────────
 # Build (runs inside Docker)
 # ────────────────────────────────────────────────────────────
 build: ## Build application inside Docker
@@ -121,13 +93,11 @@ build-dev: ## Build development container
 # ────────────────────────────────────────────────────────────
 # Application Control
 # ────────────────────────────────────────────────────────────
-up: ## Start all services (app, worker, postgres, monitoring)
+up: ## Start all services (app, worker, postgres)
 	@echo "🚀 Starting all services..."
 	docker compose up -d
 	@echo "✅ All services started"
 	@echo "   API: http://localhost:8080"
-	@echo "   Prometheus: http://localhost:9090"
-	@echo "   Grafana: http://localhost:3000"
 
 down: ## Stop all services
 	@echo "🛑 Stopping all services..."

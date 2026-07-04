@@ -14,12 +14,9 @@ import (
 	"time"
 
 	"catchup-feed/internal/domain/entity"
-	"catchup-feed/internal/resilience/circuitbreaker"
-	"catchup-feed/internal/resilience/retry"
 	"catchup-feed/internal/usecase/fetch"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/sony/gobreaker"
 )
 
 const (
@@ -29,23 +26,19 @@ const (
 // WebflowScraper implements FeedFetcher for Webflow-based websites.
 // It uses HTML parsing with goquery to extract articles using CSS selectors.
 type WebflowScraper struct {
-	client         *http.Client
-	circuitBreaker *circuitbreaker.CircuitBreaker
-	retryConfig    retry.Config
+	client *http.Client
 }
 
 // NewWebflowScraper creates a new WebflowScraper with the given HTTP client.
-// It automatically configures circuit breaker and retry logic for resilience.
 func NewWebflowScraper(client *http.Client) *WebflowScraper {
 	return &WebflowScraper{
-		client:         client,
-		circuitBreaker: circuitbreaker.New(circuitbreaker.WebScraperConfig()),
-		retryConfig:    retry.WebScraperConfig(),
+		client: client,
 	}
 }
 
 // Fetch retrieves and parses articles from a Webflow website.
 // It extracts ScraperConfig from the context and uses it to locate article elements.
+// Failures are returned as-is; the hourly cron simply retries on the next run.
 // Returns a slice of FeedItem containing the parsed articles.
 func (w *WebflowScraper) Fetch(ctx context.Context, sourceURL string) ([]fetch.FeedItem, error) {
 	// Extract scraper config from context
@@ -54,39 +47,10 @@ func (w *WebflowScraper) Fetch(ctx context.Context, sourceURL string) ([]fetch.F
 		return nil, errors.New("scraper_config not found in context")
 	}
 
-	var items []fetch.FeedItem
-
-	// Wrap with retry logic
-	retryErr := retry.WithBackoff(ctx, w.retryConfig, func() error {
-		// Execute through circuit breaker
-		cbResult, err := w.circuitBreaker.Execute(func() (interface{}, error) {
-			return w.doFetch(ctx, sourceURL, config)
-		})
-
-		// Handle circuit breaker open state
-		if err != nil {
-			if errors.Is(err, gobreaker.ErrOpenState) {
-				slog.Warn("web scraper circuit breaker open, request rejected",
-					slog.String("service", "web-scraper"),
-					slog.String("url", sourceURL),
-					slog.String("state", w.circuitBreaker.State().String()))
-				return err
-			}
-			return err
-		}
-
-		items = cbResult.([]fetch.FeedItem)
-		return nil
-	})
-
-	if retryErr != nil {
-		return nil, retryErr
-	}
-
-	return items, nil
+	return w.doFetch(ctx, sourceURL, config)
 }
 
-// doFetch performs the actual scraping without retry or circuit breaker.
+// doFetch performs the actual scraping.
 func (w *WebflowScraper) doFetch(ctx context.Context, sourceURL string, config *entity.ScraperConfig) ([]fetch.FeedItem, error) {
 	// Step 1: Validate URL (SSRF prevention)
 	if err := validateURL(sourceURL); err != nil {
@@ -128,10 +92,7 @@ func (w *WebflowScraper) fetchHTML(ctx context.Context, urlStr string) (*goquery
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, &retry.HTTPError{
-			StatusCode: resp.StatusCode,
-			Message:    fmt.Sprintf("unexpected status: %s", resp.Status),
-		}
+		return nil, fmt.Errorf("unexpected status: %s", resp.Status)
 	}
 
 	// Limit body size to prevent memory exhaustion

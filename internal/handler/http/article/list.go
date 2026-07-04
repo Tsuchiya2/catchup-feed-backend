@@ -8,7 +8,6 @@ import (
 	"catchup-feed/internal/common/pagination"
 	"catchup-feed/internal/handler/http/requestid"
 	"catchup-feed/internal/handler/http/respond"
-	"catchup-feed/internal/observability/logging"
 	artUC "catchup-feed/internal/usecase/article"
 )
 
@@ -46,7 +45,7 @@ func (h ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Get request ID for logging
 	reqID := requestid.FromContext(ctx)
-	logger := logging.WithRequestID(ctx, h.Logger)
+	logger := h.Logger
 
 	// Parse pagination parameters
 	params, err := pagination.ParseQueryParams(r, h.PaginationCfg)
@@ -54,7 +53,6 @@ func (h ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		logger.Warn("Invalid pagination parameters",
 			"error", err.Error(),
 			"request_id", reqID)
-		pagination.RecordError("validation")
 		respond.SafeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -73,7 +71,6 @@ func (h ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"page", params.Page,
 			"limit", params.Limit,
 			"request_id", reqID)
-		pagination.RecordError("database")
 		respond.SafeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -97,11 +94,7 @@ func (h ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Build paginated response
 	response := pagination.NewResponse(dtos, result.Pagination)
 
-	// Record metrics
 	duration := time.Since(startTime)
-	pagination.RecordRequest(http.StatusOK, params.Page)
-	pagination.RecordDuration("handler", duration.Seconds())
-	pagination.UpdateTotalCount(result.Pagination.Total)
 
 	// Log response
 	logger.Info("Paginated response",

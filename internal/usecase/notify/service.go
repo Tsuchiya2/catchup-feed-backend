@@ -145,9 +145,6 @@ func (s *service) NotifyNewArticle(ctx context.Context, article *entity.Article,
 		}
 	}
 
-	// Update metrics for enabled channels
-	SetChannelsEnabled(float64(enabledCount))
-
 	if enabledCount == 0 {
 		slog.Debug("No notification channels enabled",
 			slog.String("request_id", requestID),
@@ -177,10 +174,6 @@ func (s *service) NotifyNewArticle(ctx context.Context, article *entity.Article,
 func (s *service) notifyChannel(requestID string, channel Channel, article *entity.Article, source *entity.Source) {
 	defer s.wg.Done()
 
-	// Track active goroutines
-	IncrementActiveGoroutines()
-	defer DecrementActiveGoroutines()
-
 	// Panic recovery
 	defer func() {
 		if r := recover(); r != nil {
@@ -200,7 +193,6 @@ func (s *service) notifyChannel(requestID string, channel Channel, article *enti
 		slog.Warn("Notification dropped: worker pool full",
 			slog.String("request_id", requestID),
 			slog.String("channel", channel.Name()))
-		RecordDropped(channel.Name(), "pool_full")
 		return
 	}
 
@@ -213,7 +205,6 @@ func (s *service) notifyChannel(requestID string, channel Channel, article *enti
 			slog.String("channel", channel.Name()),
 			slog.Time("disabled_until", health.disabledUntil))
 		health.mu.Unlock()
-		RecordDropped(channel.Name(), "circuit_open")
 		return
 	}
 	health.mu.Unlock()
@@ -225,9 +216,7 @@ func (s *service) notifyChannel(requestID string, channel Channel, article *enti
 	// Add request_id to context for tracing
 	ctx = context.WithValue(ctx, requestIDKey, requestID)
 
-	// Record start time for metrics
 	startTime := time.Now()
-	RecordDispatch(channel.Name())
 
 	// Send notification
 	err := channel.Send(ctx, article, source)
@@ -243,16 +232,14 @@ func (s *service) notifyChannel(requestID string, channel Channel, article *enti
 				slog.String("request_id", requestID),
 				slog.String("channel", channel.Name()),
 				slog.Int("consecutive_failures", health.consecutiveFailures))
-			RecordCircuitBreakerOpen(channel.Name())
 		}
 	} else {
 		health.consecutiveFailures = 0 // Reset on success
 	}
 	health.mu.Unlock()
 
-	// Record metrics and log result
+	// Log result
 	if err != nil {
-		RecordFailure(channel.Name(), duration)
 		slog.Warn("Channel notification failed",
 			slog.String("request_id", requestID),
 			slog.String("channel", channel.Name()),
@@ -261,7 +248,6 @@ func (s *service) notifyChannel(requestID string, channel Channel, article *enti
 			slog.Duration("send_duration", duration),
 			slog.Any("error", err))
 	} else {
-		RecordSuccess(channel.Name(), duration)
 		slog.Info("Channel notification sent successfully",
 			slog.String("request_id", requestID),
 			slog.String("channel", channel.Name()),

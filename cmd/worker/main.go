@@ -15,17 +15,14 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/robfig/cron/v3"
 
-	"catchup-feed/internal/config"
 	hhttp "catchup-feed/internal/handler/http/respond"
 	pgRepo "catchup-feed/internal/infra/adapter/persistence/postgres"
 	"catchup-feed/internal/infra/db"
 	"catchup-feed/internal/infra/fetcher"
-	"catchup-feed/internal/infra/grpc"
 	"catchup-feed/internal/infra/notifier"
 	"catchup-feed/internal/infra/scraper"
 	"catchup-feed/internal/infra/summarizer"
 	workerPkg "catchup-feed/internal/infra/worker"
-	aiUC "catchup-feed/internal/usecase/ai"
 	fetchUC "catchup-feed/internal/usecase/fetch"
 	"catchup-feed/internal/usecase/notify"
 )
@@ -57,9 +54,7 @@ func main() {
 	defer cancel()
 
 	// Load worker configuration (fail-open strategy)
-	workerMetrics := workerPkg.NewWorkerMetrics()
-	workerMetrics.MustRegister()
-	workerConfig, err := workerPkg.LoadConfigFromEnv(logger, workerMetrics)
+	workerConfig, err := workerPkg.LoadConfigFromEnv(logger)
 	if err != nil {
 		logger.Error("failed to load worker configuration", slog.Any("error", err))
 		os.Exit(1)
@@ -105,9 +100,6 @@ func main() {
 		slog.Int("channels", len(channels)),
 		slog.Int("max_concurrent", workerConfig.NotifyMaxConcurrent))
 
-	// Start metrics HTTP server
-	startMetricsServer(ctx, logger, notifyService)
-
 	// Start health check server
 	healthAddr := fmt.Sprintf(":%d", workerConfig.HealthPort)
 	healthServer := workerPkg.NewHealthServer(healthAddr, logger)
@@ -118,10 +110,9 @@ func main() {
 	}()
 	logger.Info("health check server started", slog.String("addr", healthAddr))
 
-	svc, aiCleanup := setupFetchService(logger, database, notifyService)
-	defer aiCleanup()
+	svc := setupFetchService(logger, database, notifyService)
 
-	startCronWorker(logger, svc, workerConfig, workerMetrics, healthServer)
+	startCronWorker(logger, svc, workerConfig, healthServer)
 }
 
 // initLogger initializes and returns a structured logger based on environment configuration.
@@ -145,8 +136,7 @@ func initDatabase(logger *slog.Logger) *sql.DB {
 }
 
 // setupFetchService creates and configures the fetch service with all dependencies.
-// Returns the service and a cleanup function for graceful shutdown.
-func setupFetchService(logger *slog.Logger, database *sql.DB, notifyService notify.Service) (fetchUC.Service, func()) {
+func setupFetchService(logger *slog.Logger, database *sql.DB, notifyService notify.Service) fetchUC.Service {
 	srcRepo := pgRepo.NewSourceRepo(database)
 	artRepo := pgRepo.NewArticleRepo(database)
 
@@ -192,66 +182,16 @@ func setupFetchService(logger *slog.Logger, database *sql.DB, notifyService noti
 		Threshold:   contentFetchConfig.Threshold,
 	}
 
-	// Setup AI embedding hook
-	embeddingHook, aiCleanup := setupEmbeddingHook(logger)
-
-	service := fetchUC.NewService(
+	return fetchUC.NewService(
 		srcRepo,
 		artRepo,
 		sum,
 		feedFetcher,
-		webScrapers, // NEW: Web scraper registry
+		webScrapers, // Web scraper registry
 		contentFetcher,
 		notifyService,
-		embeddingHook, // NEW: AI embedding hook
 		fetchConfig,
 	)
-
-	return service, aiCleanup
-}
-
-// setupEmbeddingHook creates an AI embedding hook and returns a cleanup function.
-// The cleanup function should be called during shutdown to close the gRPC connection.
-func setupEmbeddingHook(logger *slog.Logger) (fetchUC.EmbeddingHook, func()) {
-	// Load AI configuration
-	aiConfig, err := config.LoadAIConfig()
-	if err != nil {
-		logger.Warn("Failed to load AI configuration, AI features disabled", slog.Any("error", err))
-		return nil, func() {}
-	}
-
-	// Validate configuration
-	if err := aiConfig.Validate(); err != nil {
-		logger.Warn("Invalid AI configuration, AI features disabled", slog.Any("error", err))
-		return nil, func() {}
-	}
-
-	// Check if AI is enabled
-	if !aiConfig.Enabled {
-		logger.Info("AI features disabled via configuration")
-		return nil, func() {}
-	}
-
-	// Create AI provider
-	provider, err := grpc.NewGRPCAIProvider(aiConfig)
-	if err != nil {
-		logger.Warn("Failed to create AI provider, AI features disabled", slog.Any("error", err))
-		return nil, func() {}
-	}
-
-	logger.Info("AI embedding hook initialized",
-		slog.String("grpc_address", aiConfig.GRPCAddress))
-
-	// Return cleanup function to close gRPC connection
-	cleanup := func() {
-		if err := provider.Close(); err != nil {
-			logger.Error("failed to close AI provider", slog.Any("error", err))
-		} else {
-			logger.Info("AI provider closed")
-		}
-	}
-
-	return aiUC.NewEmbeddingHook(provider, aiConfig.Enabled), cleanup
 }
 
 // createSummarizer creates a summarizer based on the SUMMARIZER_TYPE environment variable.
@@ -429,7 +369,7 @@ func loadSlackConfig(logger *slog.Logger) notifier.SlackConfig {
 }
 
 // startCronWorker starts the cron scheduler and runs the crawl job periodically.
-func startCronWorker(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.WorkerConfig, metrics *workerPkg.WorkerMetrics, healthServer *workerPkg.HealthServer) {
+func startCronWorker(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.WorkerConfig, healthServer *workerPkg.HealthServer) {
 	// Load timezone
 	loc, err := time.LoadLocation(cfg.Timezone)
 	if err != nil {
@@ -439,7 +379,7 @@ func startCronWorker(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.Wo
 	c := cron.New(cron.WithLocation(loc))
 
 	_, err = c.AddFunc(cfg.CronSchedule, func() {
-		runCrawlJob(logger, svc, cfg, metrics)
+		runCrawlJob(logger, svc, cfg)
 	})
 	if err != nil {
 		logger.Error("failed to add cron job", slog.Any("error", err))
@@ -456,9 +396,8 @@ func startCronWorker(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.Wo
 }
 
 // runCrawlJob executes a single crawl job with timeout and error handling.
-func runCrawlJob(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.WorkerConfig, metrics *workerPkg.WorkerMetrics) {
+func runCrawlJob(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.WorkerConfig) {
 	startTime := time.Now()
-	metrics.RecordJobRun("started")
 	logger.Info("crawl started")
 
 	// クロール処理のタイムアウト（設定から取得）
@@ -468,17 +407,11 @@ func runCrawlJob(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.Worker
 	stats, err := svc.CrawlAllSources(ctx)
 	if err != nil {
 		// 機密情報をマスクしてログ出力
-		logger.Error("crawl failed", slog.Any("error", hhttp.SanitizeError(err)))
-		metrics.RecordJobRun("failure")
-		metrics.RecordJobDuration(time.Since(startTime).Seconds())
+		logger.Error("crawl failed",
+			slog.Any("error", hhttp.SanitizeError(err)),
+			slog.Duration("duration", time.Since(startTime)))
 		return
 	}
-
-	// Record metrics
-	metrics.RecordJobRun("success")
-	metrics.RecordJobDuration(time.Since(startTime).Seconds())
-	metrics.RecordFeedsProcessed(stats.Sources)
-	metrics.RecordLastSuccess()
 
 	logger.Info("crawl completed",
 		slog.Int("sources", stats.Sources),

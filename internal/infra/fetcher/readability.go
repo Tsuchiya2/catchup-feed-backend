@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"time"
 
-	"catchup-feed/internal/resilience/circuitbreaker"
 	"catchup-feed/internal/usecase/fetch"
 
 	"github.com/go-shiori/go-readability"
@@ -22,23 +21,20 @@ import (
 //
 // Features:
 //   - SSRF prevention via URL validation
-//   - Circuit breaker for fault tolerance
 //   - Size limiting to prevent memory exhaustion
 //   - Timeout protection against slow servers
 //   - Redirect validation for security
 //
 // Thread safety: ReadabilityFetcher is safe for concurrent use.
 type ReadabilityFetcher struct {
-	client         *http.Client
-	circuitBreaker *circuitbreaker.CircuitBreaker
-	config         ContentFetchConfig
+	client *http.Client
+	config ContentFetchConfig
 }
 
 // NewReadabilityFetcher creates a new ReadabilityFetcher with the given configuration.
 //
 // The fetcher is configured with:
 //   - Custom HTTP client with timeout and TLS settings
-//   - Circuit breaker for fault tolerance
 //   - Redirect validation for security
 //   - Custom User-Agent for identification
 //
@@ -54,20 +50,8 @@ type ReadabilityFetcher struct {
 //	fetcher := NewReadabilityFetcher(config)
 //	content, err := fetcher.FetchContent(ctx, "https://example.com/article")
 func NewReadabilityFetcher(config ContentFetchConfig) *ReadabilityFetcher {
-	// Create circuit breaker with custom configuration for content fetching
-	cbConfig := circuitbreaker.Config{
-		Name:             "content-fetch",
-		MaxRequests:      5,
-		Interval:         60 * time.Second,
-		Timeout:          60 * time.Second,
-		FailureThreshold: 0.6,
-		MinRequests:      5,
-	}
-	cb := circuitbreaker.New(cbConfig)
-
 	fetcher := &ReadabilityFetcher{
-		circuitBreaker: cb,
-		config:         config,
+		config: config,
 	}
 
 	// Create HTTP client with redirect validation
@@ -106,7 +90,7 @@ func NewReadabilityFetcher(config ContentFetchConfig) *ReadabilityFetcher {
 //
 // The fetch process:
 //  1. Validates URL for security (SSRF prevention)
-//  2. Executes HTTP request through circuit breaker
+//  2. Executes HTTP request
 //  3. Enforces size limit while reading response
 //  4. Extracts article content using Readability algorithm
 //  5. Returns clean article text
@@ -116,7 +100,6 @@ func NewReadabilityFetcher(config ContentFetchConfig) *ReadabilityFetcher {
 //   - Size limiting prevents memory exhaustion
 //   - Timeout prevents resource starvation
 //   - Redirect validation ensures all targets are safe
-//   - Circuit breaker prevents cascading failures
 //
 // Parameters:
 //   - ctx: Context for cancellation and timeout control
@@ -139,20 +122,11 @@ func (f *ReadabilityFetcher) FetchContent(ctx context.Context, urlStr string) (s
 		return "", err
 	}
 
-	// Step 2: Execute fetch through circuit breaker
-	result, err := f.circuitBreaker.Execute(func() (interface{}, error) {
-		return f.doFetch(ctx, urlStr)
-	})
-
-	if err != nil {
-		return "", err
-	}
-
-	return result.(string), nil
+	// Step 2: Execute fetch
+	return f.doFetch(ctx, urlStr)
 }
 
 // doFetch performs the actual HTTP request and content extraction.
-// This is called by FetchContent through the circuit breaker.
 //
 // Steps:
 //  1. Create HTTP request with context and custom User-Agent
@@ -166,9 +140,9 @@ func (f *ReadabilityFetcher) FetchContent(ctx context.Context, urlStr string) (s
 //   - urlStr: Article URL to fetch
 //
 // Returns:
-//   - interface{}: Extracted article content (as interface{} for circuit breaker)
+//   - string: Extracted article content (plain text)
 //   - error: Error if fetching or extraction fails
-func (f *ReadabilityFetcher) doFetch(ctx context.Context, urlStr string) (interface{}, error) {
+func (f *ReadabilityFetcher) doFetch(ctx context.Context, urlStr string) (string, error) {
 	// Apply per-request timeout from config
 	reqCtx, cancel := context.WithTimeout(ctx, f.config.Timeout)
 	defer cancel()

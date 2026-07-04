@@ -350,11 +350,6 @@ func TestWorkerConfig_Validate_ValidCustomConfig(t *testing.T) {
 	}
 }
 
-// globalTestMetrics is a shared metrics instance for tests to avoid
-// duplicate Prometheus registration errors. In production, metrics are
-// created once at startup, so this simulates that behavior.
-var globalTestMetrics = NewWorkerMetrics()
-
 // setEnv is a test helper that sets an environment variable and fails the test if it errors
 func setEnv(t *testing.T, key, value string) {
 	t.Helper()
@@ -389,7 +384,7 @@ func TestLoadConfigFromEnv_AllEnvVarsValid(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 
-	config, err := LoadConfigFromEnv(logger, globalTestMetrics)
+	config, err := LoadConfigFromEnv(logger)
 
 	// Should not return error (fail-open strategy)
 	if err != nil {
@@ -429,9 +424,8 @@ func TestLoadConfigFromEnv_MissingEnvVars(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	// Use shared global metrics instance
 
-	config, err := LoadConfigFromEnv(logger, globalTestMetrics)
+	config, err := LoadConfigFromEnv(logger)
 
 	// Should not return error (fail-open strategy)
 	if err != nil {
@@ -468,9 +462,8 @@ func TestLoadConfigFromEnv_InvalidCronSchedule(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	// Use shared global metrics instance
 
-	config, err := LoadConfigFromEnv(logger, globalTestMetrics)
+	config, err := LoadConfigFromEnv(logger)
 
 	// Should not return error (fail-open strategy)
 	if err != nil {
@@ -498,9 +491,8 @@ func TestLoadConfigFromEnv_InvalidTimezone(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	// Use shared global metrics instance
 
-	config, err := LoadConfigFromEnv(logger, globalTestMetrics)
+	config, err := LoadConfigFromEnv(logger)
 
 	// Should not return error (fail-open strategy)
 	if err != nil {
@@ -540,9 +532,8 @@ func TestLoadConfigFromEnv_InvalidNotifyMaxConcurrent(t *testing.T) {
 
 			var buf bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&buf, nil))
-			// Use shared global metrics instance
-
-			config, err := LoadConfigFromEnv(logger, globalTestMetrics)
+		
+			config, err := LoadConfigFromEnv(logger)
 
 			// Should not return error (fail-open strategy)
 			if err != nil {
@@ -580,9 +571,8 @@ func TestLoadConfigFromEnv_InvalidCrawlTimeout(t *testing.T) {
 
 			var buf bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&buf, nil))
-			// Use shared global metrics instance
-
-			config, err := LoadConfigFromEnv(logger, globalTestMetrics)
+		
+			config, err := LoadConfigFromEnv(logger)
 
 			// Should not return error (fail-open strategy)
 			if err != nil {
@@ -622,9 +612,8 @@ func TestLoadConfigFromEnv_InvalidHealthPort(t *testing.T) {
 
 			var buf bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&buf, nil))
-			// Use shared global metrics instance
-
-			config, err := LoadConfigFromEnv(logger, globalTestMetrics)
+		
+			config, err := LoadConfigFromEnv(logger)
 
 			// Should not return error (fail-open strategy)
 			if err != nil {
@@ -662,9 +651,8 @@ func TestLoadConfigFromEnv_MultipleInvalidFields(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	// Use shared global metrics instance
 
-	config, err := LoadConfigFromEnv(logger, globalTestMetrics)
+	config, err := LoadConfigFromEnv(logger)
 
 	// Should not return error (fail-open strategy)
 	if err != nil {
@@ -714,9 +702,8 @@ func TestLoadConfigFromEnv_PartiallyValid(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	// Use shared global metrics instance
 
-	config, err := LoadConfigFromEnv(logger, globalTestMetrics)
+	config, err := LoadConfigFromEnv(logger)
 
 	// Should not return error (fail-open strategy)
 	if err != nil {

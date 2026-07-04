@@ -59,9 +59,6 @@ func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
 			logger.Warn("authentication failed",
 				slog.String("reason", "invalid_request"),
 				slog.Int64("duration_ms", time.Since(start).Milliseconds()))
-			// Record metrics
-			RecordAuthRequest("unknown", "failure")
-			RecordAuthDuration("unknown", time.Since(start).Seconds())
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
@@ -76,9 +73,6 @@ func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
 			logger.Warn("authentication failed",
 				slog.String("reason", "invalid_credentials"),
 				slog.Int64("duration_ms", time.Since(start).Milliseconds()))
-			// Record metrics
-			RecordAuthRequest("unknown", "failure")
-			RecordAuthDuration("unknown", time.Since(start).Seconds())
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -89,9 +83,6 @@ func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
 			logger.Warn("authentication failed",
 				slog.String("reason", "role_identification_failed"),
 				slog.Int64("duration_ms", time.Since(start).Milliseconds()))
-			// Record metrics
-			RecordAuthRequest("unknown", "failure")
-			RecordAuthDuration("unknown", time.Since(start).Seconds())
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -110,9 +101,6 @@ func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
 			logger.Error("token generation failed",
 				slog.String("error", err.Error()),
 				slog.Int64("duration_ms", time.Since(start).Milliseconds()))
-			// Record metrics
-			RecordAuthRequest(role, "failure")
-			RecordAuthDuration(role, time.Since(start).Seconds())
 			http.Error(w, "token generation failed", http.StatusInternalServerError)
 			return
 		}
@@ -122,9 +110,6 @@ func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
 			slog.String("role", role),
 			slog.Int64("duration_ms", time.Since(start).Milliseconds()))
 
-		// Record metrics
-		RecordAuthRequest(role, "success")
-		RecordAuthDuration(role, time.Since(start).Seconds())
 
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(tokenResponse{Token: signed}); err != nil {
