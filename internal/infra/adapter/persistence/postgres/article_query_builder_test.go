@@ -26,7 +26,7 @@ func TestArticleQueryBuilder_BuildWhereClause_SingleKeyword(t *testing.T) {
 	builder := postgres.NewArticleQueryBuilder()
 	clause, args := builder.BuildWhereClause([]string{"Go"}, repository.ArticleSearchFilters{}, "")
 
-	expectedClause := "WHERE (title ILIKE $1 OR summary ILIKE $1)"
+	expectedClause := "WHERE (title ILIKE $1 OR sm.body ILIKE $1)"
 	if clause != expectedClause {
 		t.Errorf("clause = %q, want %q", clause, expectedClause)
 	}
@@ -42,7 +42,7 @@ func TestArticleQueryBuilder_BuildWhereClause_MultipleKeywords(t *testing.T) {
 	builder := postgres.NewArticleQueryBuilder()
 	clause, args := builder.BuildWhereClause([]string{"Go", "release"}, repository.ArticleSearchFilters{}, "")
 
-	expectedClause := "WHERE (title ILIKE $1 OR summary ILIKE $1) AND (title ILIKE $2 OR summary ILIKE $2)"
+	expectedClause := "WHERE (title ILIKE $1 OR sm.body ILIKE $1) AND (title ILIKE $2 OR sm.body ILIKE $2)"
 	if clause != expectedClause {
 		t.Errorf("clause = %q, want %q", clause, expectedClause)
 	}
@@ -58,7 +58,7 @@ func TestArticleQueryBuilder_BuildWhereClause_WithTableAlias(t *testing.T) {
 	builder := postgres.NewArticleQueryBuilder()
 	clause, args := builder.BuildWhereClause([]string{"Go"}, repository.ArticleSearchFilters{}, "a")
 
-	expectedClause := "WHERE (a.title ILIKE $1 OR a.summary ILIKE $1)"
+	expectedClause := "WHERE (a.title ILIKE $1 OR sm.body ILIKE $1)"
 	if clause != expectedClause {
 		t.Errorf("clause = %q, want %q", clause, expectedClause)
 	}
@@ -73,7 +73,7 @@ func TestArticleQueryBuilder_BuildWhereClause_WithSourceIDFilter(t *testing.T) {
 	filters := repository.ArticleSearchFilters{SourceID: &sourceID}
 	clause, args := builder.BuildWhereClause([]string{"Go"}, filters, "")
 
-	expectedClause := "WHERE (title ILIKE $1 OR summary ILIKE $1) AND source_id = $2"
+	expectedClause := "WHERE (title ILIKE $1 OR sm.body ILIKE $1) AND source_id = $2"
 	if clause != expectedClause {
 		t.Errorf("clause = %q, want %q", clause, expectedClause)
 	}
@@ -92,7 +92,7 @@ func TestArticleQueryBuilder_BuildWhereClause_WithDateFilters(t *testing.T) {
 	filters := repository.ArticleSearchFilters{From: &from, To: &to}
 	clause, args := builder.BuildWhereClause([]string{"Go"}, filters, "")
 
-	expectedClause := "WHERE (title ILIKE $1 OR summary ILIKE $1) AND published_at >= $2 AND published_at <= $3"
+	expectedClause := "WHERE (title ILIKE $1 OR sm.body ILIKE $1) AND published_at >= $2 AND published_at <= $3"
 	if clause != expectedClause {
 		t.Errorf("clause = %q, want %q", clause, expectedClause)
 	}
@@ -113,7 +113,7 @@ func TestArticleQueryBuilder_BuildWhereClause_WithAllFilters(t *testing.T) {
 	}
 	clause, args := builder.BuildWhereClause([]string{"Go", "release"}, filters, "a")
 
-	expectedClause := "WHERE (a.title ILIKE $1 OR a.summary ILIKE $1) AND (a.title ILIKE $2 OR a.summary ILIKE $2) AND a.source_id = $3 AND a.published_at >= $4 AND a.published_at <= $5"
+	expectedClause := "WHERE (a.title ILIKE $1 OR sm.body ILIKE $1) AND (a.title ILIKE $2 OR sm.body ILIKE $2) AND a.source_id = $3 AND a.published_at >= $4 AND a.published_at <= $5"
 	if clause != expectedClause {
 		t.Errorf("clause = %q, want %q", clause, expectedClause)
 	}

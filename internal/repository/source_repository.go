@@ -2,15 +2,14 @@ package repository
 
 import (
 	"context"
-	"time"
 
 	"catchup-feed/internal/domain/entity"
 )
 
 // SourceSearchFilters contains optional filters for source search
 type SourceSearchFilters struct {
-	SourceType *string // Optional: Filter by source type (RSS, Webflow, NextJS, Remix)
-	Active     *bool   // Optional: Filter by active status
+	Category *string // Optional: Filter by category (台本のコーナー分け単位)
+	Active   *bool   // Optional: Filter by active status
 }
 
 type SourceRepository interface {
@@ -22,5 +21,4 @@ type SourceRepository interface {
 	Create(ctx context.Context, source *entity.Source) error
 	Update(ctx context.Context, source *entity.Source) error
 	Delete(ctx context.Context, id int64) error
-	TouchCrawledAt(ctx context.Context, id int64, t time.Time) error
 }

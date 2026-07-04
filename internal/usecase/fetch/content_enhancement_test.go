@@ -94,7 +94,6 @@ func TestEnhanceContent_InsufficientRSSContent_FetchSuccess(t *testing.T) {
 				},
 			},
 		},
-		nil, // webScrapers
 		mockFetcher,
 		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
@@ -171,7 +170,6 @@ func TestEnhanceContent_InsufficientRSSContent_FetchFailed(t *testing.T) {
 				},
 			},
 		},
-		nil, // webScrapers
 		mockFetcher,
 		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
@@ -251,7 +249,6 @@ func TestEnhanceContent_FetchedShorterThanRSS(t *testing.T) {
 				},
 			},
 		},
-		nil, // webScrapers
 		mockFetcher,
 		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
@@ -331,7 +328,6 @@ func TestEnhanceContent_EmptyRSSContent(t *testing.T) {
 				},
 			},
 		},
-		nil, // webScrapers
 		mockFetcher,
 		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
@@ -397,7 +393,6 @@ func TestEnhanceContent_ContentFetcherNil(t *testing.T) {
 				},
 			},
 		},
-		nil, // webScrapers
 		nil, // Feature disabled
 		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{

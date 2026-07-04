@@ -103,7 +103,7 @@ func TestService_Create_success(t *testing.T) {
 	svc := srcUC.Service{Repo: stub}
 
 	in := srcUC.CreateInput{
-		Name: "Qiita", FeedURL: "https://qiita.com/feed",
+		Name: "Qiita", FeedURL: "https://qiita.com/feed", Category: "community",
 	}
 	if err := svc.Create(context.Background(), in); err != nil {
 		t.Fatalf("Create err=%v", err)
@@ -286,10 +286,20 @@ func TestService_Create_detailedValidation(t *testing.T) {
 			errMsg:  "feedURL",
 		},
 		{
-			name: "invalid feed url format",
+			name: "empty category",
 			input: srcUC.CreateInput{
 				Name:    "Test Source",
-				FeedURL: "not-a-url",
+				FeedURL: "https://example.com/feed",
+			},
+			wantErr: true,
+			errMsg:  "category",
+		},
+		{
+			name: "invalid feed url format",
+			input: srcUC.CreateInput{
+				Name:     "Test Source",
+				FeedURL:  "not-a-url",
+				Category: "dev",
 			},
 			wantErr: true,
 			errMsg:  "URL",
@@ -297,8 +307,9 @@ func TestService_Create_detailedValidation(t *testing.T) {
 		{
 			name: "repository error",
 			input: srcUC.CreateInput{
-				Name:    "Test Source",
-				FeedURL: "https://example.com/feed",
+				Name:     "Test Source",
+				FeedURL:  "https://example.com/feed",
+				Category: "dev",
 			},
 			wantErr: true,
 			errMsg:  "create source",

@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	authservice "catchup-feed/internal/service/auth"
 	"catchup-feed/internal/handler/http/requestid"
+	authservice "catchup-feed/internal/service/auth"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -32,16 +32,9 @@ type tokenResponse struct {
 // @Produce      json
 // @Param        request body loginRequest true "ログイン情報"
 // @Success      200 {object} tokenResponse "JWT トークン"
-// @Header       200 {integer} X-RateLimit-Limit "Maximum number of requests allowed in the current window"
-// @Header       200 {integer} X-RateLimit-Remaining "Number of requests remaining in the current window"
-// @Header       200 {integer} X-RateLimit-Reset "Unix timestamp when the rate limit window resets"
 // @Failure      400 {string} string "リクエストが不正"
 // @Failure      401 {string} string "認証失敗"
 // @Failure      429 {string} string "Too many requests - rate limit exceeded"
-// @Header       429 {integer} X-RateLimit-Limit "Maximum number of requests allowed in the current window"
-// @Header       429 {integer} X-RateLimit-Remaining "Number of requests remaining (should be 0)"
-// @Header       429 {integer} X-RateLimit-Reset "Unix timestamp when the rate limit window resets"
-// @Header       429 {integer} Retry-After "Seconds until the client should retry"
 // @Failure      500 {string} string "トークン生成失敗"
 // @Router       /auth/token [post]
 func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
@@ -109,7 +102,6 @@ func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
 			slog.String("user_email", req.Email),
 			slog.String("role", role),
 			slog.Int64("duration_ms", time.Since(start).Milliseconds()))
-
 
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(tokenResponse{Token: signed}); err != nil {

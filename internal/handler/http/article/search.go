@@ -25,10 +25,10 @@ type SearchHandler struct{ Svc artUC.Service }
 // @Param        source_id query int false "ソースIDでフィルタ"
 // @Param        from query string false "公開日時の開始（ISO 8601）"
 // @Param        to query string false "公開日時の終了（ISO 8601）"
-// @Success      200 {array} DTO "検索結果" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer)
+// @Success      200 {array} DTO "検索結果"
 // @Failure      400 {string} string "Bad request"
 // @Failure      401 {string} string "Authentication required"
-// @Failure      429 {string} string "Too many requests - rate limit exceeded" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer,Retry-After=integer)
+// @Failure      429 {string} string "Too many requests - rate limit exceeded"
 // @Failure      500 {string} string "Server error"
 // Note: This handler is deprecated. SearchPaginatedHandler is used in production.
 // Router annotation removed to avoid Swagger duplicate route warning.
@@ -112,8 +112,7 @@ func (h SearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out = append(out, DTO{
 			ID: e.ID, SourceID: e.SourceID, Title: e.Title,
 			URL: e.URL, Summary: e.Summary,
-			PublishedAt: e.PublishedAt, CreatedAt: e.CreatedAt,
-			UpdatedAt: e.CreatedAt, // Database schema doesn't have updated_at column
+			PublishedAt: e.PublishedAt, CrawledAt: e.CrawledAt,
 		})
 	}
 	respond.JSON(w, http.StatusOK, out)

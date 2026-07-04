@@ -2,1071 +2,333 @@ package postgres_test
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"regexp"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"catchup-feed/internal/domain/entity"
-	"catchup-feed/internal/infra/adapter/persistence/postgres"
+	pg "catchup-feed/internal/infra/adapter/persistence/postgres"
 	"catchup-feed/internal/repository"
 )
 
-/* ──────────────────────────────── ヘルパ ──────────────────────────────── */
+/* ─────────────────────────── ヘルパ ─────────────────────────── */
 
-func row(src *entity.Source) *sqlmock.Rows {
-	return sqlmock.NewRows([]string{
-		"id", "name", "feed_url",
-		"last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).AddRow(
-		src.ID, src.Name, src.FeedURL,
-		src.LastCrawledAt, src.Active,
-		src.SourceType, nil,
+// sourceCols is the §4 sources column list.
+var sourceCols = []string{
+	"id", "name", "feed_url", "category", "lang", "active", "created_at",
+}
+
+func srcRow(s *entity.Source) *sqlmock.Rows {
+	return sqlmock.NewRows(sourceCols).AddRow(
+		s.ID, s.Name, s.FeedURL, s.Category, s.Lang, s.Active, s.CreatedAt,
 	)
 }
 
-/* ──────────────────────────────── 1. Get ──────────────────────────────── */
+func newSourceRepo(t *testing.T) (repository.SourceRepository, sqlmock.Sqlmock, func()) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	return pg.NewSourceRepo(db), mock, func() { _ = db.Close() }
+}
+
+/* ─────────────────────────── Get ─────────────────────────── */
 
 func TestSourceRepo_Get(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
+	now := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 
-	want := &entity.Source{
-		ID: 1, Name: "Qiita", FeedURL: "https://qiita.com/feed",
-		LastCrawledAt: &[]time.Time{time.Now()}[0], Active: true,
-		SourceType: "RSS",
+	tests := []struct {
+		name    string
+		rows    *sqlmock.Rows
+		queryEr error
+		want    *entity.Source
+		wantErr bool
+	}{
+		{
+			name: "found",
+			want: &entity.Source{
+				ID: 1, Name: "Golang Weekly",
+				FeedURL:  "https://example.com/feed.xml",
+				Category: "dev", Lang: "en", Active: true, CreatedAt: now,
+			},
+		},
+		{
+			name: "not found returns nil, nil",
+			rows: sqlmock.NewRows(sourceCols),
+		},
+		{
+			name:    "database error",
+			queryEr: errors.New("db down"),
+			wantErr: true,
+		},
 	}
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id`)).
-		WithArgs(int64(1)).
-		WillReturnRows(row(want))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, mock, closeFn := newSourceRepo(t)
+			defer closeFn()
 
-	repo := postgres.NewSourceRepo(db)
-	got, err := repo.Get(context.Background(), 1)
-	if err != nil {
-		t.Fatalf("Get err=%v", err)
-	}
-	if diff := cmp.Diff(want, got, cmp.AllowUnexported(entity.Source{})); diff != "" {
-		t.Fatalf("mismatch (-want +got):\n%s", diff)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
+			exp := mock.ExpectQuery(regexp.QuoteMeta("FROM sources")).
+				WithArgs(int64(1))
+			switch {
+			case tt.queryEr != nil:
+				exp.WillReturnError(tt.queryEr)
+			case tt.rows != nil:
+				exp.WillReturnRows(tt.rows)
+			default:
+				exp.WillReturnRows(srcRow(tt.want))
+			}
+
+			got, err := repo.Get(context.Background(), 1)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
 	}
 }
 
-/* ──────────────────────────────── 2. List ──────────────────────────────── */
+/* ─────────────────────────── List / ListActive / Search ─────────────────────────── */
 
 func TestSourceRepo_List(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
+	repo, mock, closeFn := newSourceRepo(t)
+	defer closeFn()
 
 	now := time.Now()
-	mock.ExpectQuery(`FROM sources`).
-		WillReturnRows(row(&entity.Source{
-			ID: 1, Name: "Qiita", FeedURL: "https://qiita.com/feed",
-			LastCrawledAt: &now, Active: true,
-			SourceType: "RSS",
+	mock.ExpectQuery("FROM sources").
+		WillReturnRows(srcRow(&entity.Source{
+			ID: 1, Name: "n", FeedURL: "u", Category: "dev", Lang: "en",
+			Active: true, CreatedAt: now,
 		}))
 
-	repo := postgres.NewSourceRepo(db)
 	got, err := repo.List(context.Background())
-	if err != nil || len(got) != 1 {
-		t.Fatalf("List err=%v len=%d", err, len(got))
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "dev", got[0].Category)
+	assert.Equal(t, "en", got[0].Lang)
 }
-
-/* ──────────────────────────────── 3. Search ──────────────────────────────── */
-
-func TestSourceRepo_Search(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs("%go%").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "name", "feed_url", "last_crawled_at", "active",
-			"source_type", "scraper_config",
-		})) // empty set OK
-
-	repo := postgres.NewSourceRepo(db)
-	if _, err := repo.Search(context.Background(), "go"); err != nil {
-		t.Fatalf("Search err=%v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-/* ──────────────────────────────── 4. Create ──────────────────────────────── */
-
-func TestSourceRepo_Create(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO sources`)).
-		WithArgs("Qiita", "https://qiita.com/feed",
-			&now, true, "RSS", []byte(nil)).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	repo := postgres.NewSourceRepo(db)
-	err := repo.Create(context.Background(), &entity.Source{
-		Name: "Qiita", FeedURL: "https://qiita.com/feed",
-		LastCrawledAt: &now, Active: true,
-		SourceType: "RSS",
-	})
-	if err != nil {
-		t.Fatalf("Create err=%v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-/* ──────────────────────────────── 5. Update ──────────────────────────────── */
-
-func TestSourceRepo_Update(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	mock.ExpectExec(`UPDATE sources`).
-		WithArgs("Qiita", "https://qiita.com/feed",
-			&now, true, "RSS", []byte(nil), int64(1)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	repo := postgres.NewSourceRepo(db)
-	err := repo.Update(context.Background(), &entity.Source{
-		ID: 1, Name: "Qiita", FeedURL: "https://qiita.com/feed",
-		LastCrawledAt: &now, Active: true,
-		SourceType: "RSS",
-	})
-	if err != nil {
-		t.Fatalf("Update err=%v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-/* ──────────────────────────────── 6. Delete ──────────────────────────────── */
-
-func TestSourceRepo_Delete(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectExec(`DELETE FROM sources`).
-		WithArgs(int64(1)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	repo := postgres.NewSourceRepo(db)
-	if err := repo.Delete(context.Background(), 1); err != nil {
-		t.Fatalf("Delete err=%v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-/* ──────────────────────────────── 7. ListActive ──────────────────────────────── */
 
 func TestSourceRepo_ListActive(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).
-		AddRow(1, "Qiita", "https://qiita.com/feed", now, true, "RSS", nil).
-		AddRow(2, "Zenn", "https://zenn.dev/feed", now, true, "RSS", nil)
-
-	mock.ExpectQuery(`FROM sources`).
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.ListActive(context.Background())
-	if err != nil {
-		t.Fatalf("ListActive err=%v", err)
-	}
-	if len(sources) != 2 {
-		t.Fatalf("ListActive expected 2 sources, got %d", len(sources))
-	}
-	if !sources[0].Active || !sources[1].Active {
-		t.Fatal("ListActive returned inactive sources")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSourceRepo_ListActive_Empty(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	})
-
-	mock.ExpectQuery(`FROM sources`).
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.ListActive(context.Background())
-	if err != nil {
-		t.Fatalf("ListActive err=%v", err)
-	}
-	if len(sources) != 0 {
-		t.Fatalf("ListActive expected 0 sources, got %d", len(sources))
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-/* ──────────────────────────────── 8. TouchCrawledAt ──────────────────────────────── */
-
-func TestSourceRepo_TouchCrawledAt(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	mock.ExpectExec(`UPDATE sources SET last_crawled_at`).
-		WithArgs(now, int64(1)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	repo := postgres.NewSourceRepo(db)
-	err := repo.TouchCrawledAt(context.Background(), 1, now)
-	if err != nil {
-		t.Fatalf("TouchCrawledAt err=%v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSourceRepo_TouchCrawledAt_NonExistent(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	mock.ExpectExec(`UPDATE sources SET last_crawled_at`).
-		WithArgs(now, int64(999)).
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	repo := postgres.NewSourceRepo(db)
-	// TouchCrawledAt doesn't check rows affected, so it should succeed
-	err := repo.TouchCrawledAt(context.Background(), 999, now)
-	if err != nil {
-		t.Fatalf("TouchCrawledAt err=%v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-/* ──────────────────────────────── 9. SearchWithFilters ──────────────────────────────── */
-
-func TestSourceRepo_SearchWithFilters_SingleKeyword(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).AddRow(1, "Go Blog", "https://go.dev/blog/feed", &now, true, "RSS", nil)
-
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs("%Go%"). // EscapeILIKE wraps with %
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{"Go"}, repository.SourceSearchFilters{})
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if len(sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(sources))
-	}
-	if sources[0].Name != "Go Blog" {
-		t.Fatalf("expected Go Blog, got %s", sources[0].Name)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSourceRepo_SearchWithFilters_MultipleKeywords(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).AddRow(1, "Go Blog", "https://go.dev/blog/feed", &now, true, "RSS", nil)
-
-	// Multiple keywords with AND logic
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs("%Go%", "%blog%").
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{"Go", "blog"}, repository.SourceSearchFilters{})
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if len(sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(sources))
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSourceRepo_SearchWithFilters_WithSourceTypeFilter(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).AddRow(2, "Webflow Blog", "https://webflow.com/blog", &now, true, "Webflow", nil)
-
-	sourceType := "Webflow"
-	filters := repository.SourceSearchFilters{
-		SourceType: &sourceType,
-	}
-
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs("%blog%", "Webflow").
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{"blog"}, filters)
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if len(sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(sources))
-	}
-	if sources[0].SourceType != "Webflow" {
-		t.Fatalf("expected Webflow, got %s", sources[0].SourceType)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSourceRepo_SearchWithFilters_WithActiveFilter(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).AddRow(1, "Active Blog", "https://active.com/feed", &now, true, "RSS", nil)
-
-	active := true
-	filters := repository.SourceSearchFilters{
-		Active: &active,
-	}
-
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs("%blog%", true).
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{"blog"}, filters)
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if len(sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(sources))
-	}
-	if !sources[0].Active {
-		t.Fatal("expected active source")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSourceRepo_SearchWithFilters_WithAllFilters(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).AddRow(1, "Go Blog RSS", "https://go.dev/feed", &now, true, "RSS", nil)
-
-	sourceType := "RSS"
-	active := true
-	filters := repository.SourceSearchFilters{
-		SourceType: &sourceType,
-		Active:     &active,
-	}
-
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs("%Go%", "%blog%", "RSS", true).
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{"Go", "blog"}, filters)
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if len(sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(sources))
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestSourceRepo_SearchWithFilters_EmptyKeywords is now deprecated.
-// The feature now supports filter-only searches (empty keywords with no filters returns all sources).
-// See new tests: TestSourceRepo_SearchWithFilters_EmptyKeywords_NoFilters, etc.
-func TestSourceRepo_SearchWithFilters_EmptyKeywords(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	// Updated behavior: empty keywords now executes query and returns all sources
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}) // Empty result set for this test
-
-	mock.ExpectQuery(`FROM sources`).
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{}, repository.SourceSearchFilters{})
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if len(sources) != 0 {
-		t.Fatalf("expected 0 sources, got %d", len(sources))
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSourceRepo_SearchWithFilters_SpecialCharacters(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).AddRow(1, "100% Go", "https://go100.com/feed", &now, true, "RSS", nil)
-
-	// EscapeILIKE should escape % as \%
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs("%100\\%%"). // 100% -> %100\%%
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{"100%"}, repository.SourceSearchFilters{})
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if len(sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(sources))
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSourceRepo_SearchWithFilters_UnderscoreEscape(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).AddRow(1, "my_blog", "https://myblog.com/feed", &now, true, "RSS", nil)
-
-	// EscapeILIKE should escape _ as \_
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs("%my\\_blog%"). // my_blog -> %my\_blog%
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{"my_blog"}, repository.SourceSearchFilters{})
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if len(sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(sources))
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSourceRepo_SearchWithFilters_BackslashEscape(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).AddRow(1, "path\\file", "https://example.com/feed", &now, true, "RSS", nil)
-
-	// EscapeILIKE should escape \ as \\
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs("%path\\\\file%"). // path\file -> %path\\file%
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{"path\\file"}, repository.SourceSearchFilters{})
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if len(sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(sources))
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-/* ──────────────────────────────── 10. Error Cases ──────────────────────────────── */
-
-func TestSourceRepo_Update_NoRowsAffected(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	mock.ExpectExec(`UPDATE sources`).
-		WithArgs("Qiita", "https://qiita.com/feed",
-			&now, true, "RSS", []byte(nil), int64(999)).
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	repo := postgres.NewSourceRepo(db)
-	err := repo.Update(context.Background(), &entity.Source{
-		ID: 999, Name: "Qiita", FeedURL: "https://qiita.com/feed",
-		LastCrawledAt: &now, Active: true,
-		SourceType: "RSS",
-	})
-	if err == nil {
-		t.Fatal("Update should fail when no rows affected")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSourceRepo_Delete_NoRowsAffected(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectExec(`DELETE FROM sources`).
-		WithArgs(int64(999)).
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	repo := postgres.NewSourceRepo(db)
-	err := repo.Delete(context.Background(), 999)
-	if err == nil {
-		t.Fatal("Delete should fail when no rows affected")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-/* ──────────────────────────────── 11. Filter-Only Search Tests (TASK-005) ──────────────────────────────── */
-
-// TestSourceRepo_SearchWithFilters_EmptyKeywords_NoFilters verifies empty keywords with no filters returns all sources
-func TestSourceRepo_SearchWithFilters_EmptyKeywords_NoFilters(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).
-		AddRow(1, "Tech Blog", "https://example.com/feed", &now, true, "RSS", nil).
-		AddRow(2, "News Site", "https://news.example.com/feed", &now, false, "Webflow", nil)
-
-	// No WHERE clause - returns all sources
-	mock.ExpectQuery(`FROM sources`).
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{}, repository.SourceSearchFilters{})
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if len(sources) != 2 {
-		t.Fatalf("expected 2 sources, got %d", len(sources))
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestSourceRepo_SearchWithFilters_EmptyKeywords_SourceTypeFilter verifies empty keywords with source_type filter
-func TestSourceRepo_SearchWithFilters_EmptyKeywords_SourceTypeFilter(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).AddRow(1, "RSS Blog", "https://example.com/feed", &now, true, "RSS", nil)
-
-	sourceType := "RSS"
-	filters := repository.SourceSearchFilters{
-		SourceType: &sourceType,
-	}
-
-	// Only source_type filter in WHERE clause
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs("RSS").
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{}, filters)
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if len(sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(sources))
-	}
-	if sources[0].SourceType != "RSS" {
-		t.Fatalf("expected RSS, got %s", sources[0].SourceType)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestSourceRepo_SearchWithFilters_EmptyKeywords_ActiveFilter verifies empty keywords with active filter
-func TestSourceRepo_SearchWithFilters_EmptyKeywords_ActiveFilter(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).
-		AddRow(1, "Active Blog", "https://example.com/feed", &now, true, "RSS", nil).
-		AddRow(2, "Another Active", "https://example2.com/feed", &now, true, "Webflow", nil)
-
-	active := true
-	filters := repository.SourceSearchFilters{
-		Active: &active,
-	}
-
-	// Only active filter in WHERE clause
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs(true).
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{}, filters)
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if len(sources) != 2 {
-		t.Fatalf("expected 2 sources, got %d", len(sources))
-	}
-	for _, src := range sources {
-		if !src.Active {
-			t.Fatal("expected all sources to be active")
-		}
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestSourceRepo_SearchWithFilters_EmptyKeywords_MultipleFilters verifies empty keywords with multiple filters
-func TestSourceRepo_SearchWithFilters_EmptyKeywords_MultipleFilters(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}).AddRow(1, "Active RSS", "https://example.com/feed", &now, true, "RSS", nil)
-
-	sourceType := "RSS"
-	active := true
-	filters := repository.SourceSearchFilters{
-		SourceType: &sourceType,
-		Active:     &active,
-	}
-
-	// Both filters in WHERE clause
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs("RSS", true).
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{}, filters)
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if len(sources) != 1 {
-		t.Fatalf("expected 1 source, got %d", len(sources))
-	}
-	if sources[0].SourceType != "RSS" {
-		t.Fatalf("expected RSS, got %s", sources[0].SourceType)
-	}
-	if !sources[0].Active {
-		t.Fatal("expected source to be active")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestSourceRepo_SearchWithFilters_EmptyKeywords_EmptyResult verifies empty result returns empty slice (not nil)
-func TestSourceRepo_SearchWithFilters_EmptyKeywords_EmptyResult(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	rows := sqlmock.NewRows([]string{
-		"id", "name", "feed_url", "last_crawled_at", "active",
-		"source_type", "scraper_config",
-	}) // No rows
-
-	sourceType := "NonExistent"
-	filters := repository.SourceSearchFilters{
-		SourceType: &sourceType,
-	}
-
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs("NonExistent").
-		WillReturnRows(rows)
-
-	repo := postgres.NewSourceRepo(db)
-	sources, err := repo.SearchWithFilters(context.Background(), []string{}, filters)
-	if err != nil {
-		t.Fatalf("SearchWithFilters err=%v", err)
-	}
-	if sources == nil {
-		t.Fatal("expected empty slice, got nil")
-	}
-	if len(sources) != 0 {
-		t.Fatalf("expected 0 sources, got %d", len(sources))
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-/* ──────────────────────────────── 12. Additional Error Cases ──────────────────────────────── */
-
-func TestSourceRepo_Get_NotFound(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id`)).
-		WithArgs(int64(999)).
-		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "name", "feed_url", "last_crawled_at", "active",
-			"source_type", "scraper_config",
-		}))
-
-	repo := postgres.NewSourceRepo(db)
-	got, err := repo.Get(context.Background(), 999)
-	if err != nil {
-		t.Fatalf("Get should not return error for not found, err=%v", err)
-	}
-	if got != nil {
-		t.Fatalf("Get should return nil for not found, got=%v", got)
-	}
-}
-
-func TestSourceRepo_Get_DatabaseError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	dbError := errors.New("connection lost")
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id`)).
-		WithArgs(int64(1)).
-		WillReturnError(dbError)
-
-	repo := postgres.NewSourceRepo(db)
-	got, err := repo.Get(context.Background(), 1)
-	if err == nil {
-		t.Fatal("Get should return error for database error")
-	}
-	if got != nil {
-		t.Errorf("Get should return nil on error, got=%v", got)
-	}
-}
-
-func TestSourceRepo_Get_WithScraperConfig(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	scraperConfigJSON := []byte(`{"item_selector":"article","url_prefix":"https://example.com"}`)
-
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id`)).
-		WithArgs(int64(1)).
-		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "name", "feed_url", "last_crawled_at", "active",
-			"source_type", "scraper_config",
-		}).AddRow(1, "Test Source", "https://example.com/feed", &now, true, "Webflow", scraperConfigJSON))
-
-	repo := postgres.NewSourceRepo(db)
-	got, err := repo.Get(context.Background(), 1)
-	if err != nil {
-		t.Fatalf("Get err=%v", err)
-	}
-	if got == nil {
-		t.Fatal("Get should return source")
-	}
-	if got.ScraperConfig == nil {
-		t.Fatal("ScraperConfig should not be nil")
-	}
-	if got.ScraperConfig.ItemSelector != "article" {
-		t.Errorf("ItemSelector = %q, want %q", got.ScraperConfig.ItemSelector, "article")
-	}
-}
-
-func TestSourceRepo_Get_InvalidScraperConfigJSON(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	invalidJSON := []byte(`{"item_selector":invalid}`) // Invalid JSON
-
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id`)).
-		WithArgs(int64(1)).
-		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "name", "feed_url", "last_crawled_at", "active",
-			"source_type", "scraper_config",
-		}).AddRow(1, "Test", "https://example.com", &now, true, "RSS", invalidJSON))
-
-	repo := postgres.NewSourceRepo(db)
-	got, err := repo.Get(context.Background(), 1)
-	if err == nil {
-		t.Fatal("Get should return error for invalid JSON")
-	}
-	if got != nil {
-		t.Errorf("Get should return nil on JSON unmarshal error, got=%v", got)
-	}
+	repo, mock, closeFn := newSourceRepo(t)
+	defer closeFn()
+
+	mock.ExpectQuery("WHERE active = TRUE").
+		WillReturnRows(sqlmock.NewRows(sourceCols))
+
+	got, err := repo.ListActive(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, got)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestSourceRepo_List_ScanError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
+	repo, mock, closeFn := newSourceRepo(t)
+	defer closeFn()
 
-	// Mock invalid data type for ID
-	mock.ExpectQuery(`FROM sources`).
-		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "name", "feed_url", "last_crawled_at", "active",
-			"source_type", "scraper_config",
-		}).AddRow("invalid", "name", "url", nil, true, "RSS", nil))
+	mock.ExpectQuery("FROM sources").
+		WillReturnRows(sqlmock.NewRows(sourceCols).
+			AddRow("not-an-int", "n", "u", "dev", "en", true, time.Now()))
 
-	repo := postgres.NewSourceRepo(db)
-	got, err := repo.List(context.Background())
-	if err == nil {
-		t.Fatal("List should return error for scan error")
-	}
-	if got != nil {
-		t.Errorf("List should return nil on error, got=%v", got)
-	}
+	_, err := repo.List(context.Background())
+	assert.Error(t, err)
 }
 
-func TestSourceRepo_ListActive_ScanError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
+func TestSourceRepo_Search(t *testing.T) {
+	repo, mock, closeFn := newSourceRepo(t)
+	defer closeFn()
 
-	// Mock invalid data type
-	mock.ExpectQuery(`FROM sources`).
-		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "name", "feed_url", "last_crawled_at", "active",
-			"source_type", "scraper_config",
-		}).AddRow("invalid", "name", "url", nil, true, "RSS", nil))
-
-	repo := postgres.NewSourceRepo(db)
-	got, err := repo.ListActive(context.Background())
-	if err == nil {
-		t.Fatal("ListActive should return error for scan error")
-	}
-	if got != nil {
-		t.Errorf("ListActive should return nil on error, got=%v", got)
-	}
-}
-
-func TestSourceRepo_Search_ScanError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	// Mock invalid data type
-	mock.ExpectQuery(`FROM sources`).
+	mock.ExpectQuery("ILIKE").
 		WithArgs("%go%").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "name", "feed_url", "last_crawled_at", "active",
-			"source_type", "scraper_config",
-		}).AddRow("invalid", "name", "url", nil, true, "RSS", nil))
+		WillReturnRows(sqlmock.NewRows(sourceCols))
 
-	repo := postgres.NewSourceRepo(db)
-	got, err := repo.Search(context.Background(), "go")
-	if err == nil {
-		t.Fatal("Search should return error for scan error")
+	_, err := repo.Search(context.Background(), "go")
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+/* ─────────────────────────── SearchWithFilters ─────────────────────────── */
+
+func TestSourceRepo_SearchWithFilters(t *testing.T) {
+	category := "ai"
+	active := true
+
+	tests := []struct {
+		name      string
+		keywords  []string
+		filters   repository.SourceSearchFilters
+		wantQuery string
+		wantArgs  []driver.Value
+	}{
+		{
+			name:      "keyword only",
+			keywords:  []string{"go"},
+			wantQuery: `(name ILIKE $1 OR feed_url ILIKE $1)`,
+			wantArgs:  []driver.Value{"%go%"},
+		},
+		{
+			name:      "category filter",
+			filters:   repository.SourceSearchFilters{Category: &category},
+			wantQuery: `category = $1`,
+			wantArgs:  []driver.Value{category},
+		},
+		{
+			name:      "keyword + category + active",
+			keywords:  []string{"go"},
+			filters:   repository.SourceSearchFilters{Category: &category, Active: &active},
+			wantQuery: `active = $3`,
+			wantArgs:  []driver.Value{"%go%", category, active},
+		},
+		{
+			name:      "no criteria returns browse-mode query",
+			wantQuery: `ORDER BY id ASC`,
+			wantArgs:  nil,
+		},
 	}
-	if got != nil {
-		t.Errorf("Search should return nil on error, got=%v", got)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, mock, closeFn := newSourceRepo(t)
+			defer closeFn()
+
+			mock.ExpectQuery(regexp.QuoteMeta(tt.wantQuery)).
+				WithArgs(tt.wantArgs...).
+				WillReturnRows(sqlmock.NewRows(sourceCols))
+
+			got, err := repo.SearchWithFilters(context.Background(), tt.keywords, tt.filters)
+			require.NoError(t, err)
+			assert.Empty(t, got)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
 	}
 }
 
-func TestSourceRepo_SearchWithFilters_ScanError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
+func TestSourceRepo_SearchWithFilters_EscapesILIKE(t *testing.T) {
+	repo, mock, closeFn := newSourceRepo(t)
+	defer closeFn()
 
-	// Mock invalid data type
-	mock.ExpectQuery(`FROM sources`).
-		WithArgs("%go%").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "name", "feed_url", "last_crawled_at", "active",
-			"source_type", "scraper_config",
-		}).AddRow("invalid", "name", "url", nil, true, "RSS", nil))
+	// % / _ / \ must arrive escaped in the bind parameter.
+	mock.ExpectQuery("ILIKE").
+		WithArgs(`%50\%\_off\\%`).
+		WillReturnRows(sqlmock.NewRows(sourceCols))
 
-	repo := postgres.NewSourceRepo(db)
-	got, err := repo.SearchWithFilters(context.Background(), []string{"go"}, repository.SourceSearchFilters{})
-	if err == nil {
-		t.Fatal("SearchWithFilters should return error for scan error")
+	_, err := repo.SearchWithFilters(context.Background(), []string{`50%_off\`}, repository.SourceSearchFilters{})
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+/* ─────────────────────────── Create / Update / Delete ─────────────────────────── */
+
+func TestSourceRepo_Create(t *testing.T) {
+	tests := []struct {
+		name     string
+		source   *entity.Source
+		wantLang string
+	}{
+		{
+			name: "explicit lang",
+			source: &entity.Source{
+				Name: "Publickey", FeedURL: "https://example.com/atom.xml",
+				Category: "community", Lang: "ja", Active: true,
+			},
+			wantLang: "ja",
+		},
+		{
+			name: "empty lang defaults to en",
+			source: &entity.Source{
+				Name: "Golang Weekly", FeedURL: "https://example.com/feed.xml",
+				Category: "dev", Active: true,
+			},
+			wantLang: entity.DefaultSourceLang,
+		},
 	}
-	if got != nil {
-		t.Errorf("SearchWithFilters should return nil on error, got=%v", got)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, mock, closeFn := newSourceRepo(t)
+			defer closeFn()
+
+			now := time.Now()
+			mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO sources")).
+				WithArgs(tt.source.Name, tt.source.FeedURL, tt.source.Category, tt.wantLang, true).
+				WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(5), now))
+
+			err := repo.Create(context.Background(), tt.source)
+			require.NoError(t, err)
+			assert.Equal(t, int64(5), tt.source.ID)
+			assert.Equal(t, tt.wantLang, tt.source.Lang)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
 	}
 }
 
 func TestSourceRepo_Create_DatabaseError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
+	repo, mock, closeFn := newSourceRepo(t)
+	defer closeFn()
 
-	now := time.Now()
-	dbError := errors.New("unique constraint violation")
-	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO sources`)).
-		WithArgs("Qiita", "https://qiita.com/feed",
-			&now, true, "RSS", []byte(nil)).
-		WillReturnError(dbError)
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO sources")).
+		WillReturnError(errors.New("duplicate key"))
 
-	repo := postgres.NewSourceRepo(db)
 	err := repo.Create(context.Background(), &entity.Source{
-		Name: "Qiita", FeedURL: "https://qiita.com/feed",
-		LastCrawledAt: &now, Active: true,
-		SourceType: "RSS",
+		Name: "n", FeedURL: "u", Category: "dev",
 	})
-	if err == nil {
-		t.Fatal("Create should return error for database error")
-	}
+	assert.Error(t, err)
 }
 
-func TestSourceRepo_Create_WithScraperConfig(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
+func TestSourceRepo_Update(t *testing.T) {
+	repo, mock, closeFn := newSourceRepo(t)
+	defer closeFn()
 
-	now := time.Now()
-	scraperConfig := &entity.ScraperConfig{
-		ItemSelector: "article",
-		URLPrefix:    "https://example.com",
-	}
-	expectedJSON := []byte(`{"item_selector":"article","url_prefix":"https://example.com"}`)
+	mock.ExpectExec("UPDATE sources").
+		WithArgs("new", "https://u", "ai", "en", false, int64(1)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO sources`)).
-		WithArgs("Webflow", "https://webflow.com/blog",
-			&now, true, "Webflow", expectedJSON).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	repo := postgres.NewSourceRepo(db)
-	err := repo.Create(context.Background(), &entity.Source{
-		Name:           "Webflow",
-		FeedURL:        "https://webflow.com/blog",
-		LastCrawledAt:  &now,
-		Active:         true,
-		SourceType:     "Webflow",
-		ScraperConfig:  scraperConfig,
-	})
-	if err != nil {
-		t.Fatalf("Create err=%v", err)
-	}
-}
-
-func TestSourceRepo_Update_DatabaseError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	now := time.Now()
-	dbError := errors.New("constraint violation")
-	mock.ExpectExec(`UPDATE sources`).
-		WithArgs("Qiita", "https://qiita.com/feed",
-			&now, true, "RSS", []byte(nil), int64(1)).
-		WillReturnError(dbError)
-
-	repo := postgres.NewSourceRepo(db)
 	err := repo.Update(context.Background(), &entity.Source{
-		ID: 1, Name: "Qiita", FeedURL: "https://qiita.com/feed",
-		LastCrawledAt: &now, Active: true,
-		SourceType: "RSS",
+		ID: 1, Name: "new", FeedURL: "https://u",
+		Category: "ai", Lang: "en", Active: false,
 	})
-	if err == nil {
-		t.Fatal("Update should return error for database error")
-	}
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestSourceRepo_Delete_DatabaseError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
+func TestSourceRepo_Update_NoRowsAffected(t *testing.T) {
+	repo, mock, closeFn := newSourceRepo(t)
+	defer closeFn()
 
-	dbError := errors.New("foreign key constraint")
-	mock.ExpectExec(`DELETE FROM sources`).
+	mock.ExpectExec("UPDATE sources").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err := repo.Update(context.Background(), &entity.Source{
+		ID: 99, Name: "n", FeedURL: "u", Category: "dev",
+	})
+	assert.Error(t, err)
+}
+
+func TestSourceRepo_Delete(t *testing.T) {
+	repo, mock, closeFn := newSourceRepo(t)
+	defer closeFn()
+
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM sources WHERE id = $1")).
 		WithArgs(int64(1)).
-		WillReturnError(dbError)
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	repo := postgres.NewSourceRepo(db)
-	err := repo.Delete(context.Background(), 1)
-	if err == nil {
-		t.Fatal("Delete should return error for database error")
-	}
+	require.NoError(t, repo.Delete(context.Background(), 1))
 }
 
-func TestSourceRepo_TouchCrawledAt_DatabaseError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
+func TestSourceRepo_Delete_NoRowsAffected(t *testing.T) {
+	repo, mock, closeFn := newSourceRepo(t)
+	defer closeFn()
 
-	now := time.Now()
-	dbError := errors.New("connection lost")
-	mock.ExpectExec(`UPDATE sources SET last_crawled_at`).
-		WithArgs(now, int64(1)).
-		WillReturnError(dbError)
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM sources WHERE id = $1")).
+		WithArgs(int64(99)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 
-	repo := postgres.NewSourceRepo(db)
-	err := repo.TouchCrawledAt(context.Background(), 1, now)
-	if err == nil {
-		t.Fatal("TouchCrawledAt should return error for database error")
-	}
+	assert.Error(t, repo.Delete(context.Background(), 99))
 }

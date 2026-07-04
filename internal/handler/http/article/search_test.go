@@ -82,7 +82,7 @@ func TestSearchHandler_Success(t *testing.T) {
 				URL:         "https://example.com/go",
 				Summary:     "Learn Go",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			{
 				ID:          2,
@@ -91,7 +91,7 @@ func TestSearchHandler_Success(t *testing.T) {
 				URL:         "https://example.com/go-advanced",
 				Summary:     "Advanced topics",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 		},
 	}
@@ -205,7 +205,7 @@ func TestSearchHandler_MultiKeyword(t *testing.T) {
 				URL:         "https://example.com/go",
 				Summary:     "Learn Go programming",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 		},
 	}
@@ -241,7 +241,7 @@ func TestSearchHandler_WithSourceIDFilter(t *testing.T) {
 				URL:         "https://example.com/test",
 				Summary:     "Test summary",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 		},
 	}
@@ -277,7 +277,7 @@ func TestSearchHandler_WithDateRangeFilter(t *testing.T) {
 				URL:         "https://example.com/test",
 				Summary:     "Test summary",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 		},
 	}
@@ -409,7 +409,7 @@ func TestSearchHandler_AllFilters(t *testing.T) {
 				URL:         "https://example.com/go",
 				Summary:     "Learn Go",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 		},
 	}
@@ -432,4 +432,8 @@ func TestSearchHandler_AllFilters(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("result length = %d, want 1", len(result))
 	}
+}
+
+func (s *stubSearchRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
 }

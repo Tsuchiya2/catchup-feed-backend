@@ -21,15 +21,15 @@ func TestNoOpNotifier_NotifyArticle(t *testing.T) {
 			URL:         "https://example.com/article/1",
 			Summary:     "Test summary",
 			PublishedAt: time.Now(),
-			CreatedAt:   time.Now(),
+			CrawledAt:   time.Now(),
 		}
 
 		source := &entity.Source{
-			ID:            1,
-			Name:          "Test Source",
-			FeedURL:       "https://example.com/feed",
-			LastCrawledAt: &[]time.Time{time.Now()}[0],
-			Active:        true,
+			ID:       1,
+			Name:     "Test Source",
+			FeedURL:  "https://example.com/feed",
+			Category: "dev",
+			Active:   true,
 		}
 
 		// Act

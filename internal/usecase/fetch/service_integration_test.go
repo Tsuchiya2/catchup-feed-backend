@@ -111,7 +111,6 @@ func TestServiceIntegration_ContentEnhancement(t *testing.T) {
 		articleRepo,
 		mockSummarizer,
 		mockFeedFetcher,
-		nil, // webScrapers
 		contentFetcher,
 		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{

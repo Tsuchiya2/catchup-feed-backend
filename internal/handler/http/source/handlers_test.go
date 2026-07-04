@@ -49,9 +49,6 @@ func (s *stubCreateRepo) Update(_ context.Context, _ *entity.Source) error {
 func (s *stubCreateRepo) Delete(_ context.Context, _ int64) error {
 	return nil
 }
-func (s *stubCreateRepo) TouchCrawledAt(_ context.Context, _ int64, _ time.Time) error {
-	return nil
-}
 
 func TestCreateHandler_Success(t *testing.T) {
 	stub := &stubCreateRepo{}
@@ -59,7 +56,8 @@ func TestCreateHandler_Success(t *testing.T) {
 
 	body := `{
 		"name": "Tech Blog",
-		"feedURL": "https://example.com/feed"
+		"feedURL": "https://example.com/feed",
+		"category": "dev"
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/sources", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -77,6 +75,12 @@ func TestCreateHandler_Success(t *testing.T) {
 	if stub.lastSource.FeedURL != "https://example.com/feed" {
 		t.Errorf("FeedURL = %q, want %q", stub.lastSource.FeedURL, "https://example.com/feed")
 	}
+	if stub.lastSource.Category != "dev" {
+		t.Errorf("Category = %q, want %q", stub.lastSource.Category, "dev")
+	}
+	if stub.lastSource.Lang != "en" {
+		t.Errorf("Lang = %q, want default %q", stub.lastSource.Lang, "en")
+	}
 }
 
 func TestCreateHandler_MissingFields(t *testing.T) {
@@ -86,19 +90,23 @@ func TestCreateHandler_MissingFields(t *testing.T) {
 	}{
 		{
 			name: "missing name",
-			body: `{"feedURL": "https://example.com/feed"}`,
+			body: `{"feedURL": "https://example.com/feed", "category": "dev"}`,
 		},
 		{
 			name: "missing feedURL",
-			body: `{"name": "Test"}`,
+			body: `{"name": "Test", "category": "dev"}`,
+		},
+		{
+			name: "missing category",
+			body: `{"name": "Test", "feedURL": "https://example.com/feed"}`,
 		},
 		{
 			name: "empty name",
-			body: `{"name": "", "feedURL": "https://example.com/feed"}`,
+			body: `{"name": "", "feedURL": "https://example.com/feed", "category": "dev"}`,
 		},
 		{
 			name: "empty feedURL",
-			body: `{"name": "Test", "feedURL": ""}`,
+			body: `{"name": "Test", "feedURL": "", "category": "dev"}`,
 		},
 	}
 
@@ -179,9 +187,6 @@ func (s *stubUpdateRepo) Create(_ context.Context, _ *entity.Source) error {
 	return nil
 }
 func (s *stubUpdateRepo) Delete(_ context.Context, _ int64) error {
-	return nil
-}
-func (s *stubUpdateRepo) TouchCrawledAt(_ context.Context, _ int64, _ time.Time) error {
 	return nil
 }
 
@@ -288,9 +293,6 @@ func (s *stubDeleteRepo) Create(_ context.Context, _ *entity.Source) error {
 func (s *stubDeleteRepo) Update(_ context.Context, _ *entity.Source) error {
 	return nil
 }
-func (s *stubDeleteRepo) TouchCrawledAt(_ context.Context, _ int64, _ time.Time) error {
-	return nil
-}
 
 func TestDeleteHandler_Success(t *testing.T) {
 	stub := &stubDeleteRepo{}
@@ -366,20 +368,18 @@ func (s *stubSearchRepo) Update(_ context.Context, _ *entity.Source) error {
 func (s *stubSearchRepo) Delete(_ context.Context, _ int64) error {
 	return nil
 }
-func (s *stubSearchRepo) TouchCrawledAt(_ context.Context, _ int64, _ time.Time) error {
-	return nil
-}
 
 func TestSearchHandler_Success(t *testing.T) {
 	now := time.Now()
 	stub := &stubSearchRepo{
 		sources: []*entity.Source{
 			{
-				ID:            1,
-				Name:          "Tech Blog",
-				FeedURL:       "https://example.com/feed",
-				LastCrawledAt: &now,
-				Active:        true,
+				ID:        1,
+				Name:      "Tech Blog",
+				FeedURL:   "https://example.com/feed",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    true,
 			},
 		},
 	}
@@ -459,11 +459,12 @@ func TestSearchHandler_MultiKeyword(t *testing.T) {
 	stub := &stubSearchRepo{
 		sources: []*entity.Source{
 			{
-				ID:            1,
-				Name:          "Go Official Blog",
-				FeedURL:       "https://go.dev/blog/feed",
-				LastCrawledAt: &now,
-				Active:        true,
+				ID:        1,
+				Name:      "Go Official Blog",
+				FeedURL:   "https://go.dev/blog/feed",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    true,
 			},
 		},
 	}
@@ -488,22 +489,23 @@ func TestSearchHandler_MultiKeyword(t *testing.T) {
 	}
 }
 
-func TestSearchHandler_WithSourceTypeFilter(t *testing.T) {
+func TestSearchHandler_WithCategoryFilter(t *testing.T) {
 	now := time.Now()
 	stub := &stubSearchRepo{
 		sources: []*entity.Source{
 			{
-				ID:            1,
-				Name:          "RSS Feed",
-				FeedURL:       "https://example.com/feed",
-				LastCrawledAt: &now,
-				Active:        true,
+				ID:        1,
+				Name:      "RSS Feed",
+				FeedURL:   "https://example.com/feed",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    true,
 			},
 		},
 	}
 	handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
 
-	req := httptest.NewRequest(http.MethodGet, "/sources/search?keyword=RSS&source_type=RSS", nil)
+	req := httptest.NewRequest(http.MethodGet, "/sources/search?keyword=RSS&category=dev", nil)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -527,11 +529,12 @@ func TestSearchHandler_WithActiveFilter(t *testing.T) {
 	stub := &stubSearchRepo{
 		sources: []*entity.Source{
 			{
-				ID:            1,
-				Name:          "Active Source",
-				FeedURL:       "https://example.com/feed",
-				LastCrawledAt: &now,
-				Active:        true,
+				ID:        1,
+				Name:      "Active Source",
+				FeedURL:   "https://example.com/feed",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    true,
 			},
 		},
 	}
@@ -559,20 +562,6 @@ func TestSearchHandler_WithActiveFilter(t *testing.T) {
 	}
 }
 
-func TestSearchHandler_InvalidSourceType(t *testing.T) {
-	stub := &stubSearchRepo{}
-	handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
-
-	req := httptest.NewRequest(http.MethodGet, "/sources/search?keyword=test&source_type=InvalidType", nil)
-	rr := httptest.NewRecorder()
-
-	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusBadRequest)
-	}
-}
-
 func TestSearchHandler_InvalidActiveValue(t *testing.T) {
 	stub := &stubSearchRepo{}
 	handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
@@ -592,17 +581,18 @@ func TestSearchHandler_AllFiltersCombined(t *testing.T) {
 	stub := &stubSearchRepo{
 		sources: []*entity.Source{
 			{
-				ID:            1,
-				Name:          "Go RSS Feed",
-				FeedURL:       "https://go.dev/feed",
-				LastCrawledAt: &now,
-				Active:        true,
+				ID:        1,
+				Name:      "Go RSS Feed",
+				FeedURL:   "https://go.dev/feed",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    true,
 			},
 		},
 	}
 	handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
 
-	req := httptest.NewRequest(http.MethodGet, "/sources/search?keyword=Go+RSS&source_type=RSS&active=true", nil)
+	req := httptest.NewRequest(http.MethodGet, "/sources/search?keyword=Go+RSS&category=dev&active=true", nil)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -627,37 +617,6 @@ func TestSearchHandler_AllFiltersCombined(t *testing.T) {
 	}
 }
 
-func TestSearchHandler_ValidSourceTypes(t *testing.T) {
-	tests := []struct {
-		name       string
-		sourceType string
-		wantCode   int
-	}{
-		{"RSS", "RSS", http.StatusOK},
-		{"Webflow", "Webflow", http.StatusOK},
-		{"NextJS", "NextJS", http.StatusOK},
-		{"Remix", "Remix", http.StatusOK},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			stub := &stubSearchRepo{
-				sources: []*entity.Source{},
-			}
-			handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
-
-			req := httptest.NewRequest(http.MethodGet, "/sources/search?keyword=test&source_type="+tt.sourceType, nil)
-			rr := httptest.NewRecorder()
-
-			handler.ServeHTTP(rr, req)
-
-			if rr.Code != tt.wantCode {
-				t.Fatalf("status code = %d, want %d", rr.Code, tt.wantCode)
-			}
-		})
-	}
-}
-
 /* ───────── Filter-Only Search Tests (TASK-004) ───────── */
 
 // TestSearchHandler_NoKeyword_NoFilters verifies empty keyword is accepted and returns all sources
@@ -666,18 +625,20 @@ func TestSearchHandler_NoKeyword_NoFilters(t *testing.T) {
 	stub := &stubSearchRepo{
 		sources: []*entity.Source{
 			{
-				ID:            1,
-				Name:          "Tech Blog",
-				FeedURL:       "https://example.com/feed",
-				LastCrawledAt: &now,
-				Active:        true,
+				ID:        1,
+				Name:      "Tech Blog",
+				FeedURL:   "https://example.com/feed",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    true,
 			},
 			{
-				ID:            2,
-				Name:          "News Site",
-				FeedURL:       "https://news.example.com/feed",
-				LastCrawledAt: &now,
-				Active:        false,
+				ID:        2,
+				Name:      "News Site",
+				FeedURL:   "https://news.example.com/feed",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    false,
 			},
 		},
 	}
@@ -702,24 +663,24 @@ func TestSearchHandler_NoKeyword_NoFilters(t *testing.T) {
 	}
 }
 
-// TestSearchHandler_NoKeyword_SourceTypeFilter verifies source_type filter works without keyword
-func TestSearchHandler_NoKeyword_SourceTypeFilter(t *testing.T) {
+// TestSearchHandler_NoKeyword_CategoryFilter verifies category filter works without keyword
+func TestSearchHandler_NoKeyword_CategoryFilter(t *testing.T) {
 	now := time.Now()
 	stub := &stubSearchRepo{
 		sources: []*entity.Source{
 			{
-				ID:            1,
-				Name:          "RSS Feed",
-				FeedURL:       "https://example.com/feed",
-				SourceType:    "RSS",
-				LastCrawledAt: &now,
-				Active:        true,
+				ID:        1,
+				Name:      "RSS Feed",
+				FeedURL:   "https://example.com/feed",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    true,
 			},
 		},
 	}
 	handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
 
-	req := httptest.NewRequest(http.MethodGet, "/sources/search?source_type=RSS", nil)
+	req := httptest.NewRequest(http.MethodGet, "/sources/search?category=dev", nil)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -736,8 +697,8 @@ func TestSearchHandler_NoKeyword_SourceTypeFilter(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("result length = %d, want 1", len(result))
 	}
-	if result[0].SourceType != "RSS" {
-		t.Errorf("SourceType = %q, want %q", result[0].SourceType, "RSS")
+	if result[0].Category != "dev" {
+		t.Errorf("Category = %q, want %q", result[0].Category, "dev")
 	}
 }
 
@@ -747,18 +708,20 @@ func TestSearchHandler_NoKeyword_ActiveFilter(t *testing.T) {
 	stub := &stubSearchRepo{
 		sources: []*entity.Source{
 			{
-				ID:            1,
-				Name:          "Active Source",
-				FeedURL:       "https://example.com/feed",
-				LastCrawledAt: &now,
-				Active:        true,
+				ID:        1,
+				Name:      "Active Source",
+				FeedURL:   "https://example.com/feed",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    true,
 			},
 			{
-				ID:            2,
-				Name:          "Another Active",
-				FeedURL:       "https://example2.com/feed",
-				LastCrawledAt: &now,
-				Active:        true,
+				ID:        2,
+				Name:      "Another Active",
+				FeedURL:   "https://example2.com/feed",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    true,
 			},
 		},
 	}
@@ -794,18 +757,18 @@ func TestSearchHandler_NoKeyword_MultipleFilters(t *testing.T) {
 	stub := &stubSearchRepo{
 		sources: []*entity.Source{
 			{
-				ID:            1,
-				Name:          "Active RSS Feed",
-				FeedURL:       "https://example.com/feed",
-				SourceType:    "RSS",
-				LastCrawledAt: &now,
-				Active:        true,
+				ID:        1,
+				Name:      "Active RSS Feed",
+				FeedURL:   "https://example.com/feed",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    true,
 			},
 		},
 	}
 	handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
 
-	req := httptest.NewRequest(http.MethodGet, "/sources/search?source_type=RSS&active=true", nil)
+	req := httptest.NewRequest(http.MethodGet, "/sources/search?category=dev&active=true", nil)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -822,8 +785,8 @@ func TestSearchHandler_NoKeyword_MultipleFilters(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("result length = %d, want 1", len(result))
 	}
-	if result[0].SourceType != "RSS" {
-		t.Errorf("SourceType = %q, want %q", result[0].SourceType, "RSS")
+	if result[0].Category != "dev" {
+		t.Errorf("Category = %q, want %q", result[0].Category, "dev")
 	}
 	if !result[0].Active {
 		t.Errorf("Active = %v, want true", result[0].Active)
@@ -836,18 +799,18 @@ func TestSearchHandler_BackwardCompatibility(t *testing.T) {
 	stub := &stubSearchRepo{
 		sources: []*entity.Source{
 			{
-				ID:            1,
-				Name:          "GitHub Blog",
-				FeedURL:       "https://github.blog/feed",
-				SourceType:    "RSS",
-				LastCrawledAt: &now,
-				Active:        true,
+				ID:        1,
+				Name:      "GitHub Blog",
+				FeedURL:   "https://github.blog/feed",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    true,
 			},
 		},
 	}
 	handler := source.SearchHandler{Svc: srcUC.Service{Repo: stub}}
 
-	req := httptest.NewRequest(http.MethodGet, "/sources/search?keyword=github&source_type=RSS&active=true", nil)
+	req := httptest.NewRequest(http.MethodGet, "/sources/search?keyword=github&category=dev&active=true", nil)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)

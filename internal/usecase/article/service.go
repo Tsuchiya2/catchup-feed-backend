@@ -11,11 +11,13 @@ import (
 )
 
 // CreateInput represents the input parameters for creating a new article.
+// Summaries are produced by the crawl pipeline (worker) and are not part of
+// manual article creation (§4: summaries is a separate table).
 type CreateInput struct {
 	SourceID    int64
 	Title       string
 	URL         string
-	Summary     string
+	Content     string
 	PublishedAt time.Time
 }
 
@@ -26,7 +28,7 @@ type UpdateInput struct {
 	SourceID    *int64
 	Title       *string
 	URL         *string
-	Summary     *string
+	Content     *string
 	PublishedAt *time.Time
 }
 
@@ -234,9 +236,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) error {
 		SourceID:    in.SourceID,
 		Title:       in.Title,
 		URL:         in.URL,
-		Summary:     in.Summary,
+		Content:     in.Content,
 		PublishedAt: in.PublishedAt,
-		CreatedAt:   time.Now(),
+		CrawledAt:   time.Now(),
 	}
 
 	if err := s.Repo.Create(ctx, art); err != nil {
@@ -282,8 +284,8 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) error {
 		}
 		art.URL = *in.URL
 	}
-	if in.Summary != nil {
-		art.Summary = *in.Summary
+	if in.Content != nil {
+		art.Content = *in.Content
 	}
 	if in.PublishedAt != nil {
 		art.PublishedAt = *in.PublishedAt

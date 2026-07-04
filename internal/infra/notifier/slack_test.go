@@ -34,7 +34,7 @@ func TestSlackNotifier_buildBlockKitPayload(t *testing.T) {
 			URL:         "https://example.com/article/1",
 			Summary:     "This is a test article summary with some content.",
 			PublishedAt: publishedAt,
-			CreatedAt:   time.Now(),
+			CrawledAt:   time.Now(),
 		}
 
 		source := &entity.Source{
@@ -943,7 +943,7 @@ func TestSlackNotifier_NotifyArticle(t *testing.T) {
 			URL:         "https://example.com/article/123",
 			Summary:     "This is a test article summary.",
 			PublishedAt: time.Now(),
-			CreatedAt:   time.Now(),
+			CrawledAt:   time.Now(),
 		}
 
 		source := &entity.Source{

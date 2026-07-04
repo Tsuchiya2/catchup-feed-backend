@@ -19,28 +19,29 @@ type CreateHandler struct{ Svc srcUC.Service }
 // @Accept       json
 // @Produce      json
 // @Param        source body object true "ソース情報"
-// @Success      201 "Created" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer)
+// @Success      201 "Created"
 // @Failure      400 {string} string "Bad request - invalid input"
 // @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
-// @Failure      403 {string} string "Forbidden - admin role required"
-// @Failure      429 {string} string "Too many requests - rate limit exceeded" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer,Retry-After=integer)
 // @Router       /sources [post]
 func (h CreateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name    string `json:"name"`
-		FeedURL string `json:"feedURL"`
+		Name     string `json:"name"`
+		FeedURL  string `json:"feedURL"`
+		Category string `json:"category"`
+		Lang     string `json:"lang"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respond.SafeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if req.Name == "" || req.FeedURL == "" {
+	if req.Name == "" || req.FeedURL == "" || req.Category == "" {
 		respond.SafeError(w, http.StatusBadRequest,
-			errors.New("name and feedURL required"))
+			errors.New("name, feedURL and category required"))
 		return
 	}
 	err := h.Svc.Create(r.Context(), srcUC.CreateInput{
 		Name: req.Name, FeedURL: req.FeedURL,
+		Category: req.Category, Lang: req.Lang,
 	})
 	if err != nil {
 		respond.SafeError(w, http.StatusBadRequest, err)

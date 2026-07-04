@@ -144,15 +144,6 @@ func setupFetchService(logger *slog.Logger, database *sql.DB, notifyService noti
 	httpClient := createHTTPClient()
 	feedFetcher := scraper.NewRSSFetcher(httpClient)
 
-	// Create web scraper HTTP client with SSRF protection
-	webScraperClient := createWebScraperHTTPClient()
-
-	// Create web scraper factory and generate scrapers
-	scraperFactory := scraper.NewScraperFactory(webScraperClient)
-	webScrapers := scraperFactory.CreateScrapers()
-	logger.Info("Web scrapers initialized",
-		slog.Int("count", len(webScrapers)))
-
 	// Load content fetch configuration from environment
 	contentFetchConfig, err := fetcher.LoadConfigFromEnv()
 	if err != nil {
@@ -187,7 +178,6 @@ func setupFetchService(logger *slog.Logger, database *sql.DB, notifyService noti
 		artRepo,
 		sum,
 		feedFetcher,
-		webScrapers, // Web scraper registry
 		contentFetcher,
 		notifyService,
 		fetchConfig,
@@ -222,23 +212,6 @@ func createHTTPClient() *http.Client {
 				MinVersion: tls.VersionTLS12, // Enforce TLS 1.2+
 			},
 		},
-	}
-}
-
-// createWebScraperHTTPClient creates an HTTP client for web scraping with SSRF protection.
-// It has shorter timeouts and validates redirects to prevent security issues.
-func createWebScraperHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: 10 * time.Second, // Shorter timeout for scraping
-		Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12, // Enforce TLS 1.2+
-			},
-		},
-		// Redirect validation is handled by the scraper implementations
 	}
 }
 

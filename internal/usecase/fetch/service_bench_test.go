@@ -43,7 +43,6 @@ func BenchmarkCrawlAllSources_SmallFeed(b *testing.B) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
@@ -95,7 +94,6 @@ func BenchmarkCrawlAllSources_LargeFeed(b *testing.B) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
@@ -152,7 +150,6 @@ func BenchmarkCrawlAllSources_MultipleSources(b *testing.B) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
@@ -210,7 +207,6 @@ func BenchmarkCrawlAllSources_WithDuplicates(b *testing.B) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{

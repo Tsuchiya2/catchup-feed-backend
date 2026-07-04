@@ -99,7 +99,7 @@ func TestService_ListWithSourcePaginated(t *testing.T) {
 				URL:         "https://example.com/1",
 				Summary:     "Summary 1",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Test Source",
 		},
@@ -111,20 +111,20 @@ func TestService_ListWithSourcePaginated(t *testing.T) {
 				URL:         "https://example.com/2",
 				Summary:     "Summary 2",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Test Source",
 		},
 	}
 
 	tests := []struct {
-		name          string
-		params        pagination.Params
-		mockArticles  []repository.ArticleWithSource
+		name           string
+		params         pagination.Params
+		mockArticles   []repository.ArticleWithSource
 		mockTotalCount int64
-		wantDataLen   int
-		wantTotal     int64
-		wantPage      int
+		wantDataLen    int
+		wantTotal      int64
+		wantPage       int
 		wantTotalPages int
 	}{
 		{
@@ -133,11 +133,11 @@ func TestService_ListWithSourcePaginated(t *testing.T) {
 				Page:  1,
 				Limit: 20,
 			},
-			mockArticles:  mockArticles,
+			mockArticles:   mockArticles,
 			mockTotalCount: 150,
-			wantDataLen:   2,
-			wantTotal:     150,
-			wantPage:      1,
+			wantDataLen:    2,
+			wantTotal:      150,
+			wantPage:       1,
 			wantTotalPages: 8,
 		},
 		{
@@ -146,11 +146,11 @@ func TestService_ListWithSourcePaginated(t *testing.T) {
 				Page:  2,
 				Limit: 20,
 			},
-			mockArticles:  nil, // Will be generated in the test
+			mockArticles:   nil, // Will be generated in the test
 			mockTotalCount: 150,
-			wantDataLen:   20,
-			wantTotal:     150,
-			wantPage:      2,
+			wantDataLen:    20,
+			wantTotal:      150,
+			wantPage:       2,
 			wantTotalPages: 8,
 		},
 		{
@@ -159,11 +159,11 @@ func TestService_ListWithSourcePaginated(t *testing.T) {
 				Page:  1,
 				Limit: 20,
 			},
-			mockArticles:  mockArticles,
+			mockArticles:   mockArticles,
 			mockTotalCount: 10,
-			wantDataLen:   2,
-			wantTotal:     10,
-			wantPage:      1,
+			wantDataLen:    2,
+			wantTotal:      10,
+			wantPage:       1,
 			wantTotalPages: 1,
 		},
 		{
@@ -172,11 +172,11 @@ func TestService_ListWithSourcePaginated(t *testing.T) {
 				Page:  1,
 				Limit: 20,
 			},
-			mockArticles:  mockArticles,
+			mockArticles:   mockArticles,
 			mockTotalCount: 20,
-			wantDataLen:   2,
-			wantTotal:     20,
-			wantPage:      1,
+			wantDataLen:    2,
+			wantTotal:      20,
+			wantPage:       1,
 			wantTotalPages: 1,
 		},
 		{
@@ -185,11 +185,11 @@ func TestService_ListWithSourcePaginated(t *testing.T) {
 				Page:  1,
 				Limit: 20,
 			},
-			mockArticles:  []repository.ArticleWithSource{},
+			mockArticles:   []repository.ArticleWithSource{},
 			mockTotalCount: 0,
-			wantDataLen:   0,
-			wantTotal:     0,
-			wantPage:      1,
+			wantDataLen:    0,
+			wantTotal:      0,
+			wantPage:       1,
 			wantTotalPages: 1,
 		},
 	}
@@ -207,7 +207,7 @@ func TestService_ListWithSourcePaginated(t *testing.T) {
 						URL:         "https://example.com/" + string(rune(i+1)),
 						Summary:     "Summary " + string(rune(i+1)),
 						PublishedAt: now,
-						CreatedAt:   now,
+						CrawledAt:   now,
 					},
 					SourceName: "Test Source",
 				}
@@ -221,7 +221,7 @@ func TestService_ListWithSourcePaginated(t *testing.T) {
 
 			mock := &mockArticleRepo{
 				articlesWithSrc: mockData,
-				totalCount:     tt.mockTotalCount,
+				totalCount:      tt.mockTotalCount,
 			}
 
 			svc := article.Service{Repo: mock}
@@ -295,10 +295,10 @@ func TestService_ListWithSourcePaginated_OffsetCalculation(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		page        int
-		limit       int
-		wantOffset  int
+		name       string
+		page       int
+		limit      int
+		wantOffset int
 	}{
 		{
 			name:       "page 1",
@@ -329,4 +329,8 @@ func TestService_ListWithSourcePaginated_OffsetCalculation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (s *mockArticleRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
 }

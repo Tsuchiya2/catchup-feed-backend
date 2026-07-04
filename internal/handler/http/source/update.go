@@ -21,12 +21,10 @@ type UpdateHandler struct{ Svc srcUC.Service }
 // @Produce      json
 // @Param        id path int true "ソースID"
 // @Param        source body object true "更新するソース情報"
-// @Success      204 "No Content" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer)
+// @Success      204 "No Content"
 // @Failure      400 {string} string "Bad request - invalid input"
 // @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
-// @Failure      403 {string} string "Forbidden - admin role required"
 // @Failure      404 {string} string "Not found - source not found"
-// @Failure      429 {string} string "Too many requests - rate limit exceeded" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer,Retry-After=integer)
 // @Router       /sources/{id} [put]
 func (h UpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := pathutil.ExtractID(r.URL.Path, "/sources/")
@@ -36,9 +34,11 @@ func (h UpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name   string `json:"name"`
-		Feed   string `json:"feedURL"`
-		Active *bool  `json:"active"`
+		Name     string `json:"name"`
+		Feed     string `json:"feedURL"`
+		Category string `json:"category"`
+		Lang     string `json:"lang"`
+		Active   *bool  `json:"active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respond.SafeError(w, http.StatusBadRequest, err)
@@ -47,6 +47,7 @@ func (h UpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	err = h.Svc.Update(r.Context(), srcUC.UpdateInput{
 		ID: id, Name: req.Name, FeedURL: req.Feed,
+		Category: req.Category, Lang: req.Lang,
 		Active: req.Active,
 	})
 	if err != nil {

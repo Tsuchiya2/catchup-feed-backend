@@ -216,7 +216,7 @@ func TestService_Create_success(t *testing.T) {
 
 	in := artUC.CreateInput{
 		SourceID: 1, Title: "t", URL: "https://example.com/article",
-		Summary: "s", PublishedAt: time.Now(),
+		Content: "c", PublishedAt: time.Now(),
 	}
 	if err := svc.Create(context.Background(), in); err != nil {
 		t.Fatalf("Create err=%v", err)
@@ -530,7 +530,7 @@ func TestService_Create_detailedValidation(t *testing.T) {
 				SourceID:    1,
 				Title:       "Test",
 				URL:         "https://example.com",
-				Summary:     "Summary",
+				Content:     "Content",
 				PublishedAt: time.Now(),
 			},
 			wantErr: true,
@@ -702,16 +702,16 @@ func TestService_Update_fieldUpdates(t *testing.T) {
 			},
 		},
 		{
-			name: "update summary",
+			name: "update content",
 			input: artUC.UpdateInput{
 				ID: 1,
 			},
 			setupRepo: func(s *stubRepo) {
-				s.data[1] = &entity.Article{ID: 1, SourceID: 1, Title: "Title", URL: "https://example.com/1", Summary: "Old", PublishedAt: now}
+				s.data[1] = &entity.Article{ID: 1, SourceID: 1, Title: "Title", URL: "https://example.com/1", Content: "Old", PublishedAt: now}
 			},
 			verify: func(t *testing.T, s *stubRepo) {
-				if s.data[1].Summary != "New Summary" {
-					t.Errorf("Summary not updated, got %s want 'New Summary'", s.data[1].Summary)
+				if s.data[1].Content != "New Content" {
+					t.Errorf("Content not updated, got %s want 'New Content'", s.data[1].Content)
 				}
 			},
 		},
@@ -757,9 +757,9 @@ func TestService_Update_fieldUpdates(t *testing.T) {
 			case "update source id":
 				newSourceID := int64(2)
 				input.SourceID = &newSourceID
-			case "update summary":
-				newSummary := "New Summary"
-				input.Summary = &newSummary
+			case "update content":
+				newContent := "New Content"
+				input.Content = &newContent
 			case "update published at":
 				input.PublishedAt = &newTime
 			case "update url":
@@ -1263,9 +1263,9 @@ func TestService_SearchWithFiltersPaginated_InvalidPage(t *testing.T) {
 	svc := artUC.Service{Repo: stub}
 
 	tests := []struct {
-		name          string
-		page          int
-		expectedPage  int
+		name         string
+		page         int
+		expectedPage int
 	}{
 		{"negative page defaults to 1", -1, 1},
 		{"zero page defaults to 1", 0, 1},
@@ -1357,4 +1357,8 @@ func TestService_SearchWithFiltersPaginated_PaginationCalculation(t *testing.T) 
 			}
 		})
 	}
+}
+
+func (s *stubRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
 }

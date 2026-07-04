@@ -65,7 +65,6 @@ func newProviderTestService(summarizer fetchUC.Summarizer, artRepo *stubArticleR
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
 		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{Parallelism: 10, Threshold: 1500},
@@ -123,8 +122,8 @@ func TestService_CrawlAllSources_ProviderChainParentCanceled_Aborts(t *testing.T
 }
 
 // TestService_CrawlAllSources_ProviderRecorded verifies the happy path of the
-// ProviderSummarizer interface: summaries produced through the chain are
-// stored and the crawl completes.
+// ProviderSummarizer interface: the summary body AND the provider name
+// reported by the fallback chain are persisted to summaries (§4).
 func TestService_CrawlAllSources_ProviderRecorded(t *testing.T) {
 	now := time.Now()
 	items := []fetchUC.FeedItem{
@@ -141,4 +140,9 @@ func TestService_CrawlAllSources_ProviderRecorded(t *testing.T) {
 	assert.Equal(t, int64(1), stats.Inserted)
 	require.Len(t, artRepo.articles, 1)
 	assert.Equal(t, "Summary: content 1", artRepo.articles[0].Summary)
+
+	sum := artRepo.summaries[artRepo.articles[0].ID]
+	require.NotNil(t, sum, "summary must be persisted")
+	assert.Equal(t, "Summary: content 1", sum.Body)
+	assert.Equal(t, "gemini", sum.Provider, "summaries.provider records the chain leg that succeeded")
 }

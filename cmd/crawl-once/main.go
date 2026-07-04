@@ -93,14 +93,6 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 	httpClient := createHTTPClient()
 	feedFetcher := scraper.NewRSSFetcher(httpClient)
 
-	// Create web scraper HTTP client
-	webScraperClient := createWebScraperHTTPClient()
-
-	// Create web scraper factory and generate scrapers
-	scraperFactory := scraper.NewScraperFactory(webScraperClient)
-	webScrapers := scraperFactory.CreateScrapers()
-	logger.Info("Web scrapers initialized", slog.Int("count", len(webScrapers)))
-
 	// Load content fetch configuration from environment
 	contentFetchConfig, err := fetcher.LoadConfigFromEnv()
 	if err != nil {
@@ -135,7 +127,6 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 		artRepo,
 		sum,
 		feedFetcher,
-		webScrapers,
 		contentFetcher,
 		notifyService,
 		fetchConfig,
@@ -158,20 +149,6 @@ func createSummarizer(logger *slog.Logger) fetchUC.Summarizer {
 func createHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-			},
-		},
-	}
-}
-
-func createWebScraperHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			MaxIdleConns:        100,
 			MaxIdleConnsPerHost: 10,

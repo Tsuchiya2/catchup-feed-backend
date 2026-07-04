@@ -14,9 +14,6 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// scraperConfigKey is the context key for ScraperConfig.
-type scraperConfigKey string
-
 const (
 	summarizerParallelism = 5 // AI summarization parallelism (rate-limited)
 )
@@ -48,8 +45,7 @@ type Service struct {
 	ArticleRepo    repository.ArticleRepository
 	Summarizer     Summarizer
 	FeedFetcher    FeedFetcher
-	WebScrapers    map[string]FeedFetcher // Web scraper registry for non-RSS sources
-	ContentFetcher ContentFetcher         // Content enhancement for B-rated feeds
+	ContentFetcher ContentFetcher // Content enhancement for B-rated feeds
 	NotifyService  notify.Service
 	contentConfig  ContentFetchConfig // Configuration for content fetching behavior
 }
@@ -61,9 +57,8 @@ type Summarizer interface {
 
 // ProviderSummarizer is optionally implemented by summarizers that can report
 // which backend produced the summary (e.g. the Gemini -> Groq -> Ollama
-// fallback chain). The provider name maps to summaries.provider in the
-// pulse schema; until that schema lands it is recorded in logs (§8:
-// fallback occurrences must be observable after the fact).
+// fallback chain). The provider name is persisted to summaries.provider
+// (§4, §8: fallback occurrences must be observable after the fact).
 type ProviderSummarizer interface {
 	SummarizeWithProvider(ctx context.Context, text string) (summary string, provider string, err error)
 }
@@ -73,10 +68,10 @@ type ProviderSummarizer interface {
 //
 // Parameters:
 //   - sourceRepo: Repository for managing feed sources
-//   - articleRepo: Repository for managing articles
+//   - articleRepo: Repository for managing articles (articles + summaries
+//     are persisted atomically via CreateWithSummary)
 //   - summarizer: AI service for text summarization
 //   - feedFetcher: Service for fetching RSS/Atom feeds
-//   - webScrapers: Map of web scrapers for non-RSS sources (can be nil to disable)
 //   - contentFetcher: Service for fetching full article content (can be nil to disable)
 //   - notifyService: Service for sending notifications
 //   - contentConfig: Configuration for content fetching behavior (parallelism, threshold)
@@ -87,14 +82,12 @@ type ProviderSummarizer interface {
 // Example:
 //
 //	config := ContentFetchConfig{Parallelism: 10, Threshold: 1500}
-//	scrapers := scraperFactory.CreateScrapers()
-//	service := NewService(sourceRepo, articleRepo, summarizer, feedFetcher, scrapers, contentFetcher, notifyService, config)
+//	service := NewService(sourceRepo, articleRepo, summarizer, feedFetcher, contentFetcher, notifyService, config)
 func NewService(
 	sourceRepo repository.SourceRepository,
 	articleRepo repository.ArticleRepository,
 	summarizer Summarizer,
 	feedFetcher FeedFetcher,
-	webScrapers map[string]FeedFetcher,
 	contentFetcher ContentFetcher,
 	notifyService notify.Service,
 	contentConfig ContentFetchConfig,
@@ -104,7 +97,6 @@ func NewService(
 		ArticleRepo:    articleRepo,
 		Summarizer:     summarizer,
 		FeedFetcher:    feedFetcher,
-		WebScrapers:    webScrapers,
 		ContentFetcher: contentFetcher,
 		NotifyService:  notifyService,
 		contentConfig:  contentConfig,
@@ -158,47 +150,15 @@ func (s *Service) CrawlAllSources(ctx context.Context) (*CrawlStats, error) {
 	return stats, nil
 }
 
-// selectFetcher chooses the appropriate fetcher based on the source type.
-// It returns the RSS fetcher for RSS sources, or the appropriate web scraper for other types.
-// Falls back to RSS fetcher if the source type is unknown.
-func (s *Service) selectFetcher(src *entity.Source) FeedFetcher {
-	// Default to RSS for empty source type (backward compatibility)
-	if src.SourceType == "" || src.SourceType == "RSS" {
-		return s.FeedFetcher
-	}
-
-	// Look up web scraper for this source type
-	if s.WebScrapers != nil {
-		if fetcher, exists := s.WebScrapers[src.SourceType]; exists {
-			return fetcher
-		}
-	}
-
-	// Unknown source type - log warning and fallback to RSS
-	slog.Warn("unknown source type, falling back to RSS fetcher",
-		slog.String("source_type", src.SourceType),
-		slog.Int64("source_id", src.ID),
-		slog.String("source_name", src.Name))
-	return s.FeedFetcher
-}
-
 // processSingleSource processes a single feed source by fetching, deduplicating,
 // summarizing, and storing articles. It updates the provided stats atomically.
-// Returns error only for critical failures (summarizer errors, timestamp updates).
+// Returns error only for critical failures (database errors).
 // Logs and continues for recoverable failures (fetch errors, batch check errors).
 func (s *Service) processSingleSource(ctx context.Context, src *entity.Source, stats *CrawlStats) error {
 	logger := slog.Default()
 	sourceStart := time.Now()
 
-	// Select appropriate fetcher based on source type
-	fetcher := s.selectFetcher(src)
-
-	// Add scraper config to context for web scrapers
-	if src.ScraperConfig != nil {
-		ctx = context.WithValue(ctx, scraperConfigKey("scraper_config"), src.ScraperConfig)
-	}
-
-	feedItems, err := fetcher.Fetch(ctx, src.FeedURL)
+	feedItems, err := s.FeedFetcher.Fetch(ctx, src.FeedURL)
 	if err != nil {
 		logger.Warn("failed to fetch feed",
 			slog.Int64("source_id", src.ID),
@@ -235,11 +195,6 @@ func (s *Service) processSingleSource(ctx context.Context, src *entity.Source, s
 
 	if err := s.processFeedItems(ctx, src, feedItems, existsMap, stats); err != nil {
 		return fmt.Errorf("process feed items: %w", err)
-	}
-
-	safeCtx := context.WithoutCancel(ctx)
-	if err := s.SourceRepo.TouchCrawledAt(safeCtx, src.ID, time.Now()); err != nil {
-		return fmt.Errorf("update source crawled timestamp: %w", err)
 	}
 
 	sourceDuration := time.Since(sourceStart)
@@ -322,27 +277,33 @@ func (s *Service) processFeedItems(
 				return nil // Continue processing other articles
 			}
 
+			// Persist article + summary atomically: a summary failure rolls
+			// the article back, so no article can end up permanently
+			// unsummarized — the URL stays unknown and the next hourly
+			// crawl retries it (§8). summaries.provider records which
+			// chain leg produced the summary (§4 fallback observability).
+			if provider == "" {
+				provider = entity.SummaryProviderUnknown
+			}
 			art := &entity.Article{
 				SourceID:    src.ID,
 				Title:       item.Title,
 				URL:         item.URL,
-				Summary:     summary,
+				Content:     content,
+				Summary:     summary, // read-only join field; persisted via summaries row below
 				PublishedAt: item.PublishedAt,
-				CreatedAt:   time.Now(),
+				CrawledAt:   time.Now(),
 			}
-			if err := s.ArticleRepo.Create(egCtx, art); err != nil {
-				return fmt.Errorf("create article in repository: %w", err)
+			sum := &entity.Summary{Body: summary, Provider: provider}
+			if err := s.ArticleRepo.CreateWithSummary(egCtx, art, sum); err != nil {
+				return fmt.Errorf("create article with summary in repository: %w", err)
 			}
 			atomic.AddInt64(&stats.Inserted, 1)
 
-			// Record which provider produced the summary (summaries.provider
-			// equivalent; log-based until the pulse schema lands).
-			if provider != "" {
-				slog.Info("article summarized",
-					slog.Int64("article_id", art.ID),
-					slog.String("url", art.URL),
-					slog.String("summary_provider", provider))
-			}
+			slog.Info("article summarized",
+				slog.Int64("article_id", art.ID),
+				slog.String("url", art.URL),
+				slog.String("summary_provider", provider))
 
 			// Notify about new article (non-blocking)
 			// Note: NotifyService handles goroutines internally, no need for go func() here

@@ -50,7 +50,18 @@ type ArticleRepository interface {
 	// Returns articles matching the criteria with LIMIT and OFFSET applied.
 	// Includes source_name from JOIN with sources table.
 	SearchWithFiltersPaginated(ctx context.Context, keywords []string, filters ArticleSearchFilters, offset, limit int) ([]ArticleWithSource, error)
+	// Create inserts a new article row and sets article.ID from the
+	// database (needed for the summaries.article_id foreign key).
+	// article.Summary is read-only and ignored here; persist summaries
+	// through SummaryRepository or CreateWithSummary.
 	Create(ctx context.Context, article *entity.Article) error
+	// CreateWithSummary inserts the article and its summary in one
+	// transaction (crawl pipeline path). Either both rows land or neither:
+	// a failed summary insert rolls the article back, so the URL stays
+	// absent and the next hourly crawl retries it (§8 縮退許容 — no
+	// permanently unsummarized articles). Sets article.ID and
+	// summary.ArticleID.
+	CreateWithSummary(ctx context.Context, article *entity.Article, summary *entity.Summary) error
 	Update(ctx context.Context, article *entity.Article) error
 	Delete(ctx context.Context, id int64) error
 	ExistsByURL(ctx context.Context, url string) (bool, error)

@@ -27,7 +27,7 @@ func (b *benchListRepo) List(_ context.Context) ([]*entity.Article, error) {
 			URL:         "https://example.com/article",
 			Summary:     "This is a test summary for benchmark",
 			PublishedAt: now,
-			CreatedAt:   now,
+			CrawledAt:   now,
 		}
 	}
 	return articles, nil
@@ -74,7 +74,7 @@ func (b *benchListRepo) ListWithSource(_ context.Context) ([]repository.ArticleW
 				URL:         "https://example.com/article",
 				Summary:     "This is a test summary for benchmark",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Benchmark Source",
 		}
@@ -94,7 +94,7 @@ func (b *benchListRepo) ListWithSourcePaginated(_ context.Context, offset, limit
 				URL:         "https://example.com/article",
 				Summary:     "This is a test summary for benchmark",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Benchmark Source",
 		})
@@ -137,4 +137,8 @@ func BenchmarkListHandler_Parallel(b *testing.B) {
 			handler.ServeHTTP(rr, req)
 		}
 	})
+}
+
+func (s *benchListRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
 }

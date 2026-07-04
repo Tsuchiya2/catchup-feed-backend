@@ -48,9 +48,6 @@ func (s *stubSourceRepo) Update(_ context.Context, _ *entity.Source) error {
 func (s *stubSourceRepo) Delete(_ context.Context, _ int64) error {
 	return nil
 }
-func (s *stubSourceRepo) TouchCrawledAt(_ context.Context, _ int64, _ time.Time) error {
-	return nil
-}
 
 /* ───────── テストケース ───────── */
 
@@ -59,18 +56,20 @@ func TestListHandler_Success(t *testing.T) {
 	stub := &stubSourceRepo{
 		sources: []*entity.Source{
 			{
-				ID:            1,
-				Name:          "Tech Blog",
-				FeedURL:       "https://example.com/feed",
-				LastCrawledAt: &now,
-				Active:        true,
+				ID:        1,
+				Name:      "Tech Blog",
+				FeedURL:   "https://example.com/feed",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    true,
 			},
 			{
-				ID:            2,
-				Name:          "News Site",
-				FeedURL:       "https://news.example.com/rss",
-				LastCrawledAt: &now,
-				Active:        false,
+				ID:        2,
+				Name:      "News Site",
+				FeedURL:   "https://news.example.com/rss",
+				Category:  "dev",
+				CreatedAt: now,
+				Active:    false,
 			},
 		},
 	}
