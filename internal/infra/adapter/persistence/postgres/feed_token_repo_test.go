@@ -42,6 +42,44 @@ func TestFeedTokenRepo_Create(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestFeedTokenRepo_Get(t *testing.T) {
+	now := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	revoked := now.Add(time.Hour)
+
+	tests := []struct {
+		name string
+		rows *sqlmock.Rows
+		want *entity.FeedToken
+	}{
+		{
+			name: "revoked token is still returned by ID",
+			rows: sqlmock.NewRows(feedTokenCols).
+				AddRow(int64(4), int64(2), "hash", now, revoked),
+			want: &entity.FeedToken{ID: 4, SubscriberID: 2, TokenHash: "hash", CreatedAt: now, RevokedAt: &revoked},
+		},
+		{
+			name: "unknown id returns nil, nil",
+			rows: sqlmock.NewRows(feedTokenCols),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, mock, closeFn := newFeedTokenRepo(t)
+			defer closeFn()
+
+			mock.ExpectQuery(regexp.QuoteMeta("WHERE id = $1")).
+				WithArgs(int64(4)).
+				WillReturnRows(tt.rows)
+
+			got, err := repo.Get(context.Background(), 4)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
 // TestFeedTokenRepo_GetActiveByHash pins the §5.2 verification lookup:
 // the SQL must require an unrevoked token AND an active subscriber, and the
 // caller must not be able to distinguish revoked / unknown / deactivated.

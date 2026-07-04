@@ -46,6 +46,23 @@ RETURNING id, created_at`
 	return nil
 }
 
+// Get returns the token by ID (revoked or not), or nil when not found.
+func (repo *FeedTokenRepo) Get(ctx context.Context, id int64) (*entity.FeedToken, error) {
+	query := `
+SELECT ` + feedTokenColumns + `
+FROM feed_tokens
+WHERE id = $1
+LIMIT 1`
+	token, err := scanFeedToken(repo.db.QueryRowContext(ctx, query, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("Get: %w", err)
+	}
+	return token, nil
+}
+
 // GetActiveByHash implements the §5.2 verification lookup: the token must
 // not be revoked and its subscriber must still be active. Returns nil when
 // no such token exists. A DB roundtrip per feed request is fine at this

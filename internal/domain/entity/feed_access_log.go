@@ -13,3 +13,25 @@ type FeedAccessLog struct {
 	UserAgent  *string
 	AccessedAt time.Time
 }
+
+// FeedAccessRecord is the dashboard read model: one access joined with the
+// owning subscriber through the token (C-8), so the timeline can be shown
+// per friend without the client resolving token→subscriber itself.
+type FeedAccessRecord struct {
+	FeedAccessLog
+	SubscriberID   int64
+	SubscriberName string
+}
+
+// SubscriberAccessSummary aggregates accesses per friend (C-8) for the
+// dashboard: last access plus recent counts, the inputs of neglect
+// detection ("最終アクセスが N 日以上前の友人"). Subscribers without any
+// access (or even without tokens) still appear, with LastAccessedAt nil.
+type SubscriberAccessSummary struct {
+	SubscriberID   int64
+	SubscriberName string
+	Active         bool       // subscribers.deactivated_at IS NULL
+	LastAccessedAt *time.Time // nil = 一度もアクセスなし
+	Count7d        int64
+	Count30d       int64
+}

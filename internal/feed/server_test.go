@@ -91,6 +91,10 @@ func (s *stubTokenRepo) Create(context.Context, *entity.FeedToken) error {
 	return errors.New("not implemented")
 }
 
+func (s *stubTokenRepo) Get(context.Context, int64) (*entity.FeedToken, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (s *stubTokenRepo) GetActiveByHash(_ context.Context, tokenHash string) (*entity.FeedToken, error) {
 	s.lookups++
 	if s.err != nil {
@@ -126,7 +130,11 @@ func (s *stubAccessLogRepo) Insert(_ context.Context, log *entity.FeedAccessLog)
 	return nil
 }
 
-func (s *stubAccessLogRepo) ListRecent(context.Context, int) ([]*entity.FeedAccessLog, error) {
+func (s *stubAccessLogRepo) ListRecords(context.Context, *int64, int) ([]*entity.FeedAccessRecord, error) {
+	return nil, nil
+}
+
+func (s *stubAccessLogRepo) SummarizeBySubscriber(context.Context, time.Time, time.Time) ([]*entity.SubscriberAccessSummary, error) {
 	return nil, nil
 }
 

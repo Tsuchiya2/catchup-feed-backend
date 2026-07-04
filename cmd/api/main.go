@@ -22,15 +22,19 @@ import (
 	"catchup-feed/pkg/config"
 	"catchup-feed/pkg/security/csp"
 
+	alUC "catchup-feed/internal/usecase/accesslog"
 	artUC "catchup-feed/internal/usecase/article"
 	srcUC "catchup-feed/internal/usecase/source"
+	subUC "catchup-feed/internal/usecase/subscriber"
 
 	hhttp "catchup-feed/internal/handler/http"
+	haccesslog "catchup-feed/internal/handler/http/accesslog"
 	harticle "catchup-feed/internal/handler/http/article"
 	hauth "catchup-feed/internal/handler/http/auth"
 	"catchup-feed/internal/handler/http/middleware"
 	"catchup-feed/internal/handler/http/requestid"
 	hsrc "catchup-feed/internal/handler/http/source"
+	hsub "catchup-feed/internal/handler/http/subscriber"
 	authservice "catchup-feed/internal/service/auth"
 
 	_ "catchup-feed/docs" // swagger docs
@@ -161,6 +165,14 @@ func setupServer(logger *slog.Logger, database *sql.DB, version string) *ServerC
 	srcSvc := srcUC.Service{Repo: pgRepo.NewSourceRepo(database)}
 	artSvc := artUC.Service{Repo: pgRepo.NewArticleRepo(database)}
 
+	// 友人・トークン・アクセスログ管理(§5.1 admin API)。フィードトークン
+	// リポジトリは公開フィード配信(feedServer)と同じテーブルを共有する。
+	subSvc := subUC.Service{
+		Subscribers: pgRepo.NewSubscriberRepo(database),
+		Tokens:      pgRepo.NewFeedTokenRepo(database),
+	}
+	logSvc := alUC.Service{Logs: pgRepo.NewFeedAccessLogRepo(database)}
+
 	// Load trusted proxy configuration for IP extraction
 	proxyConfig, err := middleware.LoadTrustedProxyConfig()
 	if err != nil {
@@ -201,7 +213,7 @@ func setupServer(logger *slog.Logger, database *sql.DB, version string) *ServerC
 	)
 
 	// Setup routes with per-endpoint rate limiting
-	rootMux, rateLimiters := setupRoutes(database, version, srcSvc, artSvc, ipExtractor, logger, feedServer)
+	rootMux, rateLimiters := setupRoutes(database, version, srcSvc, artSvc, subSvc, logSvc, ipExtractor, logger, feedServer, feedCfg.PublicBaseURL)
 	handler := applyMiddleware(logger, rootMux)
 
 	// The private feed handler skips CORS/CSP/auth entirely: physical
@@ -224,9 +236,12 @@ func setupRoutes(
 	version string,
 	srcSvc srcUC.Service,
 	artSvc artUC.Service,
+	subSvc subUC.Service,
+	logSvc alUC.Service,
 	ipExtractor middleware.IPExtractor,
 	logger *slog.Logger,
 	feedServer *feed.Server,
+	publicBaseURL string,
 ) (*http.ServeMux, []*middleware.RateLimiter) {
 	// レート制限: 認証エンドポイントは1分間に5リクエストまで
 	authRateLimiter := middleware.NewRateLimiter(5, 1*time.Minute, ipExtractor)
@@ -262,6 +277,11 @@ func setupRoutes(
 	privateMux := http.NewServeMux()
 	hsrc.Register(privateMux, srcSvc, searchRateLimiter)
 	harticle.Register(privateMux, artSvc, paginationCfg, logger, searchRateLimiter)
+	// 友人管理・トークン発行/失効・アクセスログ(§5.1)。すべて admin 専用
+	// (viewer のパス許可リスト外)。トークン発行レスポンスの購読 URL は
+	// publicBaseURL(D-6)から組み立てる。
+	hsub.Register(privateMux, subSvc, publicBaseURL)
+	haccesslog.Register(privateMux, logSvc)
 
 	// Apply authentication middleware
 	protected := hauth.Authz(privateMux)
