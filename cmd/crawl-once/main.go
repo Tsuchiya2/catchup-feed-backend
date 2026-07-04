@@ -142,41 +142,17 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 	)
 }
 
+// createSummarizer builds the Gemini -> Groq -> Ollama fallback chain from
+// environment variables. Unlike cmd/worker, a one-shot crawl stays useful
+// without summarization, so an empty chain degrades to NoOp with a warning.
 func createSummarizer(logger *slog.Logger) fetchUC.Summarizer {
-	summarizerType := os.Getenv("SUMMARIZER_TYPE")
-	if summarizerType == "" {
-		summarizerType = "openai"
-	}
-
-	switch summarizerType {
-	case "claude":
-		apiKey := os.Getenv("ANTHROPIC_API_KEY")
-		if apiKey == "" {
-			logger.Warn("ANTHROPIC_API_KEY not set, using NoOp summarizer (no summarization)")
-			return summarizer.NewNoOp()
-		}
-		logger.Info("Using Claude API for summarization")
-		return summarizer.NewClaude(apiKey)
-	case "openai":
-		apiKey := os.Getenv("OPENAI_API_KEY")
-		if apiKey == "" {
-			logger.Warn("OPENAI_API_KEY not set, using NoOp summarizer (no summarization)")
-			return summarizer.NewNoOp()
-		}
-		config, err := summarizer.LoadOpenAIConfig()
-		if err != nil {
-			logger.Warn("Failed to load OpenAI configuration, using NoOp summarizer", slog.Any("error", err))
-			return summarizer.NewNoOp()
-		}
-		logger.Info("Using OpenAI API for summarization", slog.Int("character_limit", config.GetCharacterLimit()))
-		return summarizer.NewOpenAI(apiKey, config)
-	case "noop", "none", "":
-		logger.Info("Using NoOp summarizer (no summarization)")
-		return summarizer.NewNoOp()
-	default:
-		logger.Warn("Unknown SUMMARIZER_TYPE, using NoOp summarizer", slog.String("type", summarizerType))
+	chain, err := summarizer.NewChainFromEnv(logger)
+	if err != nil {
+		logger.Warn("no summarizer provider configured, using NoOp summarizer (no summarization)",
+			slog.Any("error", err))
 		return summarizer.NewNoOp()
 	}
+	return chain
 }
 
 func createHTTPClient() *http.Client {

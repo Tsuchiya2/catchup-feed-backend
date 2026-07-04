@@ -2,7 +2,6 @@ package fetch
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -58,6 +57,15 @@ type Service struct {
 // Summarizer is an interface for AI-powered text summarization.
 type Summarizer interface {
 	Summarize(ctx context.Context, text string) (string, error)
+}
+
+// ProviderSummarizer is optionally implemented by summarizers that can report
+// which backend produced the summary (e.g. the Gemini -> Groq -> Ollama
+// fallback chain). The provider name maps to summaries.provider in the
+// pulse schema; until that schema lands it is recorded in logs (§8:
+// fallback occurrences must be observable after the fact).
+type ProviderSummarizer interface {
+	SummarizeWithProvider(ctx context.Context, text string) (summary string, provider string, err error)
 }
 
 // NewService creates a new fetch Service with the provided dependencies.
@@ -290,10 +298,15 @@ func (s *Service) processFeedItems(
 			summarySem <- struct{}{}
 			defer func() { <-summarySem }()
 
-			summary, err := s.Summarizer.Summarize(egCtx, content)
+			summary, provider, err := s.summarize(egCtx, content)
 			if err != nil {
-				// Context cancellation is critical - propagate immediately
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				// Only a dead group context (shutdown or crawl deadline) is
+				// critical. Judge by egCtx directly, NOT errors.Is on the
+				// returned error: providers apply their own per-request
+				// timeouts, so an all-providers-failed error can wrap
+				// context.DeadlineExceeded while the crawl itself is fine.
+				// That case must skip one article, not abort the crawl (§8).
+				if egCtx.Err() != nil {
 					return err
 				}
 
@@ -322,6 +335,15 @@ func (s *Service) processFeedItems(
 			}
 			atomic.AddInt64(&stats.Inserted, 1)
 
+			// Record which provider produced the summary (summaries.provider
+			// equivalent; log-based until the pulse schema lands).
+			if provider != "" {
+				slog.Info("article summarized",
+					slog.Int64("article_id", art.ID),
+					slog.String("url", art.URL),
+					slog.String("summary_provider", provider))
+			}
+
 			// Notify about new article (non-blocking)
 			// Note: NotifyService handles goroutines internally, no need for go func() here
 			if err := s.NotifyService.NotifyNewArticle(context.Background(), art, src); err != nil {
@@ -341,6 +363,17 @@ func (s *Service) processFeedItems(
 	}
 
 	return nil
+}
+
+// summarize runs the configured summarizer, additionally reporting the
+// provider name when the summarizer supports it (fallback chain).
+// Returns an empty provider for plain Summarizer implementations.
+func (s *Service) summarize(ctx context.Context, content string) (summary string, provider string, err error) {
+	if ps, ok := s.Summarizer.(ProviderSummarizer); ok {
+		return ps.SummarizeWithProvider(ctx, content)
+	}
+	summary, err = s.Summarizer.Summarize(ctx, content)
+	return summary, "", err
 }
 
 // enhanceContent enhances RSS content by fetching full article content if needed.

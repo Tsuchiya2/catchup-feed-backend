@@ -202,11 +202,6 @@ services:
       DEMO_USER: ${DEMO_USER:-}
       DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:-}
 
-      # AI 要約設定
-      SUMMARIZER_TYPE: ${SUMMARIZER_TYPE:-claude}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-
       # アプリケーション設定
       TZ: ${TZ:-Asia/Tokyo}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -282,10 +277,18 @@ services:
       # データベース接続
       DATABASE_URL: postgresql://${POSTGRES_USER:-catchup}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-catchup}?sslmode=disable
 
-      # AI 要約設定
-      SUMMARIZER_TYPE: ${SUMMARIZER_TYPE:-claude}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # AI 要約設定（フォールバック連鎖: Gemini → Groq → Ollama）
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-}
+      OLLAMA_ENABLED: ${OLLAMA_ENABLED:-}
+      # 注意: 未設定時のデフォルト http://localhost:11434 は worker コンテナ
+      # 自身を指す。実運用では tailnet 上の Mac のアドレスを .env で指定すること
+      OLLAMA_HOST: ${OLLAMA_HOST:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
+      SUMMARIZER_CHAR_LIMIT: ${SUMMARIZER_CHAR_LIMIT:-}
+      SUMMARIZER_TIMEOUT: ${SUMMARIZER_TIMEOUT:-}
 
       # Discord通知設定
       DISCORD_ENABLED: ${DISCORD_ENABLED:-false}

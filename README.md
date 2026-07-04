@@ -267,15 +267,24 @@ curl -X POST http://localhost:8080/auth/token \
 |------|------|
 | `DATABASE_URL` | PostgreSQL接続文字列 |
 | `JWT_SECRET` | JWT署名用秘密鍵（32文字以上） |
-| `ANTHROPIC_API_KEY` または `OPENAI_API_KEY` | AI APIキー |
 | `ADMIN_USER_PASSWORD` | 管理者パスワード |
 
-### 要約エンジンの選択
+### 要約エンジン（フォールバック連鎖: Gemini → Groq → Ollama）
 
-| エンジン | 推奨用途 | 必要な環境変数 |
-|----------|----------|---------------|
-| `openai` | 開発環境（コスト優先） | `OPENAI_API_KEY` |
-| `claude` | 本番環境（品質優先） | `ANTHROPIC_API_KEY` |
+API キーが設定されたプロバイダのみ連鎖に組み込まれ、上から順に試行されます。
+全プロバイダが失敗した記事は未要約のまま次回クロールに持ち越されます。
+
+| 環境変数 | 説明 | デフォルト |
+|----------|------|-----------|
+| `GEMINI_API_KEY` | Google AI Studio（無料枠）API キー。未設定なら連鎖から除外 | — |
+| `GEMINI_MODEL` | Gemini モデル | `gemini-2.5-flash` |
+| `GROQ_API_KEY` | Groq（無料枠）API キー。未設定なら連鎖から除外 | — |
+| `GROQ_MODEL` | Groq モデル | `llama-3.3-70b-versatile` |
+| `OLLAMA_ENABLED` | ローカル Ollama を最終フォールバックとして使う（`false` で除外） | `true` |
+| `OLLAMA_HOST` | Ollama エンドポイント。worker をコンテナ/Pi で動かす場合、デフォルトはコンテナ自身を指すため tailnet 上の Mac のアドレス指定が必須 | `http://localhost:11434` |
+| `OLLAMA_MODEL` | Ollama モデル（事前に `ollama pull` が必要） | `qwen2.5:7b` |
+| `SUMMARIZER_CHAR_LIMIT` | 要約の文字数上限（100〜5000） | `900` |
+| `SUMMARIZER_TIMEOUT` | プロバイダ1回あたりのタイムアウト（Go duration 形式） | `60s` |
 
 詳細な設定項目は `.env.example` を参照してください。
 

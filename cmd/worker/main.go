@@ -194,45 +194,19 @@ func setupFetchService(logger *slog.Logger, database *sql.DB, notifyService noti
 	)
 }
 
-// createSummarizer creates a summarizer based on the SUMMARIZER_TYPE environment variable.
+// createSummarizer builds the Gemini -> Groq -> Ollama fallback chain from
+// environment variables (GEMINI_API_KEY, GROQ_API_KEY, OLLAMA_HOST, ...).
+// Providers without an API key are excluded automatically. The worker cannot
+// run without at least one provider, so an empty chain is fatal.
 func createSummarizer(logger *slog.Logger) fetchUC.Summarizer {
-	summarizerType := os.Getenv("SUMMARIZER_TYPE")
-	if summarizerType == "" {
-		summarizerType = "claude"
-	}
-
-	switch summarizerType {
-	case "claude":
-		apiKey := os.Getenv("ANTHROPIC_API_KEY")
-		if apiKey == "" {
-			logger.Error("ANTHROPIC_API_KEY is required when SUMMARIZER_TYPE=claude")
-			os.Exit(1)
-		}
-		logger.Info("Using Claude API for summarization", slog.String("type", "claude"))
-		return summarizer.NewClaude(apiKey)
-	case "openai":
-		apiKey := os.Getenv("OPENAI_API_KEY")
-		if apiKey == "" {
-			logger.Error("OPENAI_API_KEY is required when SUMMARIZER_TYPE=openai")
-			os.Exit(1)
-		}
-		// Load and validate OpenAI configuration
-		config, err := summarizer.LoadOpenAIConfig()
-		if err != nil {
-			logger.Error("Failed to load OpenAI configuration", slog.Any("error", err))
-			os.Exit(1)
-		}
-		logger.Info("Using OpenAI API for summarization",
-			slog.String("type", "openai"),
-			slog.Int("character_limit", config.GetCharacterLimit()))
-		return summarizer.NewOpenAI(apiKey, config)
-	default:
-		logger.Error("Invalid SUMMARIZER_TYPE",
-			slog.String("type", summarizerType),
-			slog.String("expected", "openai or claude"))
+	chain, err := summarizer.NewChainFromEnv(logger)
+	if err != nil {
+		logger.Error("failed to configure summarizer fallback chain",
+			slog.Any("error", err),
+			slog.String("hint", "set GEMINI_API_KEY / GROQ_API_KEY or enable Ollama"))
 		os.Exit(1)
-		return nil
 	}
+	return chain
 }
 
 // createHTTPClient creates an HTTP client with timeouts and connection pooling.
@@ -422,4 +396,3 @@ func runCrawlJob(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.Worker
 		slog.Duration("duration", stats.Duration),
 	)
 }
-

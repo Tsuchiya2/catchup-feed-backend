@@ -207,10 +207,16 @@ func (s *selectiveSummarizer) Summarize(_ context.Context, text string) (string,
 	return "Summary: " + text, nil
 }
 
-// cancelingSummarizer はcontext.Canceledエラーを返すSummarizerモック
-type cancelingSummarizer struct{}
+// cancelingSummarizer は呼び出し時に親コンテキストを取消して
+// context.Canceled を返す Summarizer モック（要約中のシャットダウンを再現）。
+// 親 ctx が生きたままセンチネルエラーだけ返すのは「プロバイダ内部タイムアウト」
+// と区別できないため、実際に cancel する。
+type cancelingSummarizer struct {
+	cancel context.CancelFunc
+}
 
 func (s *cancelingSummarizer) Summarize(_ context.Context, _ string) (string, error) {
+	s.cancel()
 	return "", context.Canceled
 }
 
@@ -854,8 +860,11 @@ func TestService_CrawlAllSources_ContextCancellation(t *testing.T) {
 		},
 	}
 
-	// Create a summarizer that returns context.Canceled error
-	summarizer := &cancelingSummarizer{}
+	// Cancel the parent context from inside the summarizer, then return
+	// context.Canceled (a real shutdown while summarization is in flight).
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	summarizer := &cancelingSummarizer{cancel: cancel}
 
 	svc := fetchUC.NewService(
 		srcRepo,
@@ -872,7 +881,6 @@ func TestService_CrawlAllSources_ContextCancellation(t *testing.T) {
 	)
 
 	// Context cancellation should stop processing immediately
-	ctx := context.Background()
 	stats, err := svc.CrawlAllSources(ctx)
 
 	if err == nil {
