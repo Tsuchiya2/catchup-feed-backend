@@ -113,6 +113,31 @@ LIMIT $2`
 	return episodes, rows.Err()
 }
 
+// ListRecent returns up to limit episodes of every feed kind, newest
+// first — the private feed order (§5.1).
+func (repo *EpisodeRepo) ListRecent(ctx context.Context, limit int) ([]*entity.Episode, error) {
+	query := `
+SELECT ` + episodeColumns + `
+FROM episodes
+ORDER BY published_at DESC, id DESC
+LIMIT $1`
+	rows, err := repo.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("ListRecent: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	episodes := make([]*entity.Episode, 0, limit)
+	for rows.Next() {
+		episode, err := scanEpisode(rows)
+		if err != nil {
+			return nil, fmt.Errorf("ListRecent: %w", err)
+		}
+		episodes = append(episodes, episode)
+	}
+	return episodes, rows.Err()
+}
+
 // ListSegments returns the episode's segments ordered by position.
 func (repo *EpisodeRepo) ListSegments(ctx context.Context, episodeID int64) ([]*entity.Segment, error) {
 	const query = `

@@ -16,6 +16,7 @@ import (
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 
 	"catchup-feed/internal/common/pagination"
+	"catchup-feed/internal/feed"
 	pgRepo "catchup-feed/internal/infra/adapter/persistence/postgres"
 	"catchup-feed/internal/infra/db"
 	"catchup-feed/pkg/config"
@@ -148,6 +149,11 @@ func getVersion() string {
 type ServerComponents struct {
 	Handler      http.Handler
 	RateLimiters []*middleware.RateLimiter // Endpoint rate limiters needing periodic cleanup
+
+	// PrivateFeedHandler / PrivateFeedAddr describe the tailnet-only
+	// feed listener (§3.1, C-5). An empty addr disables the listener.
+	PrivateFeedHandler http.Handler
+	PrivateFeedAddr    string
 }
 
 // setupServer configures and returns the HTTP handler with all routes and middleware.
@@ -173,13 +179,42 @@ func setupServer(logger *slog.Logger, database *sql.DB, version string) *ServerC
 		logger.Info("rate limiting: using RemoteAddr (secure mode, proxy headers ignored)")
 	}
 
+	// Feed delivery (§5): repositories + config shared by the public
+	// routes and the tailnet-only private listener.
+	feedCfg := feed.LoadConfig()
+	if feedCfg.PrivateAddr != "" {
+		// C-5: the private feed has no authentication, so a wildcard bind
+		// would expose it to the whole LAN. Refuse to start the private
+		// listener (縮退: the public side keeps running).
+		if err := feed.ValidatePrivateAddr(feedCfg.PrivateAddr); err != nil {
+			logger.Error("private feed listener disabled: unsafe PRIVATE_FEED_ADDR",
+				slog.String("addr", feedCfg.PrivateAddr), slog.Any("error", err))
+			feedCfg.PrivateAddr = ""
+		}
+	}
+	feedServer := feed.NewServer(
+		feedCfg,
+		pgRepo.NewEpisodeRepo(database),
+		pgRepo.NewFeedTokenRepo(database),
+		pgRepo.NewFeedAccessLogRepo(database),
+		logger,
+	)
+
 	// Setup routes with per-endpoint rate limiting
-	rootMux, rateLimiters := setupRoutes(database, version, srcSvc, artSvc, ipExtractor, logger)
+	rootMux, rateLimiters := setupRoutes(database, version, srcSvc, artSvc, ipExtractor, logger, feedServer)
 	handler := applyMiddleware(logger, rootMux)
 
+	// The private feed handler skips CORS/CSP/auth entirely: physical
+	// boundary (tailnet bind) is the authentication (C-5). Recovery and
+	// logging still apply.
+	privateHandler := requestid.Middleware(
+		hhttp.Recover(logger)(hhttp.Logging(logger)(feedServer.PrivateHandler())))
+
 	return &ServerComponents{
-		Handler:      handler,
-		RateLimiters: rateLimiters,
+		Handler:            handler,
+		RateLimiters:       rateLimiters,
+		PrivateFeedHandler: privateHandler,
+		PrivateFeedAddr:    feedCfg.PrivateAddr,
 	}
 }
 
@@ -191,12 +226,18 @@ func setupRoutes(
 	artSvc artUC.Service,
 	ipExtractor middleware.IPExtractor,
 	logger *slog.Logger,
+	feedServer *feed.Server,
 ) (*http.ServeMux, []*middleware.RateLimiter) {
 	// レート制限: 認証エンドポイントは1分間に5リクエストまで
 	authRateLimiter := middleware.NewRateLimiter(5, 1*time.Minute, ipExtractor)
 
 	// レート制限: 検索エンドポイントは1分間に100リクエストまで
 	searchRateLimiter := middleware.NewRateLimiter(100, 1*time.Minute, ipExtractor)
+
+	// レート制限: 公開フィードは per-IP で1分間に60リクエストまで(§5.2、
+	// 無効トークン連打対策程度の軽いもの。ポッドキャストアプリの巡回は
+	// フィード1回+mp3数回なので通常運用では到達しない)
+	feedRateLimiter := middleware.NewRateLimiter(60, 1*time.Minute, ipExtractor)
 
 	// Initialize AuthService with MultiUserAuthProvider
 	weakPasswords := []string{"password", "123456", "admin", "test", "secret"}
@@ -233,8 +274,12 @@ func setupRoutes(
 	rootMux.Handle("/swagger/", publicMux)
 	rootMux.Handle("/", protected)
 
+	// 公開フィード(§5.1): JWT ではなく URL 埋め込みトークンで認証する
+	// (C-6)。パターンが "/" より特定的なので管理 API には影響しない。
+	feedServer.RegisterPublic(rootMux, feedRateLimiter.Middleware)
+
 	// Return rate limiters for periodic cleanup
-	return rootMux, []*middleware.RateLimiter{authRateLimiter, searchRateLimiter}
+	return rootMux, []*middleware.RateLimiter{authRateLimiter, searchRateLimiter, feedRateLimiter}
 }
 
 // applyMiddleware wraps the handler with middleware chain.
@@ -328,7 +373,8 @@ func runServer(logger *slog.Logger, components *ServerComponents, version string
 	go startRateLimiterCleanup(ctx, components.RateLimiters, 5*time.Minute)
 
 	// Error channel for coordinated shutdown on startup failures
-	serverErrCh := make(chan error, 1)
+	// (buffered for both listeners so a second failure never blocks)
+	serverErrCh := make(chan error, 2)
 
 	// Start HTTP server
 	srv := &http.Server{
@@ -350,6 +396,30 @@ func runServer(logger *slog.Logger, components *ServerComponents, version string
 		}
 	}()
 
+	// 私的フィードリスナー(§3.1): tailnet アドレスにのみバインドする
+	// 別リスナー。PRIVATE_FEED_ADDR 未設定なら起動しない。
+	var privateSrv *http.Server
+	if components.PrivateFeedAddr != "" {
+		privateSrv = &http.Server{
+			Addr:              components.PrivateFeedAddr,
+			Handler:           components.PrivateFeedHandler,
+			ReadHeaderTimeout: 10 * time.Second,
+			BaseContext: func(_ net.Listener) context.Context {
+				return ctx
+			},
+		}
+		go func() {
+			logger.Info("private feed listener starting",
+				slog.String("addr", components.PrivateFeedAddr))
+			if err := privateSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("private feed listener failed", slog.Any("error", err))
+				serverErrCh <- err
+			}
+		}()
+	} else {
+		logger.Info("private feed listener disabled (PRIVATE_FEED_ADDR not set)")
+	}
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -369,6 +439,11 @@ func runServer(logger *slog.Logger, components *ServerComponents, version string
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("HTTP server shutdown failed", slog.Any("error", err))
+	}
+	if privateSrv != nil {
+		if err := privateSrv.Shutdown(shutdownCtx); err != nil {
+			logger.Error("private feed listener shutdown failed", slog.Any("error", err))
+		}
 	}
 	logger.Info("HTTP server stopped")
 }

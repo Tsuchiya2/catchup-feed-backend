@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"catchup-feed/internal/handler/http/pathutil"
 )
 
 // RateLimiter implements a sliding window rate limiter for HTTP requests.
@@ -87,9 +89,12 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 
 		// Check rate limit for this IP
 		if !rl.allow(ip) {
+			// The path is redacted: this limiter fronts the public feed
+			// routes, so the exceeded path may embed a plaintext feed
+			// token (D-5) — precisely during invalid-token hammering.
 			slog.Warn("rate limit exceeded",
 				slog.String("ip", ip),
-				slog.String("path", r.URL.Path),
+				slog.String("path", pathutil.RedactPath(r.URL.Path)),
 				slog.Int("limit", rl.limit),
 				slog.Duration("window", rl.window),
 			)

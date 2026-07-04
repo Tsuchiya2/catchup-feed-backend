@@ -5,7 +5,7 @@
 # No local Go installation required!
 # ============================================================
 
-.PHONY: help dev-up dev-down dev-shell test lint fmt build clean logs
+.PHONY: help dev-up dev-down dev-shell test lint fmt swagger build clean logs
 
 # Default target
 .DEFAULT_GOAL := help
@@ -76,6 +76,11 @@ fmt: ## Format code with gofmt inside Docker
 	@echo "🎨 Formatting code in Docker..."
 	docker compose --profile dev run --rm dev sh -c "gofmt -w ."
 	@echo "✅ Code formatting completed"
+
+swagger: ## Generate Swagger docs (docs/) inside Docker
+	@echo "📝 Generating Swagger docs in Docker..."
+	docker compose --profile dev run --rm dev sh -c "go run github.com/swaggo/swag/cmd/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal"
+	@echo "✅ Swagger docs generated"
 
 # ────────────────────────────────────────────────────────────
 # Build (runs inside Docker)

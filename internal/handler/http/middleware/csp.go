@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"catchup-feed/internal/handler/http/pathutil"
 	"catchup-feed/pkg/security/csp"
 )
 
@@ -122,7 +123,7 @@ func (m *CSPMiddleware) Middleware() func(http.Handler) http.Handler {
 
 			// Log CSP header application (debug level)
 			slog.Debug("CSP header applied",
-				slog.String("path", r.URL.Path),
+				slog.String("path", pathutil.RedactPath(r.URL.Path)),
 				slog.String("header", headerName),
 				slog.String("policy", cspValue),
 			)

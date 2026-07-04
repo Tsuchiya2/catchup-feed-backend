@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"catchup-feed/internal/handler/http/pathutil"
 	"catchup-feed/internal/handler/http/requestid"
 	"catchup-feed/internal/handler/http/respond"
 	"catchup-feed/internal/handler/http/responsewriter"
@@ -37,7 +38,7 @@ func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 			logger.Info("request completed",
 				slog.String("request_id", reqID),
 				slog.String("method", r.Method),
-				slog.String("path", r.URL.Path),
+				slog.String("path", pathutil.RedactPath(r.URL.Path)),
 				slog.String("query", r.URL.RawQuery),
 				slog.String("remote_addr", r.RemoteAddr),
 				slog.String("user_agent", r.Header.Get("User-Agent")),
@@ -74,7 +75,7 @@ func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 					logger.Error("panic recovered",
 						slog.String("request_id", reqID),
 						slog.String("method", r.Method),
-						slog.String("path", r.URL.Path),
+						slog.String("path", pathutil.RedactPath(r.URL.Path)),
 						slog.Any("panic", rec),
 						slog.String("stack", stack),
 					)

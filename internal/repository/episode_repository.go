@@ -20,6 +20,10 @@ type EpisodeRepository interface {
 	// ListByKind returns up to limit episodes of the given feed kind,
 	// newest first (RSS feed generation order).
 	ListByKind(ctx context.Context, feedKind string, limit int) ([]*entity.Episode, error)
+	// ListRecent returns up to limit episodes of every feed kind, newest
+	// first — the private feed order (§5.1: the tailnet feed serves
+	// private and public episodes alike).
+	ListRecent(ctx context.Context, limit int) ([]*entity.Episode, error)
 	// ListSegments returns the episode's segments ordered by position.
 	ListSegments(ctx context.Context, episodeID int64) ([]*entity.Segment, error)
 }

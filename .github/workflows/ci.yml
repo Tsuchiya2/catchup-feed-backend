@@ -50,7 +50,7 @@ jobs:
 
       - name: Generate Swagger docs
         run: |
-          go install github.com/swaggo/swag/cmd/swag@latest
+          go install github.com/swaggo/swag/cmd/swag@v1.16.6
           $(go env GOPATH)/bin/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal
 
       - name: Run tests
@@ -87,7 +87,7 @@ jobs:
 
       - name: Generate Swagger docs
         run: |
-          go install github.com/swaggo/swag/cmd/swag@latest
+          go install github.com/swaggo/swag/cmd/swag@v1.16.6
           $(go env GOPATH)/bin/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal
 
       - name: golangci-lint
@@ -115,7 +115,7 @@ jobs:
 
       - name: Generate Swagger docs
         run: |
-          go install github.com/swaggo/swag/cmd/swag@latest
+          go install github.com/swaggo/swag/cmd/swag@v1.16.6
           $(go env GOPATH)/bin/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal
 
       - name: Build API

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"catchup-feed/internal/handler/http/pathutil"
 	"catchup-feed/internal/handler/http/requestid"
 	"catchup-feed/internal/handler/http/respond"
 
@@ -67,7 +68,7 @@ func Authz(next http.Handler) http.Handler {
 		logger := slog.With(
 			slog.String("request_id", requestID),
 			slog.String("method", r.Method),
-			slog.String("path", r.URL.Path),
+			slog.String("path", pathutil.RedactPath(r.URL.Path)),
 		)
 
 		// Log authorization check started

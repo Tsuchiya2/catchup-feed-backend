@@ -137,6 +137,25 @@ func TestEpisodeRepo_ListByKind(t *testing.T) {
 	assert.Equal(t, "newest", got[0].Title)
 }
 
+func TestEpisodeRepo_ListRecent_AllKinds(t *testing.T) {
+	repo, mock, closeFn := newEpisodeRepo(t)
+	defer closeFn()
+
+	now := time.Now()
+	mock.ExpectQuery(regexp.QuoteMeta("FROM episodes")).
+		WithArgs(30).
+		WillReturnRows(sqlmock.NewRows(episodeCols).
+			AddRow(int64(3), entity.FeedKindPrivate, "private newest", "n", "/p3", int64(9), 60, now).
+			AddRow(int64(2), entity.FeedKindPublic, "public older", "n", "/p2", int64(9), 60, now.Add(-24*time.Hour)))
+
+	got, err := repo.ListRecent(context.Background(), 30)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, entity.FeedKindPrivate, got[0].FeedKind)
+	assert.Equal(t, entity.FeedKindPublic, got[1].FeedKind)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestEpisodeRepo_ListSegments(t *testing.T) {
 	repo, mock, closeFn := newEpisodeRepo(t)
 	defer closeFn()
