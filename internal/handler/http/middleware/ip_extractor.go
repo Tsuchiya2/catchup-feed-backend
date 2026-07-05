@@ -72,13 +72,18 @@ func (c *TrustedProxyConfig) IsTrusted(remoteAddr string) bool {
 		return false
 	}
 
-	// Check if IP is in any of the trusted CIDR ranges
+	return c.containsAddr(addr)
+}
+
+// containsAddr checks if the given address is in any of the trusted CIDR ranges.
+// IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) are unmapped so they match IPv4 prefixes.
+func (c *TrustedProxyConfig) containsAddr(addr netip.Addr) bool {
+	addr = addr.Unmap()
 	for _, prefix := range c.AllowedCIDRs {
 		if prefix.Contains(addr) {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -162,9 +167,10 @@ func LoadTrustedProxyConfig() (*TrustedProxyConfig, error) {
 // to RemoteAddr extraction to prevent IP spoofing attacks.
 //
 // Header extraction priority:
-// 1. X-Forwarded-For (first IP in comma-separated list)
-// 2. X-Real-IP (fallback)
-// 3. RemoteAddr (if proxy is not trusted or headers are missing)
+//  1. X-Forwarded-For (rightmost-untrusted: scan right-to-left, strip trusted proxies,
+//     take the first non-trusted IP — see ExtractIP)
+//  2. X-Real-IP (fallback)
+//  3. RemoteAddr (if proxy is not trusted or headers are missing)
 type TrustedProxyExtractor struct {
 	config TrustedProxyConfig
 }
@@ -186,11 +192,15 @@ func NewTrustedProxyExtractor(config TrustedProxyConfig) *TrustedProxyExtractor 
 //     a. Check if RemoteAddr is a trusted proxy
 //     b. If trusted:
 //
-//   - Check X-Forwarded-For header (use first IP)
+//   - Scan X-Forwarded-For right-to-left, strip trusted proxy entries, and
+//     use the first (rightmost) non-trusted IP as the client IP
+//     (rightmost-untrusted). NEVER use the leftmost entry: proxies such as
+//     cloudflared APPEND the real peer IP to whatever X-Forwarded-For the
+//     client sent, so the leftmost entry is attacker-controlled.
 //
-//   - If empty, check X-Real-IP header
+//   - If X-Forwarded-For yields nothing, check X-Real-IP header
 //
-//   - If both empty, fallback to RemoteAddr
+//   - If both yield nothing, fallback to RemoteAddr
 //     c. If NOT trusted:
 //
 //   - Log warning about potential spoofing attempt
@@ -225,9 +235,9 @@ func (e *TrustedProxyExtractor) ExtractIP(r *http.Request) (string, error) {
 		return extractIPFromAddr(r.RemoteAddr)
 	}
 
-	// Trusted proxy: Try X-Forwarded-For first
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if ip := parseFirstIP(xff); ip != "" {
+	// Trusted proxy: Try X-Forwarded-For first (rightmost-untrusted)
+	if xffValues := r.Header.Values("X-Forwarded-For"); len(xffValues) > 0 {
+		if ip, ok := e.clientIPFromXFF(splitXFFEntries(xffValues)); ok {
 			return ip, nil
 		}
 	}
@@ -265,35 +275,69 @@ func extractIPFromAddr(addr string) (string, error) {
 	return host, nil
 }
 
-// parseFirstIP parses the first IP address from a comma-separated list.
-// This is used for X-Forwarded-For headers, which may contain multiple IPs
-// in the format: "client, proxy1, proxy2"
+// splitXFFEntries flattens one or more X-Forwarded-For header values into a
+// single ordered list of entries. Multiple header lines are equivalent to a
+// single comma-joined header (RFC 7230 §3.2.2), so values are concatenated
+// in order before splitting on commas.
+func splitXFFEntries(values []string) []string {
+	var entries []string
+	for _, v := range values {
+		entries = append(entries, strings.Split(v, ",")...)
+	}
+	return entries
+}
+
+// clientIPFromXFF determines the client IP from X-Forwarded-For entries using
+// the rightmost-untrusted algorithm: scan the entries from right to left,
+// strip every entry that belongs to a trusted proxy CIDR, and return the
+// first non-trusted IP encountered.
+//
+// Why rightmost, not leftmost: a reverse proxy such as cloudflared APPENDS
+// the real peer IP to whatever X-Forwarded-For the client already sent.
+// With "X-Forwarded-For: <attacker-chosen>, <real-ip>", the leftmost entry
+// is fully attacker-controlled; taking it would let clients rotate their
+// apparent IP and bypass per-IP rate limits. Only the entries appended by
+// trusted proxies (the rightmost suffix) can be believed, and the first IP
+// to their left is the closest peer a trusted proxy actually observed.
 //
 // Returns:
-//   - The first valid IP address in the list
-//   - Empty string if no valid IP is found
-//
-// Examples:
-//   - "192.168.1.1, 10.0.0.1" → "192.168.1.1"
-//   - "2001:db8::1, 10.0.0.1" → "2001:db8::1"
-//   - "invalid, 10.0.0.1" → ""
-//   - "192.168.1.1" → "192.168.1.1" (no comma)
-func parseFirstIP(s string) string {
-	// Find the first comma
-	for i := 0; i < len(s); i++ {
-		if s[i] == ',' {
-			// Parse the IP before the comma
-			ip := net.ParseIP(s[:i])
-			if ip != nil {
-				return ip.String()
-			}
-			return ""
+//   - (clientIP, true) for the rightmost non-trusted entry
+//   - (lastStripped, true) if ALL entries are trusted (the leftmost stripped
+//     entry is the best available answer)
+//   - ("", false) if no usable entry was found before the scan stopped; the
+//     caller falls back to X-Real-IP / RemoteAddr. The scan stops at a
+//     malformed entry: anything further left cannot be attributed safely, so
+//     garbage-sending clients all collapse into the proxy's bucket
+//     (fail-safe for rate limiting, never a bypass).
+func (e *TrustedProxyExtractor) clientIPFromXFF(entries []string) (string, bool) {
+	var lastTrusted netip.Addr
+
+	for i := len(entries) - 1; i >= 0; i-- {
+		s := strings.TrimSpace(entries[i])
+		if s == "" {
+			continue
 		}
+
+		addr, err := netip.ParseAddr(s)
+		if err != nil {
+			// Malformed entry inside the trusted suffix: stop scanning.
+			break
+		}
+
+		if !e.config.containsAddr(addr) {
+			// Rightmost non-trusted IP = client IP.
+			return addr.String(), true
+		}
+
+		// Trusted proxy entry: strip it and keep scanning left.
+		lastTrusted = addr
 	}
 
-	// No comma found, parse the entire string
-	if ip := net.ParseIP(s); ip != nil {
-		return ip.String()
+	// All scanned entries were trusted proxies (or the scan stopped after
+	// stripping at least one): fall back to the last stripped entry.
+	if lastTrusted.IsValid() {
+		return lastTrusted.String(), true
 	}
-	return ""
+
+	return "", false
 }
