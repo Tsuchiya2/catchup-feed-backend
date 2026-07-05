@@ -271,7 +271,24 @@ curl -X POST http://localhost:8080/auth/token \
 |------|------|
 | `DATABASE_URL` | PostgreSQL接続文字列 |
 | `JWT_SECRET` | JWT署名用秘密鍵（32文字以上） |
-| `ADMIN_USER_PASSWORD` | 管理者パスワード |
+| `ADMIN_USER` | 管理者ユーザー名（単一管理者、C-7） |
+| `ADMIN_PASSWORD_HASH` | 管理者パスワードの bcrypt ハッシュ（下記参照） |
+
+#### 管理者パスワードハッシュの生成
+
+サーバーには平文パスワードを置かず、bcrypt ハッシュのみを環境変数に設定します（C-7/C-20）。
+
+```bash
+# 対話的に生成（パスワードは12文字以上72バイト以下、コスト12で生成）
+make admin-hash
+
+# または stdin から
+printf '%s' 'your-password' | go run ./cmd/hash-password
+```
+
+出力されたハッシュを `ADMIN_PASSWORD_HASH` に設定してください。
+docker compose が読み込む `.env` に書く場合は、ハッシュに含まれる `$` を
+`$$` にエスケープする必要があります（例: `$2a$12$...` → `$$2a$$12$$...`）。
 
 ### 要約エンジン（フォールバック連鎖: Gemini → Groq → Ollama）
 

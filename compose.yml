@@ -198,9 +198,8 @@ services:
       # 認証設定
       JWT_SECRET: ${JWT_SECRET}
       ADMIN_USER: ${ADMIN_USER:-admin}
-      ADMIN_USER_PASSWORD: ${ADMIN_USER_PASSWORD}
-      DEMO_USER: ${DEMO_USER:-}
-      DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:-}
+      # bcrypt ハッシュ(make admin-hash で生成)。.env 内では '$' を '$$' にエスケープすること
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH}
 
       # アプリケーション設定
       TZ: ${TZ:-Asia/Tokyo}

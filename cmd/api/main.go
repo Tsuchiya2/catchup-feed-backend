@@ -63,7 +63,6 @@ import (
 func main() {
 	logger := initLogger()
 	validateAdminCredentials(logger)
-	validateViewerCredentials(logger)
 	validateJWTSecret(logger)
 	database := initDatabase(logger)
 	defer func() {
@@ -98,14 +97,6 @@ func validateAdminCredentials(logger *slog.Logger) {
 		logger.Error("admin credentials validation failed", slog.Any("error", err))
 		os.Exit(1)
 	}
-}
-
-// validateViewerCredentials validates the viewer credentials at startup.
-// Unlike admin validation, this implements graceful degradation:
-// if viewer credentials are misconfigured, the viewer role is disabled
-// but the application continues to run in admin-only mode.
-func validateViewerCredentials(logger *slog.Logger) {
-	_ = hauth.ValidateViewerCredentials(logger)
 }
 
 // validateJWTSecret validates the JWT_SECRET environment variable for security requirements.
@@ -254,11 +245,8 @@ func setupRoutes(
 	// フィード1回+mp3数回なので通常運用では到達しない)
 	feedRateLimiter := middleware.NewRateLimiter(60, 1*time.Minute, ipExtractor)
 
-	// Initialize AuthService with MultiUserAuthProvider
-	weakPasswords := []string{"password", "123456", "admin", "test", "secret"}
-	authProvider := hauth.NewMultiUserAuthProvider(12, weakPasswords)
-	// Single source of truth for public endpoints: auth.PublicEndpoints
-	authService := authservice.NewAuthService(authProvider, hauth.PublicEndpoints)
+	// 単一管理者の資格情報検証(環境変数+bcrypt、C-7/C-20)
+	authService := authservice.NewAuthService(hauth.NewAdminAuthProvider())
 
 	publicMux := http.NewServeMux()
 	publicMux.Handle("/auth/token", authRateLimiter.Middleware(hauth.TokenHandler(authService)))
@@ -277,9 +265,9 @@ func setupRoutes(
 	privateMux := http.NewServeMux()
 	hsrc.Register(privateMux, srcSvc, searchRateLimiter)
 	harticle.Register(privateMux, artSvc, paginationCfg, logger, searchRateLimiter)
-	// 友人管理・トークン発行/失効・アクセスログ(§5.1)。すべて admin 専用
-	// (viewer のパス許可リスト外)。トークン発行レスポンスの購読 URL は
-	// publicBaseURL(D-6)から組み立てる。
+	// 友人管理・トークン発行/失効・アクセスログ(§5.1)。管理 API は
+	// すべて単一管理者の JWT 必須(C-20)。トークン発行レスポンスの
+	// 購読 URL は publicBaseURL(D-6)から組み立てる。
 	hsub.Register(privateMux, subSvc, publicBaseURL)
 	haccesslog.Register(privateMux, logSvc)
 

@@ -5,7 +5,7 @@
 # No local Go installation required!
 # ============================================================
 
-.PHONY: help dev-up dev-down dev-shell test lint fmt swagger build clean logs
+.PHONY: help dev-up dev-down dev-shell test lint fmt swagger admin-hash build clean logs
 
 # Default target
 .DEFAULT_GOAL := help
@@ -81,6 +81,9 @@ swagger: ## Generate Swagger docs (docs/) inside Docker
 	@echo "📝 Generating Swagger docs in Docker..."
 	docker compose --profile dev run --rm dev sh -c "go run github.com/swaggo/swag/cmd/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal"
 	@echo "✅ Swagger docs generated"
+
+admin-hash: ## Generate bcrypt hash for ADMIN_PASSWORD_HASH (reads password from stdin)
+	@docker compose --profile dev run --rm dev sh -c "go run ./cmd/hash-password"
 
 # ────────────────────────────────────────────────────────────
 # Build (runs inside Docker)

@@ -9,8 +9,8 @@ import (
 
 // Register registers the friend-management routes (§5.1). Every route —
 // reads included — is wrapped in auth.Authz: subscriber and token
-// management is admin-only (the viewer role's path allowlist excludes
-// these paths), and the explicit wrap keeps that true even if the mux is
+// management requires the administrator's JWT (C-20), and the explicit
+// wrap keeps that true even if the mux is
 // ever mounted without the outer Authz. publicBaseURL is
 // feed.Config.PublicBaseURL, used to build the one-time subscription URL
 // at token issue (D-5).

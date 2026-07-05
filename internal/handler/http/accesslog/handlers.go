@@ -138,10 +138,9 @@ func (h SummaryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, out)
 }
 
-// Register registers the access log routes (§5.1). Both routes are
-// admin-only: the viewer role's path allowlist excludes /access-logs, and
-// the explicit auth.Authz wrap keeps them protected even if the mux is
-// ever mounted without the outer Authz.
+// Register registers the access log routes (§5.1). Both routes require
+// the administrator's JWT (C-20); the explicit auth.Authz wrap keeps them
+// protected even if the mux is ever mounted without the outer Authz.
 func Register(mux *http.ServeMux, svc alUC.Service) {
 	mux.Handle("GET /access-logs", auth.Authz(ListHandler{svc}))
 	mux.Handle("GET /access-logs/summary", auth.Authz(SummaryHandler{svc}))

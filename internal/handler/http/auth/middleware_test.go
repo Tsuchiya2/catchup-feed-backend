@@ -1,503 +1,357 @@
 package auth
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// testSetupEnv sets up environment variables for testing and returns a cleanup function
-func testSetupEnv(t *testing.T) func() {
+const testJWTSecret = "test-secret-key-at-least-32-characters-long"
+
+// setAuthzEnv configures everything Authz reads from the environment.
+// Authz captures env at construction time, so tests must call this before
+// building the middleware.
+func setAuthzEnv(t *testing.T) {
 	t.Helper()
-	if err := os.Setenv("JWT_SECRET", "test-secret-key-at-least-32-characters-long-for-testing"); err != nil {
-		t.Fatalf("Failed to set JWT_SECRET: %v", err)
-	}
-	return func() {
-		if err := os.Unsetenv("JWT_SECRET"); err != nil {
-			t.Errorf("Failed to unset JWT_SECRET: %v", err)
-		}
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv(EnvAdminUser, testAdminUser)
+}
+
+// signToken builds an HS256 token with the given claims.
+func signToken(t *testing.T, secret string, claims jwt.MapClaims) string {
+	t.Helper()
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+	require.NoError(t, err)
+	return signed
+}
+
+// adminClaims returns the claims TokenHandler issues for the administrator.
+func adminClaims() jwt.MapClaims {
+	return jwt.MapClaims{
+		"sub": testAdminUser,
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(1 * time.Hour).Unix(),
 	}
 }
 
-// testSuccessHandler returns a simple test handler that writes "success"
-func testSuccessHandler(t *testing.T) http.HandlerFunc {
+// tamperSub swaps the sub claim in an already-signed token without
+// re-signing it, simulating a claim-tampering attack.
+func tamperSub(t *testing.T, token, newSub string) string {
 	t.Helper()
-	return func(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(token, ".")
+	require.Len(t, parts, 3)
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+	var claims map[string]any
+	require.NoError(t, json.Unmarshal(payload, &claims))
+	claims["sub"] = newSub
+	altered, err := json.Marshal(claims)
+	require.NoError(t, err)
+
+	parts[1] = base64.RawURLEncoding.EncodeToString(altered)
+	return strings.Join(parts, ".")
+}
+
+func okHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("success")); err != nil {
-			t.Errorf("Failed to write response: %v", err)
-		}
-	}
+		_, _ = w.Write([]byte("success"))
+	})
 }
 
-// TestAuthz_PublicEndpoints verifies that public endpoints are accessible without JWT tokens.
-func TestAuthz_PublicEndpoints(t *testing.T) {
-	// Setup
-	cleanup := testSetupEnv(t)
-	defer cleanup()
-
-	publicEndpoints := []struct {
-		name   string
-		method string
-		path   string
-	}{
-		{"health check", "GET", "/health"},
-		{"readiness probe", "GET", "/ready"},
-		{"liveness probe", "GET", "/live"},
-		{"swagger ui", "GET", "/swagger/"},
-		{"swagger doc", "GET", "/swagger/index.html"},
-		{"auth token", "POST", "/auth/token"},
-	}
-
-	middleware := Authz(testSuccessHandler(t))
-
-	for _, tt := range publicEndpoints {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.path, nil)
-			rec := httptest.NewRecorder()
-
-			middleware.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusOK {
-				t.Errorf("Expected status %d for public endpoint %s, got %d",
-					http.StatusOK, tt.path, rec.Code)
-			}
-
-			if rec.Body.String() != "success" {
-				t.Errorf("Expected body 'success' for public endpoint %s, got %q",
-					tt.path, rec.Body.String())
-			}
-		})
-	}
-}
-
-// TestAuthz_ProtectedEndpoints_WithoutToken verifies that protected endpoints
-// return 401 Unauthorized when no JWT token is provided.
-func TestAuthz_ProtectedEndpoints_WithoutToken(t *testing.T) {
-	// Setup
-	cleanup := testSetupEnv(t)
-	defer cleanup()
-
-	protectedEndpoints := []struct {
-		name   string
-		method string
-		path   string
-	}{
-		// Articles endpoints
-		{"GET articles list", "GET", "/articles"},
-		{"GET articles search", "GET", "/articles/search"},
-		{"POST articles", "POST", "/articles"},
-		{"PUT articles", "PUT", "/articles/123"},
-		{"DELETE articles", "DELETE", "/articles/123"},
-
-		// Sources endpoints
-		{"GET sources list", "GET", "/sources"},
-		{"GET sources search", "GET", "/sources/search"},
-		{"POST sources", "POST", "/sources"},
-		{"PUT sources", "PUT", "/sources/123"},
-		{"DELETE sources", "DELETE", "/sources/123"},
-	}
-
-	middleware := Authz(testSuccessHandler(t))
-
-	for _, tt := range protectedEndpoints {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.path, nil)
-			rec := httptest.NewRecorder()
-
-			middleware.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusUnauthorized {
-				t.Errorf("Expected status %d for protected endpoint %s %s without token, got %d",
-					http.StatusUnauthorized, tt.method, tt.path, rec.Code)
-			}
-		})
-	}
-}
-
-// TestAuthz_ProtectedEndpoints_WithInvalidToken verifies that protected endpoints
-// return 401 Unauthorized when an invalid JWT token is provided.
-func TestAuthz_ProtectedEndpoints_WithInvalidToken(t *testing.T) {
-	// Setup
-	cleanup := testSetupEnv(t)
-	defer cleanup()
-
-	invalidTokens := []struct {
-		name  string
-		token string
-	}{
-		{"missing bearer prefix", "invalid-token"},
-		{"bearer without token", "Bearer "},
-		{"malformed token", "Bearer not.a.valid.token"},
-		{"empty bearer", "Bearer"},
-	}
-
-	middleware := Authz(testSuccessHandler(t))
-
-	for _, tt := range invalidTokens {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", "/articles", nil)
-			req.Header.Set("Authorization", tt.token)
-			rec := httptest.NewRecorder()
-
-			middleware.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusUnauthorized {
-				t.Errorf("Expected status %d for invalid token, got %d",
-					http.StatusUnauthorized, rec.Code)
-			}
-		})
-	}
-}
-
-// TestAuthz_ProtectedEndpoints_WithExpiredToken verifies that protected endpoints
-// return 401 Unauthorized when an expired JWT token is provided.
-func TestAuthz_ProtectedEndpoints_WithExpiredToken(t *testing.T) {
-	// Setup
-	secret := "test-secret-key-at-least-32-characters-long-for-testing"
-	if err := os.Setenv("JWT_SECRET", secret); err != nil {
-		t.Fatalf("Failed to set JWT_SECRET: %v", err)
-	}
-	defer func() {
-		if err := os.Unsetenv("JWT_SECRET"); err != nil {
-			t.Errorf("Failed to unset JWT_SECRET: %v", err)
-		}
-	}()
-
-	// Create expired token (expired 1 hour ago)
-	claims := jwt.MapClaims{
-		"sub":  "admin",
-		"role": "admin",
-		"exp":  time.Now().Add(-1 * time.Hour).Unix(),
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(secret))
-	if err != nil {
-		t.Fatalf("Failed to create test token: %v", err)
-	}
-
-	middleware := Authz(testSuccessHandler(t))
-
-	req := httptest.NewRequest("GET", "/articles", nil)
-	req.Header.Set("Authorization", "Bearer "+tokenString)
-	rec := httptest.NewRecorder()
-
-	middleware.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("Expected status %d for expired token, got %d",
-			http.StatusUnauthorized, rec.Code)
-	}
-}
-
-// TestAuthz_ProtectedEndpoints_WithNonAdminRole verifies that protected endpoints
-// return 403 Forbidden when a valid JWT token with non-admin role is provided.
-func TestAuthz_ProtectedEndpoints_WithNonAdminRole(t *testing.T) {
-	// Setup
-	secret := "test-secret-key-at-least-32-characters-long-for-testing"
-	if err := os.Setenv("JWT_SECRET", secret); err != nil {
-		t.Fatalf("Failed to set JWT_SECRET: %v", err)
-	}
-	defer func() {
-		if err := os.Unsetenv("JWT_SECRET"); err != nil {
-			t.Errorf("Failed to unset JWT_SECRET: %v", err)
-		}
-	}()
-
-	// Create valid token with non-admin role
-	claims := jwt.MapClaims{
-		"sub":  "user",
-		"role": "user", // Non-admin role
-		"exp":  time.Now().Add(1 * time.Hour).Unix(),
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(secret))
-	if err != nil {
-		t.Fatalf("Failed to create test token: %v", err)
-	}
-
-	middleware := Authz(testSuccessHandler(t))
-
-	req := httptest.NewRequest("GET", "/articles", nil)
-	req.Header.Set("Authorization", "Bearer "+tokenString)
-	rec := httptest.NewRecorder()
-
-	middleware.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("Expected status %d for non-admin role, got %d",
-			http.StatusForbidden, rec.Code)
-	}
-}
-
-// TestAuthz_RoleBasedAuthorization verifies role-based authorization
-// with both admin and viewer roles.
-func TestAuthz_RoleBasedAuthorization(t *testing.T) {
-	// Setup
-	secret := "test-secret-key-at-least-32-characters-long-for-testing"
-	if err := os.Setenv("JWT_SECRET", secret); err != nil {
-		t.Fatalf("Failed to set JWT_SECRET: %v", err)
-	}
-	defer func() {
-		if err := os.Unsetenv("JWT_SECRET"); err != nil {
-			t.Errorf("Failed to unset JWT_SECRET: %v", err)
-		}
-	}()
+func TestAuthz_PublicEndpointsBypassAuth(t *testing.T) {
+	setAuthzEnv(t)
+	middleware := Authz(okHandler())
 
 	tests := []struct {
-		name         string
-		role         string
-		method       string
-		path         string
-		expectedCode int
+		name   string
+		method string
+		path   string
 	}{
-		// Admin role - should have full access
-		{"admin can GET articles", "admin", "GET", "/articles", http.StatusOK},
-		{"admin can POST articles", "admin", "POST", "/articles", http.StatusOK},
-		{"admin can PUT articles", "admin", "PUT", "/articles/1", http.StatusOK},
-		{"admin can DELETE articles", "admin", "DELETE", "/articles/1", http.StatusOK},
-		{"admin can GET sources", "admin", "GET", "/sources", http.StatusOK},
-		{"admin can POST sources", "admin", "POST", "/sources", http.StatusOK},
-
-		// Viewer role - read-only access to articles and sources
-		{"viewer can GET articles", "viewer", "GET", "/articles", http.StatusOK},
-		{"viewer can GET articles/1", "viewer", "GET", "/articles/1", http.StatusOK},
-		{"viewer can GET sources", "viewer", "GET", "/sources", http.StatusOK},
-		{"viewer can GET sources/1", "viewer", "GET", "/sources/1", http.StatusOK},
-		{"viewer CANNOT POST articles", "viewer", "POST", "/articles", http.StatusForbidden},
-		{"viewer CANNOT PUT articles", "viewer", "PUT", "/articles/1", http.StatusForbidden},
-		{"viewer CANNOT DELETE articles", "viewer", "DELETE", "/articles/1", http.StatusForbidden},
-		{"viewer CANNOT POST sources", "viewer", "POST", "/sources", http.StatusForbidden},
-
-		// Viewer role - cannot access other endpoints
-		{"viewer CANNOT access users", "viewer", "GET", "/users", http.StatusForbidden},
-		{"viewer CANNOT access admin", "viewer", "GET", "/admin", http.StatusForbidden},
-
-		// Unknown role - should be denied
-		{"unknown role denied", "unknown", "GET", "/articles", http.StatusForbidden},
+		{"health check", http.MethodGet, "/health"},
+		{"readiness probe", http.MethodGet, "/ready"},
+		{"liveness probe", http.MethodGet, "/live"},
+		{"swagger ui", http.MethodGet, "/swagger/index.html"},
+		{"auth token", http.MethodPost, "/auth/token"},
 	}
-
-	middleware := Authz(testSuccessHandler(t))
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create token with specified role
-			claims := jwt.MapClaims{
-				"sub":  "user",
-				"role": tt.role,
-				"exp":  time.Now().Add(1 * time.Hour).Unix(),
-			}
-			token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-			tokenString, err := token.SignedString([]byte(secret))
-			if err != nil {
-				t.Fatalf("Failed to create test token: %v", err)
-			}
-
 			req := httptest.NewRequest(tt.method, tt.path, nil)
-			req.Header.Set("Authorization", "Bearer "+tokenString)
 			rec := httptest.NewRecorder()
 
 			middleware.ServeHTTP(rec, req)
 
-			if rec.Code != tt.expectedCode {
-				t.Errorf("Expected status %d for %s %s %s, got %d",
-					tt.expectedCode, tt.role, tt.method, tt.path, rec.Code)
-			}
+			assert.Equal(t, http.StatusOK, rec.Code)
 		})
 	}
 }
 
-// TestAuthz_ProtectedEndpoints_WithValidToken verifies that protected endpoints
-// are accessible with a valid JWT token.
-func TestAuthz_ProtectedEndpoints_WithValidToken(t *testing.T) {
-	// Setup
-	secret := "test-secret-key-at-least-32-characters-long-for-testing"
-	if err := os.Setenv("JWT_SECRET", secret); err != nil {
-		t.Fatalf("Failed to set JWT_SECRET: %v", err)
-	}
-	defer func() {
-		if err := os.Unsetenv("JWT_SECRET"); err != nil {
-			t.Errorf("Failed to unset JWT_SECRET: %v", err)
-		}
-	}()
+// TestAuthz_TokenValidation covers rejection of missing, malformed, forged
+// and tampered tokens (C-20: 不正・改ざんクレームの拒否).
+func TestAuthz_TokenValidation(t *testing.T) {
+	setAuthzEnv(t)
 
-	// Create valid admin token
-	claims := jwt.MapClaims{
-		"sub":  "admin",
-		"role": "admin",
-		"exp":  time.Now().Add(1 * time.Hour).Unix(),
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(secret))
-	if err != nil {
-		t.Fatalf("Failed to create test token: %v", err)
-	}
-
-	protectedEndpoints := []struct {
-		name   string
-		method string
-		path   string
+	tests := []struct {
+		name       string
+		authHeader func(t *testing.T) string
+		wantCode   int
 	}{
-		// Articles endpoints - ALL methods including GET
-		{"GET articles list", "GET", "/articles"},
-		{"GET articles search", "GET", "/articles/search"},
-		{"POST articles", "POST", "/articles"},
-		{"PUT articles", "PUT", "/articles/123"},
-		{"DELETE articles", "DELETE", "/articles/123"},
-
-		// Sources endpoints - ALL methods including GET
-		{"GET sources list", "GET", "/sources"},
-		{"GET sources search", "GET", "/sources/search"},
-		{"POST sources", "POST", "/sources"},
-		{"PUT sources", "PUT", "/sources/123"},
-		{"DELETE sources", "DELETE", "/sources/123"},
+		{
+			name:       "no token",
+			authHeader: func(*testing.T) string { return "" },
+			wantCode:   http.StatusUnauthorized,
+		},
+		{
+			name:       "missing bearer prefix",
+			authHeader: func(t *testing.T) string { return signToken(t, testJWTSecret, adminClaims()) },
+			wantCode:   http.StatusUnauthorized,
+		},
+		{
+			name:       "malformed token",
+			authHeader: func(*testing.T) string { return "Bearer not.a.token" },
+			wantCode:   http.StatusUnauthorized,
+		},
+		{
+			name: "expired token",
+			authHeader: func(t *testing.T) string {
+				claims := adminClaims()
+				claims["exp"] = time.Now().Add(-1 * time.Hour).Unix()
+				return "Bearer " + signToken(t, testJWTSecret, claims)
+			},
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name: "missing exp claim",
+			authHeader: func(t *testing.T) string {
+				return "Bearer " + signToken(t, testJWTSecret, jwt.MapClaims{"sub": testAdminUser})
+			},
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name: "missing sub claim",
+			authHeader: func(t *testing.T) string {
+				claims := adminClaims()
+				delete(claims, "sub")
+				return "Bearer " + signToken(t, testJWTSecret, claims)
+			},
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name: "empty sub claim",
+			authHeader: func(t *testing.T) string {
+				claims := adminClaims()
+				claims["sub"] = ""
+				return "Bearer " + signToken(t, testJWTSecret, claims)
+			},
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name: "token signed with wrong secret",
+			authHeader: func(t *testing.T) string {
+				return "Bearer " + signToken(t, "attacker-controlled-secret-32-chars!!", adminClaims())
+			},
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name: "alg none token",
+			authHeader: func(t *testing.T) string {
+				tok := jwt.NewWithClaims(jwt.SigningMethodNone, adminClaims())
+				signed, err := tok.SignedString(jwt.UnsafeAllowNoneSignatureType)
+				require.NoError(t, err)
+				return "Bearer " + signed
+			},
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name: "alg substitution to HS512",
+			authHeader: func(t *testing.T) string {
+				signed, err := jwt.NewWithClaims(jwt.SigningMethodHS512, adminClaims()).
+					SignedString([]byte(testJWTSecret))
+				require.NoError(t, err)
+				return "Bearer " + signed
+			},
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name: "tampered sub claim without re-signing",
+			authHeader: func(t *testing.T) string {
+				claims := adminClaims()
+				claims["sub"] = "friend@example.com"
+				legit := signToken(t, testJWTSecret, claims)
+				return "Bearer " + tamperSub(t, legit, testAdminUser)
+			},
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name: "valid admin token",
+			authHeader: func(t *testing.T) string {
+				return "Bearer " + signToken(t, testJWTSecret, adminClaims())
+			},
+			wantCode: http.StatusOK,
+		},
 	}
 
-	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify user is in context
-		user := r.Context().Value(ctxUser)
-		if user == nil {
-			t.Error("Expected user in context, got nil")
-		}
-		if user != "admin" {
-			t.Errorf("Expected user 'admin' in context, got %v", user)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			middleware := Authz(okHandler())
+			req := httptest.NewRequest(http.MethodGet, "/articles", nil)
+			if header := tt.authHeader(t); header != "" {
+				req.Header.Set("Authorization", header)
+			}
+			rec := httptest.NewRecorder()
 
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("success")); err != nil {
-			t.Errorf("Failed to write response: %v", err)
-		}
+			middleware.ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.wantCode, rec.Code)
+		})
+	}
+}
+
+// TestAuthz_NonAdminSubjectForbidden is the regression test for C-20: a
+// validly-signed token whose subject is not the administrator — e.g. a
+// leftover viewer token from the old multi-user implementation — must be
+// rejected with 403 on every admin endpoint.
+func TestAuthz_NonAdminSubjectForbidden(t *testing.T) {
+	setAuthzEnv(t)
+	middleware := Authz(okHandler())
+
+	legacyViewerToken := signToken(t, testJWTSecret, jwt.MapClaims{
+		"sub":  "demo@example.com",
+		"role": "viewer", // 旧実装のクレーム。現在は無視され、sub のみで判定される
+		"exp":  time.Now().Add(1 * time.Hour).Unix(),
+	})
+	nonAdminToken := signToken(t, testJWTSecret, jwt.MapClaims{
+		"sub": "friend@example.com",
+		"exp": time.Now().Add(1 * time.Hour).Unix(),
 	})
 
-	middleware := Authz(testHandler)
+	adminEndpoints := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/articles"},
+		{http.MethodPost, "/articles"},
+		{http.MethodGet, "/sources"},
+		{http.MethodDelete, "/sources/1"},
+		{http.MethodGet, "/subscribers"},
+		{http.MethodPost, "/subscribers/1/tokens"},
+		{http.MethodDelete, "/tokens/1"},
+		{http.MethodGet, "/access-logs"},
+	}
 
-	for _, tt := range protectedEndpoints {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.path, nil)
-			req.Header.Set("Authorization", "Bearer "+tokenString)
-			rec := httptest.NewRecorder()
+	for _, token := range []struct {
+		name  string
+		value string
+	}{
+		{"legacy viewer token", legacyViewerToken},
+		{"non-admin subject token", nonAdminToken},
+	} {
+		for _, ep := range adminEndpoints {
+			t.Run(token.name+" "+ep.method+" "+ep.path, func(t *testing.T) {
+				req := httptest.NewRequest(ep.method, ep.path, nil)
+				req.Header.Set("Authorization", "Bearer "+token.value)
+				rec := httptest.NewRecorder()
 
-			middleware.ServeHTTP(rec, req)
+				middleware.ServeHTTP(rec, req)
 
-			if rec.Code != http.StatusOK {
-				t.Errorf("Expected status %d for %s %s with valid token, got %d",
-					http.StatusOK, tt.method, tt.path, rec.Code)
-			}
-
-			if rec.Body.String() != "success" {
-				t.Errorf("Expected body 'success' for %s %s, got %q",
-					tt.method, tt.path, rec.Body.String())
-			}
-		})
+				assert.Equal(t, http.StatusForbidden, rec.Code)
+			})
+		}
 	}
 }
 
-// TestAuthz_GET_RequiresAuthentication is a focused test specifically for
-// CVE-CATCHUP-2024-002: Authorization Bypass for GET Requests.
-//
-// This test verifies that GET requests to protected endpoints now require
-// authentication, fixing the security vulnerability where GET requests
-// bypassed JWT validation.
-func TestAuthz_GET_RequiresAuthentication(t *testing.T) {
-	// Setup
-	cleanup := testSetupEnv(t)
-	defer cleanup()
+// TestAuthz_LegacyAdminTokenStillAccepted documents that extra legacy claims
+// (role) are ignored: what matters is the signature and the subject.
+func TestAuthz_LegacyAdminTokenStillAccepted(t *testing.T) {
+	setAuthzEnv(t)
+	middleware := Authz(okHandler())
 
-	middleware := Authz(testSuccessHandler(t))
-
-	tests := []struct {
-		name         string
-		path         string
-		withAuth     bool
-		expectedCode int
-	}{
-		// Without authentication - should fail
-		{"GET articles without auth", "/articles", false, http.StatusUnauthorized},
-		{"GET articles/search without auth", "/articles/search", false, http.StatusUnauthorized},
-		{"GET sources without auth", "/sources", false, http.StatusUnauthorized},
-		{"GET sources/search without auth", "/sources/search", false, http.StatusUnauthorized},
-
-		// With authentication - should succeed
-		{"GET articles with auth", "/articles", true, http.StatusOK},
-		{"GET articles/search with auth", "/articles/search", true, http.StatusOK},
-		{"GET sources with auth", "/sources", true, http.StatusOK},
-		{"GET sources/search with auth", "/sources/search", true, http.StatusOK},
-
-		// Public endpoints - should succeed without auth
-		{"GET health without auth", "/health", false, http.StatusOK},
-	}
-
-	// Create valid admin token for authenticated tests
-	secret := "test-secret-key-at-least-32-characters-long-for-testing"
-	claims := jwt.MapClaims{
-		"sub":  "admin",
+	legacyAdminToken := signToken(t, testJWTSecret, jwt.MapClaims{
+		"sub":  testAdminUser,
 		"role": "admin",
 		"exp":  time.Now().Add(1 * time.Hour).Unix(),
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(secret))
-	if err != nil {
-		t.Fatalf("Failed to create test token: %v", err)
-	}
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", tt.path, nil)
-			if tt.withAuth {
-				req.Header.Set("Authorization", "Bearer "+tokenString)
-			}
-			rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/articles", nil)
+	req.Header.Set("Authorization", "Bearer "+legacyAdminToken)
+	rec := httptest.NewRecorder()
 
-			middleware.ServeHTTP(rec, req)
+	middleware.ServeHTTP(rec, req)
 
-			if rec.Code != tt.expectedCode {
-				t.Errorf("Expected status %d, got %d", tt.expectedCode, rec.Code)
-			}
-		})
-	}
+	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
-// TestIsPublicEndpoint verifies the IsPublicEndpoint function correctly
-// identifies public and protected endpoints.
-func TestIsPublicEndpoint(t *testing.T) {
-	tests := []struct {
-		name   string
-		path   string
-		public bool
-	}{
-		// Public endpoints
-		{"health check", "/health", true},
-		{"readiness probe", "/ready", true},
-		{"liveness probe", "/live", true},
-		{"swagger root", "/swagger/", true},
-		{"swagger doc", "/swagger/index.html", true},
-		{"swagger resource", "/swagger/swagger-ui.css", true},
-		{"auth token", "/auth/token", true},
+// TestAuthz_FailsClosedWithoutAdminUser verifies that a server booted
+// without ADMIN_USER rejects every protected request instead of matching an
+// empty subject.
+func TestAuthz_FailsClosedWithoutAdminUser(t *testing.T) {
+	t.Setenv("JWT_SECRET", testJWTSecret)
+	t.Setenv(EnvAdminUser, "")
+	middleware := Authz(okHandler())
 
-		// Protected endpoints
-		{"articles list", "/articles", false},
-		{"articles search", "/articles/search", false},
-		{"article detail", "/articles/123", false},
-		{"sources list", "/sources", false},
-		{"sources search", "/sources/search", false},
-		{"source detail", "/sources/123", false},
+	token := signToken(t, testJWTSecret, jwt.MapClaims{
+		"sub": "",
+		"exp": time.Now().Add(1 * time.Hour).Unix(),
+	})
 
-		// Edge cases
-		{"root path", "/", false},
-		{"unknown path", "/unknown", false},
-		{"admin path", "/admin", false},
-	}
+	req := httptest.NewRequest(http.MethodGet, "/articles", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := IsPublicEndpoint(tt.path)
-			if result != tt.public {
-				t.Errorf("IsPublicEndpoint(%q) = %v, want %v", tt.path, result, tt.public)
-			}
-		})
-	}
+	middleware.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// TestAuthz_FailsClosedWithoutJWTSecret verifies that a server booted
+// without JWT_SECRET rejects every protected request: an empty HS256 key
+// would let anyone forge a validly signed token, so the middleware must
+// never hand an empty secret to signature validation.
+func TestAuthz_FailsClosedWithoutJWTSecret(t *testing.T) {
+	t.Setenv("JWT_SECRET", "")
+	t.Setenv(EnvAdminUser, testAdminUser)
+	middleware := Authz(okHandler())
+
+	// 攻撃者は空鍵で「正しく署名された」管理者トークンを作れてしまう
+	forged := signToken(t, "", adminClaims())
+
+	req := httptest.NewRequest(http.MethodGet, "/articles", nil)
+	req.Header.Set("Authorization", "Bearer "+forged)
+	rec := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// TestAuthz_UserInContext verifies the authenticated subject is propagated
+// to downstream handlers.
+func TestAuthz_UserInContext(t *testing.T) {
+	setAuthzEnv(t)
+
+	var gotUser any
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUser = r.Context().Value(ctxUser)
+		w.WriteHeader(http.StatusOK)
+	})
+	middleware := Authz(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/articles", nil)
+	req.Header.Set("Authorization", "Bearer "+signToken(t, testJWTSecret, adminClaims()))
+	rec := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, testAdminUser, gotUser)
 }
