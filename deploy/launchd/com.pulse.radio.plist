@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  pulse radio 夜間バッチ(§3.3: 04:30 JST)。
+
+  - CHANGEME を自分のユーザー名に置換してから ~/Library/LaunchAgents/ に置く
+    (コマンドは deploy/mac.md 9章)。
+  - リトライ装置は意図的に付けない(KeepAlive なし)。失敗した日は
+    エピソード欠番で正常、radio 自身が notify_error ジョブを積んで
+    worker が翌朝までに通知する(§8 縮退許容)。
+  - Mac がスリープ中に 04:30 を跨いだ場合、launchd は復帰時にまとめて
+    1回だけ実行する。電源オフだった日はスキップ(= 欠番)。
+  - 04:25 の自動ウェイクは pmset で別途登録する(mac.md 9章、ユーザー作業)。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pulse.radio</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/CHANGEME/pulse/bin/radio-run.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/CHANGEME/pulse/logs/radio.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/CHANGEME/pulse/logs/radio.err.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/CHANGEME/pulse</string>
+</dict>
+</plist>

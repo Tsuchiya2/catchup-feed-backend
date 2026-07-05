@@ -1,0 +1,37 @@
+# pulse スタックのブート時起動順を保証する oneshot ユニット。
+#
+# なぜ restart: unless-stopped だけでは足りないか:
+#   compose.pi.yml は私的リスナーと PostgreSQL を Tailscale IP(TAILNET_IP)に
+#   バインドする。ブート直後は tailscaled がまだ IP を持っておらずバインドに
+#   失敗し得るが、Docker の再起動ポリシーは「一度も起動に成功していない
+#   コンテナ」を再試行しない。このユニットが tailscaled 起動後に
+#   `docker compose up -d` を一度だけ実行することで確実に立ち上げる。
+#   稼働中の自己回復(クラッシュ・OOM)は各コンテナの restart: unless-stopped が担う。
+#
+# 導入(pi.md 4章):
+#   1. WorkingDirectory のパスを実際のリポジトリ位置に書き換える
+#   2. sudo cp deploy/systemd/pulse.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload && sudo systemctl enable --now pulse.service
+
+[Unit]
+Description=pulse stack (server + worker + postgres via docker compose)
+Requires=docker.service
+After=docker.service network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# リポジトリの deploy/ ディレクトリ(compose.pi.yml と .env がある場所)に書き換える
+WorkingDirectory=/home/CHANGEME/pulse/catchup-feed-backend/deploy
+# After=tailscaled.service はプロセス起動順しか保証せず、tailnet IP の付与
+# 完了は保証しない。oneshot は一度負けると手動起動まで止まるため、IP が
+# 実際に付くまで待ってから compose を上げる(TimeoutStartSec=300 の範囲内)。
+ExecStartPre=/bin/sh -c 'until tailscale ip -4 >/dev/null 2>&1; do sleep 2; done'
+ExecStart=/usr/bin/docker compose -f compose.pi.yml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose -f compose.pi.yml stop
+# 初回のイメージビルドは事前に手動で済ませる前提(pi.md 3章)
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

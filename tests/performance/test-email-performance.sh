@@ -7,7 +7,7 @@
 #   2. Concurrent email sending (10 parallel processes)
 #   3. Latency measurement (time to send email)
 #   4. Retry logic performance (failed sends with backoff)
-#   5. Prometheus metrics update performance
+#   5. File locking under concurrent access
 #
 # Usage:
 #   ./tests/performance/test-email-performance.sh
@@ -54,10 +54,6 @@ export EMAIL_ENABLED="true"
 export SMTP_TIMEOUT="5"
 export EMAIL_RATE_LIMIT_HOURLY="10"
 export EMAIL_RATE_LIMIT_DAILY="100"
-export PROMETHEUS_METRICS_DIR="$TEST_TMP_DIR/metrics"
-
-# Create metrics directory
-mkdir -p "$PROMETHEUS_METRICS_DIR"
 
 # Source the email functions library
 if [ ! -f "$EMAIL_FUNCTIONS_LIB" ]; then
@@ -111,7 +107,6 @@ run_test() {
     rm -f "$TEST_TMP_DIR"/*.log 2>/dev/null || true
     rm -f "$TEST_TMP_DIR"/*.prom 2>/dev/null || true
     rm -f "$TEST_TMP_DIR"/ALERT 2>/dev/null || true
-    rm -f "$PROMETHEUS_METRICS_DIR"/*.prom 2>/dev/null || true
 
     if $test_function; then
         ((TESTS_PASSED++))
@@ -314,17 +309,6 @@ test_concurrent_sending() {
         fi
     fi
 
-    # Verify Prometheus metrics integrity
-    local metrics_file="$PROMETHEUS_METRICS_DIR/email_metrics.prom"
-    if [ -f "$metrics_file" ]; then
-        echo -e "${GREEN}✓ PASS${NC}: Metrics file created despite concurrent access"
-
-        # Check metrics file is valid
-        if grep -q 'catchup_email_sent_total' "$metrics_file"; then
-            echo -e "${GREEN}✓ PASS${NC}: Metrics file is valid"
-        fi
-    fi
-
     return 0
 }
 
@@ -471,94 +455,7 @@ test_retry_logic_performance() {
 }
 
 # ============================================================
-# Test 5: Prometheus Metrics Update Performance
-# ============================================================
-test_metrics_update_performance() {
-    setup_mock_msmtp "success"
-
-    echo -e "${BLUE}INFO${NC}: Testing Prometheus metrics update performance"
-
-    # Clear metrics
-    rm -f "$PROMETHEUS_METRICS_DIR"/*.prom
-    rm -f "$EMAIL_LOG_DIR/email-rate-limit.log"
-
-    local test_iterations=20
-    local start_time
-    local end_time
-
-    start_time=$(date +%s)
-
-    # Send multiple emails to trigger metric updates
-    for i in $(seq 1 $test_iterations); do
-        local corr_id
-        corr_id=$(generate_correlation_id)
-        send_email "Metrics Test $i" "Body $i" "$corr_id" "normal" >/dev/null 2>&1
-    done
-
-    end_time=$(date +%s)
-    local duration=$((end_time - start_time))
-
-    echo -e "${BLUE}RESULTS${NC}:"
-    echo "  Email Sends: $test_iterations"
-    echo "  Total Duration: ${duration}s"
-    echo "  Avg Time/Email: $(echo "scale=3; $duration / $test_iterations" | bc 2>/dev/null || echo "N/A")s"
-
-    # Verify metrics file integrity
-    local metrics_file="$PROMETHEUS_METRICS_DIR/email_metrics.prom"
-    if [ ! -f "$metrics_file" ]; then
-        echo -e "${RED}✗ FAIL${NC}: Metrics file not created"
-        return 1
-    fi
-
-    echo -e "${GREEN}✓ PASS${NC}: Metrics file created"
-
-    # Verify metrics content
-    local metric_content
-    metric_content=$(cat "$metrics_file")
-
-    # Check for corruption or race conditions in metrics file
-    if echo "$metric_content" | grep -q '^catchup_email'; then
-        echo -e "${GREEN}✓ PASS${NC}: Metrics file format is valid"
-    else
-        echo -e "${RED}✗ FAIL${NC}: Metrics file format invalid"
-        return 1
-    fi
-
-    # Count unique metrics
-    local metric_count
-    metric_count=$(grep -c '^catchup_email' "$metrics_file" || echo "0")
-
-    echo -e "${BLUE}INFO${NC}: Metrics file contains $metric_count metric entries"
-
-    if [ "$metric_count" -gt 0 ]; then
-        echo -e "${GREEN}✓ PASS${NC}: Metrics successfully updated"
-    fi
-
-    # Verify atomic writes (no temp files left behind)
-    local temp_files
-    temp_files=$(find "$PROMETHEUS_METRICS_DIR" -name "*.tmp" -o -name ".metrics*" | wc -l | tr -d ' ')
-
-    if [ "$temp_files" -eq 0 ]; then
-        echo -e "${GREEN}✓ PASS${NC}: No temporary files left (atomic writes working)"
-    else
-        echo -e "${YELLOW}⚠ WARNING${NC}: Found $temp_files temporary files"
-    fi
-
-    # Check file permissions
-    local file_perms
-    file_perms=$(stat -f "%Lp" "$metrics_file" 2>/dev/null || stat -c "%a" "$metrics_file" 2>/dev/null)
-
-    if [ "$file_perms" = "644" ]; then
-        echo -e "${GREEN}✓ PASS${NC}: Metrics file has correct permissions (644)"
-    else
-        echo -e "${YELLOW}⚠ WARNING${NC}: Metrics file permissions are $file_perms (expected 644)"
-    fi
-
-    return 0
-}
-
-# ============================================================
-# Test 6: File Locking Under Concurrent Access
+# Test 5: File Locking Under Concurrent Access
 # ============================================================
 test_file_locking() {
     setup_mock_msmtp "success"
@@ -567,7 +464,6 @@ test_file_locking() {
 
     # Clear logs
     rm -f "$EMAIL_LOG_DIR/email-rate-limit.log"
-    rm -f "$PROMETHEUS_METRICS_DIR"/*.prom
 
     # Set high rate limits
     export EMAIL_RATE_LIMIT_HOURLY="100"
@@ -638,17 +534,6 @@ test_file_locking() {
         return 1
     fi
 
-    # Check metrics file integrity
-    local metrics_file="$PROMETHEUS_METRICS_DIR/email_metrics.prom"
-    if [ -f "$metrics_file" ]; then
-        if grep -q '^catchup_email' "$metrics_file"; then
-            echo -e "${GREEN}✓ PASS${NC}: Metrics file is valid despite concurrent updates"
-        else
-            echo -e "${RED}✗ FAIL${NC}: Metrics file corrupted"
-            return 1
-        fi
-    fi
-
     return 0
 }
 
@@ -669,8 +554,7 @@ main() {
     run_test "TEST 2: Concurrent Email Sending" test_concurrent_sending
     run_test "TEST 3: Latency Measurement" test_latency_measurement
     run_test "TEST 4: Retry Logic Performance" test_retry_logic_performance
-    run_test "TEST 5: Metrics Update Performance" test_metrics_update_performance
-    run_test "TEST 6: File Locking Under Concurrent Access" test_file_locking
+    run_test "TEST 5: File Locking Under Concurrent Access" test_file_locking
 
     # Clean up test directory
     echo ""

@@ -5,9 +5,8 @@
 # Test Coverage:
 #   1. backup.sh - Database backup notifications (success/failure)
 #   2. health-check.sh - Service health monitoring alerts
-#   3. cleanup-prometheus.sh - Prometheus size warnings
-#   4. docker-cleanup.sh - Docker cleanup reports
-#   5. disk-usage-check.sh - Disk usage alerts
+#   3. docker-cleanup.sh - Docker cleanup reports
+#   4. disk-usage-check.sh - Disk usage alerts
 #
 # Usage:
 #   ./tests/e2e/test-notification-scripts.sh
@@ -55,12 +54,10 @@ export EMAIL_ENABLED="true"
 export SMTP_TIMEOUT="5"
 export EMAIL_RATE_LIMIT_HOURLY="100"
 export EMAIL_RATE_LIMIT_DAILY="1000"
-export PROMETHEUS_METRICS_DIR="$TEST_TMP_DIR/metrics"
 export BACKUP_DIR="$TEST_TMP_DIR/backups"
 
 # Create required directories
 mkdir -p "$EMAIL_LOG_DIR"
-mkdir -p "$PROMETHEUS_METRICS_DIR"
 mkdir -p "$BACKUP_DIR"
 
 # ============================================================
@@ -139,7 +136,6 @@ run_test() {
     # Clean up test environment before each test
     rm -f "$EMAIL_LOG_DIR"/*.log 2>/dev/null || true
     rm -f "$EMAIL_LOG_DIR"/ALERT 2>/dev/null || true
-    rm -f "$PROMETHEUS_METRICS_DIR"/*.prom 2>/dev/null || true
 
     if $test_function; then
         ((TESTS_PASSED++))
@@ -410,9 +406,7 @@ Unhealthy Services:
 - worker: High memory usage
 
 Healthy Services:
-- app: OK
-- prometheus: OK
-- grafana: OK
+- server: OK
 
 Correlation ID: $CORRELATION_ID
 
@@ -453,78 +447,7 @@ WRAPPER_EOF
 }
 
 # ============================================================
-# Test 3: cleanup-prometheus.sh - Prometheus Warnings
-# ============================================================
-test_cleanup_prometheus_script() {
-    setup_mock_msmtp
-
-    local cleanup_script="$SCRIPTS_DIR/cleanup-prometheus.sh"
-
-    if [ ! -f "$cleanup_script" ]; then
-        echo -e "${YELLOW}⚠ WARNING${NC}: cleanup-prometheus.sh not found"
-        return 0
-    fi
-
-    echo -e "${BLUE}INFO${NC}: Testing cleanup-prometheus.sh email notifications"
-
-    # Create test script
-    local test_script="$TEST_TMP_DIR/test-prometheus-wrapper.sh"
-    cat > "$test_script" << 'WRAPPER_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-source scripts/lib/email-functions.sh
-
-CORRELATION_ID=$(generate_correlation_id)
-
-CURRENT_SIZE="3.2GB"
-THRESHOLD="2GB"
-
-SUBJECT="Prometheus Data Size Warning - $(date '+%Y-%m-%d %H:%M')"
-BODY="Prometheus data directory has exceeded the warning threshold.
-
-Current Size: $CURRENT_SIZE
-Warning Threshold: $THRESHOLD
-
-Oldest Data: 2024-01-15 (30 days old)
-
-Recommendations:
-1. Reduce retention period in prometheus.yml
-2. Review and adjust scrape intervals
-3. Consider using remote storage
-
-Correlation ID: $CORRELATION_ID"
-
-send_email "$SUBJECT" "$BODY" "$CORRELATION_ID" "normal"
-exit $?
-WRAPPER_EOF
-
-    chmod +x "$test_script"
-
-    set +e
-    cd "$PROJECT_ROOT" && bash "$test_script" >/dev/null 2>&1
-    local prom_result=$?
-    set -e
-
-    if [ $prom_result -eq 0 ]; then
-        echo -e "${GREEN}✓ PASS${NC}: Prometheus warning email sent"
-    else
-        echo -e "${YELLOW}⚠ WARNING${NC}: Prometheus email failed (exit code: $prom_result)"
-    fi
-
-    # Verify email
-    local email_log="$EMAIL_LOG_DIR/email.log"
-    if [ -f "$email_log" ]; then
-        local log_content
-        log_content=$(tail -1 "$email_log")
-        assert_contains "$log_content" "Prometheus" "Email contains Prometheus warning" || return 1
-    fi
-
-    return 0
-}
-
-# ============================================================
-# Test 4: docker-cleanup.sh - Docker Cleanup Reports
+# Test 3: docker-cleanup.sh - Docker Cleanup Reports
 # ============================================================
 test_docker_cleanup_script() {
     setup_mock_msmtp
@@ -596,7 +519,7 @@ WRAPPER_EOF
 }
 
 # ============================================================
-# Test 5: disk-usage-check.sh - Disk Usage Alerts
+# Test 4: disk-usage-check.sh - Disk Usage Alerts
 # ============================================================
 test_disk_usage_script() {
     setup_mock_msmtp
@@ -678,7 +601,7 @@ WRAPPER_EOF
 }
 
 # ============================================================
-# Test 6: Correlation ID Propagation
+# Test 5: Correlation ID Propagation
 # ============================================================
 test_correlation_id_propagation() {
     setup_mock_msmtp
@@ -767,10 +690,9 @@ main() {
     # Run all tests
     run_test "TEST 1: backup.sh - Backup Notifications" test_backup_script
     run_test "TEST 2: health-check.sh - Health Monitoring" test_health_check_script
-    run_test "TEST 3: cleanup-prometheus.sh - Prometheus Warnings" test_cleanup_prometheus_script
-    run_test "TEST 4: docker-cleanup.sh - Docker Cleanup Reports" test_docker_cleanup_script
-    run_test "TEST 5: disk-usage-check.sh - Disk Usage Alerts" test_disk_usage_script
-    run_test "TEST 6: Correlation ID Propagation" test_correlation_id_propagation
+    run_test "TEST 3: docker-cleanup.sh - Docker Cleanup Reports" test_docker_cleanup_script
+    run_test "TEST 4: disk-usage-check.sh - Disk Usage Alerts" test_disk_usage_script
+    run_test "TEST 5: Correlation ID Propagation" test_correlation_id_propagation
 
     # Clean up test directory
     echo ""

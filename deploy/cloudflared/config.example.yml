@@ -1,0 +1,37 @@
+# ============================================================
+# Cloudflare Tunnel ingress — pulse 追加分の例(U-9)
+# ============================================================
+# 旧 catchup-feed が使っている既存トンネルに「ルートを追加」する形。
+# Pi 上の実ファイル(通常 /etc/cloudflared/config.yml)の ingress リストに
+# radio.catchup-feed.com のエントリを追記する。tunnel / credentials-file は
+# 既存の値をそのまま使うこと(このファイルは丸ごと置き換え用ではない)。
+#
+# 公開してよいルートの確認(§5.1 / C-5):
+#   radio.catchup-feed.com → pulse server の「公開リスナー」(127.0.0.1:8090)。
+#   このリスナーが提供するのは
+#     - GET  /feeds/{token}/feed.xml, /feeds/{token}/episodes/{id}.mp3(トークン認証)
+#     - POST /auth/token(ダッシュボードログイン)
+#     - /sources /articles /subscribers /tokens /access-logs(JWT 必須の管理 API)
+#   のみ。私的フィード(/private/*)は別リスナー(TAILNET_IP:8081)であり、
+#   127.0.0.1:8090 には存在しない = Tunnel には構造上載らない。
+#   検証: curl https://radio.catchup-feed.com/private/feed.xml → 401 であること。
+#   (401 は「認証付きで公開されている」の意味ではない。公開リスナーに
+#    /private ルートは存在せず、デフォルトの JWT 保護ハンドラ("/")に
+#    落ちて 401 が返るだけ。)
+
+tunnel: <既存トンネルの UUID をそのまま>
+credentials-file: <既存の credentials ファイルパスをそのまま>
+
+ingress:
+  # --- pulse(追加分) ---
+  - hostname: radio.catchup-feed.com
+    service: http://localhost:8090   # compose.pi.yml の API_PORT に合わせる
+
+  # --- 既存ルート(旧 catchup-feed / ダッシュボード等)はそのまま残す ---
+  # - hostname: pulse.catchup-feed.com
+  #   service: http://localhost:3000
+  # - hostname: <旧システムのホスト名>
+  #   service: http://localhost:8080
+
+  # 最後のフォールバックは必須
+  - service: http_status:404

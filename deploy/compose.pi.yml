@@ -1,0 +1,179 @@
+# ============================================================
+# pulse — Raspberry Pi 5 本番スタック(server + worker + PostgreSQL)
+# ============================================================
+# 旧 catchup-feed スタックと同一ホストで共存する前提(§9 の停止まで):
+#   - コンテナ名は pulse-*(旧: catchup-*)
+#   - ホスト側ポートは 8090 / 8081 / 5433(旧: 8080 / 9091 / 5432)
+#   - ネットワークは compose 既定(旧 compose の固定サブネット 172.25.0.0/16 と衝突させない)
+#
+# 使い方(詳細は deploy/pi.md):
+#   cp deploy/env.pi.example deploy/.env   # 値を記入
+#   docker compose -f deploy/compose.pi.yml up -d --build
+#
+# ポート公開の設計(公開面の最小化):
+#   - 公開リスナー(:8080)      → 127.0.0.1:${API_PORT} のみ。外へは Cloudflare Tunnel 経由
+#   - 私的リスナー(:8081)      → ${TAILNET_IP}:8081 のみ。tailnet 外・LAN には出ない(C-5)
+#   - PostgreSQL(:5432)        → 127.0.0.1 と ${TAILNET_IP} の 5433。radio(Mac)が tailnet 越しに接続
+#   TAILNET_IP へのバインドは tailscaled 起動後でないと失敗するため、ブート時の起動順は
+#   deploy/systemd/pulse.service が保証する(pi.md 参照)。
+
+name: pulse
+
+volumes:
+  db-data:
+    driver: local
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: pulse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pulse}
+      POSTGRES_DB: ${POSTGRES_DB:-pulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    volumes:
+      # PostgreSQL 18 は /var/lib/postgresql をマウントする(旧 compose の知見を継承)
+      - db-data:/var/lib/postgresql
+    ports:
+      # Pi ローカル(psql・デバッグ)と tailnet(radio バッチ・バックアップ)のみ。
+      # LAN には公開しない。
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+      - "${TAILNET_IP:?set TAILNET_IP in deploy/.env (tailscale ip -4)}:${POSTGRES_PORT:-5433}:5432"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: pulse-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pulse}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-pulse}?sslmode=disable
+
+      # 認証(C-7 / C-20)
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in deploy/.env}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?set ADMIN_PASSWORD_HASH in deploy/.env}
+
+      # フィード配信(§5 / D-6)
+      FEED_PUBLIC_BASE_URL: ${FEED_PUBLIC_BASE_URL:-https://radio.catchup-feed.com}
+      FEED_AUDIO_DIR: /data/episodes
+      FEED_CHANNEL_TITLE: ${FEED_CHANNEL_TITLE:-}
+      FEED_CHANNEL_DESCRIPTION: ${FEED_CHANNEL_DESCRIPTION:-}
+      FEED_MAX_ITEMS: ${FEED_MAX_ITEMS:-}
+
+      # 私的フィード(C-5)。コンテナ内では自コンテナの IP(サービス名 "server")に
+      # バインドし、ホスト側の公開は ports の ${TAILNET_IP}:8081 だけに限定する。
+      # ワイルドカードバインド(LAN 露出)はアプリ側バリデーションでも拒否される。
+      PRIVATE_FEED_ADDR: ${PRIVATE_FEED_ADDR:-server:8081}
+      FEED_PRIVATE_BASE_URL: ${FEED_PRIVATE_BASE_URL:-}
+
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?set CORS_ALLOWED_ORIGINS in deploy/.env}
+
+      # Cloudflare Tunnel(cloudflared は同一ホストの 127.0.0.1 から接続)越しの
+      # クライアント IP をレートリミッターに見せる場合のみ有効化(既定は secure mode)
+      RATE_LIMIT_TRUST_PROXY: ${RATE_LIMIT_TRUST_PROXY:-}
+      RATE_LIMIT_TRUSTED_PROXIES: ${RATE_LIMIT_TRUSTED_PROXIES:-}
+
+      TZ: ${TZ:-Asia/Tokyo}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${API_PORT:-8090}:8080"
+      - "${TAILNET_IP}:8081:8081"
+    volumes:
+      # mp3 アーカイブ。server は配信のみ(読み取り専用)
+      - ${EPISODES_DIR:?set EPISODES_DIR in deploy/.env}:/data/episodes:ro
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: pulse-worker
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/worker"]
+    command: []
+    depends_on:
+      postgres:
+        condition: service_healthy
+      server:
+        condition: service_healthy # マイグレーションは server 起動時に適用される
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pulse}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-pulse}?sslmode=disable
+
+      # 要約フォールバック連鎖(Gemini → Groq → Ollama)
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-}
+      OLLAMA_ENABLED: ${OLLAMA_ENABLED:-}
+      # Mac の Ollama(tailnet 経由)。Mac が閉じている時間帯は失敗するが、
+      # 未要約記事は次回クロールに持ち越されるだけ(縮退許容 §8)
+      OLLAMA_HOST: ${OLLAMA_HOST:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
+      SUMMARIZER_CHAR_LIMIT: ${SUMMARIZER_CHAR_LIMIT:-}
+      SUMMARIZER_TIMEOUT: ${SUMMARIZER_TIMEOUT:-}
+
+      # 通知(D-7: 本人=Discord+Slack、友人=メール)
+      DISCORD_ENABLED: ${DISCORD_ENABLED:-false}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      SLACK_ENABLED: ${SLACK_ENABLED:-false}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      SMTP_ENABLED: ${SMTP_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+
+      # jobs コンシューマ + D-4 cleanup(mp3 45日保持)
+      JOBS_POLL_INTERVAL: ${JOBS_POLL_INTERVAL:-}
+      CLEANUP_CRON_SCHEDULE: ${CLEANUP_CRON_SCHEDULE:-}
+      FEED_AUDIO_DIR: /data/episodes
+      FEED_PRIVATE_BASE_URL: ${FEED_PRIVATE_BASE_URL:-}
+
+      # クロール(§3.3: 毎時)
+      CRON_SCHEDULE: ${CRON_SCHEDULE:-0 * * * *}
+      WORKER_TIMEZONE: ${WORKER_TIMEZONE:-Asia/Tokyo}
+      CRAWL_TIMEOUT: ${CRAWL_TIMEOUT:-30m}
+      WORKER_HEALTH_PORT: ${WORKER_HEALTH_PORT:-9091}
+
+      TZ: ${TZ:-Asia/Tokyo}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9091/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    volumes:
+      # cleanup_old_media(D-4)が古い mp3 を削除するため読み書き
+      - ${EPISODES_DIR}:/data/episodes
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
