@@ -32,9 +32,10 @@ type parsedRSS struct {
 	XMLName xml.Name `xml:"rss"`
 	Version string   `xml:"version,attr"`
 	Channel struct {
-		Title    string `xml:"title"`
-		Language string `xml:"language"`
-		Items    []struct {
+		Title       string `xml:"title"`
+		Description string `xml:"description"`
+		Language    string `xml:"language"`
+		Items       []struct {
 			Title     string `xml:"title"`
 			PubDate   string `xml:"pubDate"`
 			GUID      string `xml:"guid"`
@@ -86,6 +87,42 @@ func TestRenderRSS_PublicEnclosureUnderTokenPath(t *testing.T) {
 	assert.Contains(t, raw, `xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"`)
 	assert.Contains(t, raw, "<itunes:duration>15:00</itunes:duration>")
 	assert.Contains(t, raw, "<itunes:block>Yes</itunes:block>", "token URL feeds must opt out of directory listing")
+}
+
+// TestRenderRSS_ChannelDescriptionCarriesVoicevoxCredit pins U-13: every
+// generated channel description names the synthesis engine, regardless of
+// how FEED_CHANNEL_DESCRIPTION is configured. The per-speaker
+// 「VOICEVOX:話者名」 credit lives in each episode's show notes.
+func TestRenderRSS_ChannelDescriptionCarriesVoicevoxCredit(t *testing.T) {
+	tests := []struct {
+		name        string
+		description string
+		want        string
+	}{
+		{
+			name:        "configured description keeps the credit appended",
+			description: "毎朝の技術ニュースラジオ",
+			want:        "毎朝の技術ニュースラジオ\n\n音声合成: VOICEVOX",
+		},
+		{
+			name:        "empty description still carries the credit",
+			description: "",
+			want:        "音声合成: VOICEVOX",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := renderRSS(
+				channelMeta{Title: "t", Link: "l", Description: tt.description, Language: "ja"},
+				nil, func(*entity.Episode) string { return "" })
+			require.NoError(t, err)
+
+			var doc parsedRSS
+			require.NoError(t, xml.Unmarshal(out, &doc))
+			assert.Equal(t, tt.want, doc.Channel.Description)
+		})
+	}
 }
 
 func TestRenderRSS_PrivateEnclosureURL(t *testing.T) {

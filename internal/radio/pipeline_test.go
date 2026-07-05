@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,8 +114,10 @@ func (f *fakeScript) GenerateEpisode(_ context.Context, _ time.Time, articles []
 }
 
 type fakeTTS struct {
-	err   error
-	calls int
+	err            error
+	calls          int
+	speakerName    string // "" = "ずんだもん"
+	speakerNameErr error
 }
 
 func (f *fakeTTS) SynthesizeScript(_ context.Context, _ string) ([]tts.Audio, error) {
@@ -123,6 +126,16 @@ func (f *fakeTTS) SynthesizeScript(_ context.Context, _ string) ([]tts.Audio, er
 		return nil, f.err
 	}
 	return []tts.Audio{{Data: []byte("wav"), Duration: 30 * time.Second}}, nil
+}
+
+func (f *fakeTTS) SpeakerName(_ context.Context) (string, error) {
+	if f.speakerNameErr != nil {
+		return "", f.speakerNameErr
+	}
+	if f.speakerName == "" {
+		return "ずんだもん", nil
+	}
+	return f.speakerName, nil
 }
 
 type fakeEncoder struct {
@@ -234,6 +247,8 @@ func TestPipeline_Run_Success(t *testing.T) {
 	assert.Equal(t, 120, ep.DurationSec, "4 segments x 30s")
 	assert.Contains(t, ep.ShowNotes, "https://example.com/a")
 	assert.Contains(t, ep.ShowNotes, "https://example.com/b")
+	assert.True(t, strings.HasSuffix(ep.ShowNotes, "音声合成: VOICEVOX:ずんだもん"),
+		"U-13: show notes must end with the VOICEVOX speaker credit, got:\n%s", ep.ShowNotes)
 	require.Len(t, d.episodes.createdSegs, 4)
 
 	// jobs for the Pi worker (§6-5, C-4)
@@ -376,6 +391,13 @@ func TestPipeline_Run_FailuresWriteNothing(t *testing.T) {
 			wantSub: "tts segment",
 		},
 		{
+			// U-13: クレジット表記なしでの配信は不可 — the run aborts
+			// instead of shipping a credit-less episode.
+			name:    "VOICEVOX speaker name unresolved skips the day (U-13)",
+			mutate:  func(d *deps) { d.tts.speakerNameErr = errors.New("connection refused") },
+			wantSub: "speaker name",
+		},
+		{
 			name:    "ffmpeg failure",
 			mutate:  func(d *deps) { d.encoder.err = errors.New("exit status 1") },
 			wantSub: "encode",
@@ -425,6 +447,21 @@ func TestPipeline_Run_DryRun(t *testing.T) {
 	assert.Contains(t, printed, "pulse 2026-07-05")
 	assert.Contains(t, printed, "イントロ。", "scripts go to stdout for prompt/speaker tuning (D-2)")
 	assert.Contains(t, printed, "https://example.com/a", "show notes preview")
+	assert.Contains(t, printed, "音声合成: VOICEVOX:ずんだもん", "show notes preview carries the credit (U-13)")
+}
+
+// TestPipeline_Run_DryRunWithoutEngine pins that dry-run stays usable when
+// the VOICEVOX engine is unreachable (D-2: プロンプト調整はエンジン不要):
+// the unresolved speaker name becomes a placeholder instead of an error.
+func TestPipeline_Run_DryRunWithoutEngine(t *testing.T) {
+	d := defaultDeps()
+	d.tts.speakerNameErr = errors.New("connection refused")
+	p := newPipeline(t, d)
+
+	require.NoError(t, p.Run(context.Background(), radio.RunOptions{DryRun: true}))
+
+	assert.Nil(t, d.episodes.created)
+	assert.Contains(t, d.out.String(), "音声合成: VOICEVOX:(話者名未解決)")
 }
 
 func TestPipeline_Run_OverflowGoesToShowNotesOnly(t *testing.T) {

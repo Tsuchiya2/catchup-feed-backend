@@ -37,3 +37,13 @@ func TestBuildShowNotes(t *testing.T) {
 		assert.Contains(t, notes, "https://example.com/b")
 	})
 }
+
+func TestAppendVoicevoxCredit(t *testing.T) {
+	// U-13 のピン留め: 配布するエピソードのショーノートは必ず
+	// 「VOICEVOX:話者名」のクレジット行で終わる。
+	notes := script.AppendVoicevoxCredit("今日紹介した記事:\n- 記事A", "ずんだもん")
+
+	assert.Equal(t,
+		"今日紹介した記事:\n- 記事A\n\n音声合成: VOICEVOX:ずんだもん",
+		notes)
+}

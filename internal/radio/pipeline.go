@@ -54,10 +54,15 @@ type ScriptGenerator interface {
 	GenerateEpisode(ctx context.Context, date time.Time, articles []repository.RadioArticle) ([]*entity.Segment, error)
 }
 
-// Synthesizer renders one segment script as sentence WAVs (§6-3).
-// Satisfied by tts.Voicevox.
+// Synthesizer renders one segment script as sentence WAVs (§6-3) and names
+// the voice it uses for the mandatory VOICEVOX credit (U-13). Satisfied by
+// tts.Voicevox.
 type Synthesizer interface {
 	SynthesizeScript(ctx context.Context, script string) ([]tts.Audio, error)
+	// SpeakerName resolves the credit speaker name for the configured
+	// voice. An error aborts the run — episodes must never ship without
+	// their 「VOICEVOX:話者名」 credit.
+	SpeakerName(ctx context.Context) (string, error)
 }
 
 // Encoder produces the final mp3 (§6-4). Satisfied by tts.FFmpeg.
@@ -136,12 +141,28 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 		slog.Int("featured", len(featured)),
 		slog.Int("overflow", len(overflow)))
 
+	// --- U-13 VOICEVOX クレジット ---
+	// Resolved before the LLM stage so a dead engine fails fast instead of
+	// burning free-tier quota on a script that cannot be voiced anyway. A
+	// resolution failure aborts the run: shipping an episode without its
+	// 「VOICEVOX:話者名」 credit would violate the VOICEVOX terms of use.
+	// Dry-run keeps going with a placeholder — it never distributes audio
+	// and must stay usable on machines without the engine (D-2).
+	speakerName, err := p.TTS.SpeakerName(ctx)
+	if err != nil {
+		if !opts.DryRun {
+			return fmt.Errorf("radio: resolve VOICEVOX speaker name for credit (U-13): %w", err)
+		}
+		logger.Warn("VOICEVOX speaker name unresolved, dry-run uses a placeholder", slog.Any("error", err))
+		speakerName = "(話者名未解決)"
+	}
+
 	// --- §6-2 台本生成 ---
 	segments, err := p.Script.GenerateEpisode(ctx, now, featured)
 	if err != nil {
 		return fmt.Errorf("radio: generate script: %w", err)
 	}
-	showNotes := script.BuildShowNotes(featured, overflow)
+	showNotes := script.AppendVoicevoxCredit(script.BuildShowNotes(featured, overflow), speakerName)
 
 	// --- §6-6 冪等性: 同日再実行は rev 付き新規版 ---
 	title, filename, err := p.episodeNaming(ctx, now)

@@ -27,6 +27,9 @@ type voicevoxStub struct {
 	queryStatus   int       // non-zero forces /audio_query failure
 	synthStatus   int       // non-zero forces /synthesis failure
 	wav           []byte    // /synthesis response body
+
+	speakersStatus int // non-zero forces /speakers failure
+	speakersCalls  int // number of GET /speakers requests observed
 }
 
 func (s *voicevoxStub) handler() http.Handler {
@@ -58,6 +61,21 @@ func (s *voicevoxStub) handler() http.Handler {
 		}
 		w.Header().Set("Content-Type", "audio/wav")
 		_, _ = w.Write(s.wav)
+	})
+	mux.HandleFunc("GET /speakers", func(w http.ResponseWriter, _ *http.Request) {
+		s.mu.Lock()
+		s.speakersCalls++
+		s.mu.Unlock()
+		if s.speakersStatus != 0 {
+			http.Error(w, "engine error", s.speakersStatus)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Shape of the real engine response: characters with style lists.
+		_, _ = w.Write([]byte(`[
+			{"name":"四国めたん","speaker_uuid":"u1","styles":[{"name":"ノーマル","id":2},{"name":"あまあま","id":0}]},
+			{"name":"ずんだもん","speaker_uuid":"u2","styles":[{"name":"ノーマル","id":3},{"name":"あまあま","id":1}]}
+		]`))
 	})
 	return mux
 }
@@ -132,6 +150,93 @@ func TestVoicevox_Errors(t *testing.T) {
 			_, err := client.SynthesizeScript(context.Background(), tt.script)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantSub)
+		})
+	}
+}
+
+// TestVoicevox_SpeakerName pins the U-13 credit-name resolution order:
+// explicit config override first, then the engine's /speakers API, and a
+// hard error otherwise — never a silent credit-less fallback.
+func TestVoicevox_SpeakerName(t *testing.T) {
+	t.Run("resolves the character name for the configured style ID", func(t *testing.T) {
+		client, stub := newVoicevoxTest(t, &voicevoxStub{},
+			tts.VoicevoxConfig{Speaker: 3, Timeout: 5 * time.Second})
+
+		name, err := client.SpeakerName(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, "ずんだもん", name, "style ID 3 belongs to ずんだもん")
+		assert.Equal(t, 1, stub.speakersCalls)
+	})
+
+	t.Run("style ID of another character resolves to that character", func(t *testing.T) {
+		client, _ := newVoicevoxTest(t, &voicevoxStub{},
+			tts.VoicevoxConfig{Speaker: 2, Timeout: 5 * time.Second})
+
+		name, err := client.SpeakerName(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, "四国めたん", name)
+	})
+
+	t.Run("style ID 0 is a real voice, not coerced to the default", func(t *testing.T) {
+		// D-2: NewVoicevox must not treat Speaker 0 as "unset" — style 0 is
+		// 四国めたん(あまあま) and has to stay auditionable.
+		client, _ := newVoicevoxTest(t, &voicevoxStub{},
+			tts.VoicevoxConfig{Speaker: 0, Timeout: 5 * time.Second})
+
+		name, err := client.SpeakerName(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, "四国めたん", name, "style ID 0 must resolve as-is, not as ずんだもん (ID 3)")
+	})
+
+	t.Run("config override skips the API entirely", func(t *testing.T) {
+		client, stub := newVoicevoxTest(t, &voicevoxStub{},
+			tts.VoicevoxConfig{Speaker: 3, SpeakerName: "ずんだもん(セリフ)", Timeout: 5 * time.Second})
+
+		name, err := client.SpeakerName(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, "ずんだもん(セリフ)", name)
+		assert.Equal(t, 0, stub.speakersCalls, "VOICEVOX_SPEAKER_NAME must not hit the engine")
+	})
+
+	t.Run("unknown style ID is an error", func(t *testing.T) {
+		client, _ := newVoicevoxTest(t, &voicevoxStub{},
+			tts.VoicevoxConfig{Speaker: 9999, Timeout: 5 * time.Second})
+
+		_, err := client.SpeakerName(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "9999")
+	})
+
+	t.Run("API failure is an error, never a credit-less fallback", func(t *testing.T) {
+		client, _ := newVoicevoxTest(t, &voicevoxStub{speakersStatus: http.StatusInternalServerError},
+			tts.VoicevoxConfig{Speaker: 3, Timeout: 5 * time.Second})
+
+		_, err := client.SpeakerName(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "speakers")
+	})
+}
+
+// TestLoadVoicevoxConfig_SpeakerPresence pins that the default style ID (3)
+// applies only when VOICEVOX_SPEAKER is unset: an explicit "0" is a real
+// selection (四国めたん あまあま) and must survive loading (D-2).
+func TestLoadVoicevoxConfig_SpeakerPresence(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string // "" = unset
+		want int
+	}{
+		{name: "unset falls back to the default speaker 3", env: "", want: 3},
+		{name: "explicit 0 selects style ID 0", env: "0", want: 0},
+		{name: "explicit non-default ID is kept", env: "2", want: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("VOICEVOX_SPEAKER", tt.env)
+
+			cfg := tts.LoadVoicevoxConfig()
+			assert.Equal(t, tt.want, cfg.Speaker)
 		})
 	}
 }

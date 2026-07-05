@@ -21,6 +21,14 @@ func BuildShowNotes(featured, overflow []repository.RadioArticle) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
+// AppendVoicevoxCredit appends the VOICEVOX credit line to the show notes
+// (U-13: 生成音声の配布には「VOICEVOX:話者名」の表記が利用規約上必須).
+// Every distributed episode carries this line; the channel description only
+// names the engine generically, so the per-speaker credit lives here.
+func AppendVoicevoxCredit(showNotes, speakerName string) string {
+	return showNotes + "\n\n音声合成: VOICEVOX:" + speakerName
+}
+
 func writeArticleLinks(sb *strings.Builder, articles []repository.RadioArticle) {
 	for _, a := range articles {
 		sb.WriteString("- ")
