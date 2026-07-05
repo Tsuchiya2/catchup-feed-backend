@@ -47,7 +47,7 @@ tailscale serve --bg --tcp 11434 tcp://localhost:11434
 tailscale serve status    # 設定は再起動後も保持される
 ```
 
-Pi 側 `deploy/.env` の `OLLAMA_HOST=http://<Mac の MagicDNS 名>:11434` がこれを指す。Mac がスリープ中は失敗するが、未要約記事は次回クロールに持ち越されるだけ(縮退)。
+Pi 側 `deploy/.env` の `OLLAMA_HOST` は **Mac の Tailscale IP**(Mac 上で `tailscale ip -4` で確認)を指す: `http://<Mac の Tailscale IP>:11434`。**MagicDNS 名(`.ts.net`)は使えない** — tailscale serve の TCP フォワードは Host ヘッダを素通しし、Ollama の Host ヘッダ検証が `.ts.net` 名を 403 で拒否するため(Tailscale IP は許可される。実測確認済み)。Mac がスリープ中は失敗するが、未要約記事は次回クロールに持ち越されるだけ(縮退)。
 
 ## 4. VOICEVOX Engine(GUI 不要のエンジン単体、U-6)
 
@@ -100,8 +100,8 @@ chmod +x ~/pulse/bin/radio-run.sh ~/pulse/bin/backup-pulse-db.sh
 
 | キー | 意味 |
 |---|---|
-| `DATABASE_URL` | Pi の PostgreSQL を **tailnet 越し**に指す(`<pi の MagicDNS 名>:5433`、DB 名 `pulse`)。パスワードは Pi 側 `deploy/.env` の `POSTGRES_PASSWORD` と同じ値 |
-| `RADIO_RSYNC_DEST` | `user@<pi の MagicDNS 名>:/home/<pi-user>/pulse/episodes`。**Pi のホスト側パス** |
+| `DATABASE_URL` | Pi の PostgreSQL を **tailnet 越し**に指す(`<pi の MagicDNS 名>:5433`、DB 名 `catchup-feed`)。パスワードは Pi 側 `deploy/.env` の `POSTGRES_PASSWORD` と同じ値 |
+| `RADIO_RSYNC_DEST` | `user@<pi の MagicDNS 名>:/home/<pi-user>/catchup-feed/episodes`。**Pi のホスト側パス**(pi.md 1章の `EPISODES_DIR` と同じ) |
 | `RADIO_EPISODES_DIR` | `/data/episodes` 固定。DB に記録される **Pi のコンテナ内パス**(compose のマウントが対応を固定)。上と混同しない |
 
 rsync は Tailscale ホスト名経由のみ。公開経路(radio.catchup-feed.com)にファイル転送は通さない。
@@ -123,7 +123,7 @@ Host <pi の MagicDNS 名>
     IdentityFile ~/.ssh/id_ed25519_pulse
 ```
 
-確認: `ssh <pi の MagicDNS 名> 'ls -ld ~/pulse/episodes'`
+確認: `ssh <pi の MagicDNS 名> 'ls -ld ~/catchup-feed/episodes'`
 
 ## 8. 手動での動作確認(launchd 登録前に必ず)
 
