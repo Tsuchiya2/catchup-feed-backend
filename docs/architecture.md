@@ -1000,7 +1000,7 @@ func ValidateURL(rawURL string) error {
 #### Security Validations
 
 ```go
-// Startup validations (cmd/api/main.go)
+// Startup validations (cmd/server/main.go)
 1. validateAdminCredentials()
    - ADMIN_USER_PASSWORD must be set
    - Minimum 12 characters
@@ -1392,7 +1392,7 @@ FROM alpine:3.23
 - Create non-root user (uid=10001)
 - Copy binaries from build stage
 - HEALTHCHECK (curl -f http://localhost:8080/health)
-- ENTRYPOINT ["/usr/local/bin/api"]
+- ENTRYPOINT ["/usr/local/bin/server"]
 ```
 
 **Image size optimization**:
@@ -1749,7 +1749,7 @@ func (c *Claude) Summarize(ctx context.Context, text string) (string, error) {
 ### Example 3: Middleware Composition
 
 ```go
-// cmd/api/main.go
+// cmd/server/main.go
 func applyMiddleware(logger *slog.Logger, handler http.Handler, ipRateLimiter *middleware.IPRateLimiter) http.Handler {
     middlewareChain := handler
 

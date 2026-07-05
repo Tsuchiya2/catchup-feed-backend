@@ -585,7 +585,7 @@ Interactive API documentation and testing interface.
 
 **Generation:** Uses `swaggo/swag` annotations in Go code
 
-**Command:** `swag init -g cmd/api/main.go -o docs/swagger`
+**Command:** `swag init -g cmd/server/main.go -o docs/swagger`
 
 ### Webhook
 HTTP callback mechanism for real-time notifications.

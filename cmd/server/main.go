@@ -380,9 +380,10 @@ func runServer(logger *slog.Logger, components *ServerComponents, version string
 	// Start background cleanup for endpoint rate limiters
 	go startRateLimiterCleanup(ctx, components.RateLimiters, 5*time.Minute)
 
-	// Error channel for coordinated shutdown on startup failures
-	// (buffered for both listeners so a second failure never blocks)
-	serverErrCh := make(chan error, 2)
+	// Error channel for coordinated shutdown when the public server fails.
+	// The private listener never writes here: its failure is degraded to an
+	// Error log (§8) so the public side keeps serving.
+	serverErrCh := make(chan error, 1)
 
 	// Start HTTP server
 	srv := &http.Server{
@@ -405,25 +406,12 @@ func runServer(logger *slog.Logger, components *ServerComponents, version string
 	}()
 
 	// 私的フィードリスナー(§3.1): tailnet アドレスにのみバインドする
-	// 別リスナー。PRIVATE_FEED_ADDR 未設定なら起動しない。
+	// 別リスナー。PRIVATE_FEED_ADDR 未設定なら起動しない。bind や serve の
+	// 失敗は Error ログのみで公開サーバーは道連れにしない(§8、C-5:
+	// 本人専用なので翌日の systemd 再起動で戻れば足りる)。
 	var privateSrv *http.Server
 	if components.PrivateFeedAddr != "" {
-		privateSrv = &http.Server{
-			Addr:              components.PrivateFeedAddr,
-			Handler:           components.PrivateFeedHandler,
-			ReadHeaderTimeout: 10 * time.Second,
-			BaseContext: func(_ net.Listener) context.Context {
-				return ctx
-			},
-		}
-		go func() {
-			logger.Info("private feed listener starting",
-				slog.String("addr", components.PrivateFeedAddr))
-			if err := privateSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				logger.Error("private feed listener failed", slog.Any("error", err))
-				serverErrCh <- err
-			}
-		}()
+		privateSrv = startPrivateFeedListener(ctx, logger, components.PrivateFeedAddr, components.PrivateFeedHandler)
 	} else {
 		logger.Info("private feed listener disabled (PRIVATE_FEED_ADDR not set)")
 	}
@@ -454,4 +442,37 @@ func runServer(logger *slog.Logger, components *ServerComponents, version string
 		}
 	}
 	logger.Info("HTTP server stopped")
+}
+
+// startPrivateFeedListener starts the tailnet-only feed listener (§3.1).
+// 縮退許容(§8): bind 失敗(tailscaled 未起動・アドレス未割当等)や
+// serve 中の失敗は Error ログに留め、公開サーバーには波及させない。
+// bind は同期的に行い、失敗時は nil を返す(呼び出し側は Shutdown 不要)。
+// 成功時は返す *http.Server の Addr に実際のリッスンアドレスを設定する。
+func startPrivateFeedListener(ctx context.Context, logger *slog.Logger, addr string, handler http.Handler) *http.Server {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		logger.Error("private feed listener disabled: bind failed (public server continues)",
+			slog.String("addr", addr), slog.Any("error", err))
+		return nil
+	}
+
+	srv := &http.Server{
+		Addr:              ln.Addr().String(),
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		BaseContext: func(_ net.Listener) context.Context {
+			return ctx
+		},
+	}
+
+	go func() {
+		logger.Info("private feed listener starting", slog.String("addr", srv.Addr))
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("private feed listener failed (public server continues)",
+				slog.String("addr", srv.Addr), slog.Any("error", err))
+		}
+	}()
+
+	return srv
 }

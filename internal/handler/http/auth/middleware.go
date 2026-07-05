@@ -40,7 +40,7 @@ const ctxUser ctxKey = "user"
 //
 // JWT_SECRET and ADMIN_USER are read when the middleware is constructed, so
 // Authz must be called after startup validation (ValidateAdminCredentials
-// for ADMIN_USER; JWT_SECRET is validated by cmd/api's validateJWTSecret).
+// for ADMIN_USER; JWT_SECRET is validated by cmd/server's validateJWTSecret).
 func Authz(next http.Handler) http.Handler {
 	secret := []byte(os.Getenv("JWT_SECRET"))
 	adminUser := os.Getenv(EnvAdminUser)

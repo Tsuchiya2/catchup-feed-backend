@@ -707,7 +707,7 @@ func TestPublicEpisode_NoAccessLogForPrivateEpisode(t *testing.T) {
 // 認証スタックに触れない)。
 func TestFeedsCatchAllShieldsAuthStack(t *testing.T) {
 	f := newFixture(t, Config{})
-	// cmd/api の "/" (JWT Authz) を模したフォールバック。
+	// cmd/server の "/" (JWT Authz) を模したフォールバック。
 	f.publicMux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))

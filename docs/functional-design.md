@@ -131,13 +131,13 @@ type JWTClaims struct {
 4. Generate JWT token with HS256 signing
 5. Return token or error
 
-**Password Validation** (cmd/api/main.go:92-127)
+**Password Validation** (cmd/server/main.go:92-127)
 - Minimum 12 characters
 - Rejects weak patterns: "admin", "password", "test", "secret", "111111111111", "123456789012"
 - Rejects keyboard patterns: "qwertyuiop", "asdfghjkl"
 - Enforced at startup (fail-fast)
 
-**JWT Secret Validation** (cmd/api/main.go:108-127)
+**JWT Secret Validation** (cmd/server/main.go:108-127)
 - Minimum 32 characters (256 bits)
 - Cannot be empty
 - Enforced at startup
@@ -1731,7 +1731,7 @@ Protect API from abuse using IP-based and user-based rate limiting with circuit 
    → Applies to protected endpoints only
 ```
 
-**Middleware Order** (cmd/api/main.go:438-440)
+**Middleware Order** (cmd/server/main.go:438-440)
 ```
 CORS → Request ID → IP Rate Limit → Recovery → Logging → Body Limit → CSP → Metrics → Auth → User Rate Limit
 ```
@@ -1902,7 +1902,7 @@ func (r *UserRateLimiter) Middleware() func(http.Handler) http.Handler {
 }
 ```
 
-**Endpoint-Specific Rate Limiters** (cmd/api/main.go:324-330)
+**Endpoint-Specific Rate Limiters** (cmd/server/main.go:324-330)
 ```go
 // Auth endpoint: 5 req/min per IP
 authRateLimiter := middleware.NewRateLimiter(5, 1*time.Minute, ipExtractor)
@@ -1926,7 +1926,7 @@ if r.circuitBreaker.IsOpen() {
 }
 ```
 
-**Memory Cleanup** (cmd/api/main.go:470-483)
+**Memory Cleanup** (cmd/server/main.go:470-483)
 ```go
 // Background goroutine for cleanup (every 10 minutes)
 go StartRateLimitCleanup(ctx, ipStore, 10*time.Minute, ipWindow, "ip")
@@ -3242,7 +3242,7 @@ Layer 3 (Endpoint-specific):
 - `/Users/yujitsuchiya/catchup-feed-backend/internal/infra/fetcher/readability.go` - Content enhancement
 
 **Main Entry Points**
-- `/Users/yujitsuchiya/catchup-feed-backend/cmd/api/main.go` - API server
+- `/Users/yujitsuchiya/catchup-feed-backend/cmd/server/main.go` - API server
 - `/Users/yujitsuchiya/catchup-feed-backend/cmd/worker/main.go` - Batch crawler
 
 ---

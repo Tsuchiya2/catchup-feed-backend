@@ -135,7 +135,7 @@ check_containers() {
         if [ "$container" = "postgres" ]; then
             container_name="catchup-postgres"
         elif [ "$container" = "app" ]; then
-            container_name="catchup-api"
+            container_name="catchup-server"
         elif [ "$container" = "worker" ]; then
             container_name="catchup-worker"
         fi

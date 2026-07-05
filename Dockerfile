@@ -59,7 +59,7 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go install github.com/swaggo/swag/cmd/swag@latest && \
-    $(go env GOPATH)/bin/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal
+    $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
 # ビルド情報の埋め込み（ARG）
 ARG VERSION=dev
@@ -77,19 +77,19 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -trimpath \
       -buildmode=pie \
       -ldflags "$LDFLAGS" \
-      -o api \
-      ./cmd/api && \
+      -o server \
+      ./cmd/server && \
     CGO_ENABLED=1 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
     go build -v \
       -trimpath \
       -buildmode=pie \
       -ldflags "$LDFLAGS" \
-      -o api-worker \
+      -o worker \
       ./cmd/worker
 
 # バイナリの検証
-RUN file api && file api-worker && \
-    ./api --version 2>/dev/null || echo "Binary check OK"
+RUN file server && file worker && \
+    ./server --version 2>/dev/null || echo "Binary check OK"
 
 # ────────────────────────────────────────────────────────────
 # Stage 4: 最終ランタイム（最小イメージ）
@@ -131,8 +131,8 @@ USER app
 WORKDIR /data
 
 # ビルドステージからバイナリをコピー
-COPY --from=build --chown=app:app /app/api         /usr/local/bin/api
-COPY --from=build --chown=app:app /app/api-worker  /usr/local/bin/api-worker
+COPY --from=build --chown=app:app /app/server  /usr/local/bin/server
+COPY --from=build --chown=app:app /app/worker  /usr/local/bin/worker
 
 # ヘルスチェック（APIサーバー用）
 # - 15秒間隔でチェック
@@ -145,7 +145,7 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
 EXPOSE 8080
 
 # エントリーポイント（exec形式でシグナル伝播）
-ENTRYPOINT ["/usr/local/bin/api"]
+ENTRYPOINT ["/usr/local/bin/server"]
 
 # デフォルトコマンド（オーバーライド可能）
 CMD []

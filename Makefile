@@ -79,7 +79,7 @@ fmt: ## Format code with gofmt inside Docker
 
 swagger: ## Generate Swagger docs (docs/) inside Docker
 	@echo "📝 Generating Swagger docs in Docker..."
-	docker compose --profile dev run --rm dev sh -c "go run github.com/swaggo/swag/cmd/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal"
+	docker compose --profile dev run --rm dev sh -c "go run github.com/swaggo/swag/cmd/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal"
 	@echo "✅ Swagger docs generated"
 
 admin-hash: ## Generate bcrypt hash for ADMIN_PASSWORD_HASH (reads password from stdin)
@@ -136,10 +136,10 @@ db-shell: ## Enter PostgreSQL shell
 	@echo "🗄️ Entering PostgreSQL shell..."
 	docker compose exec postgres psql -U catchup -d catchup
 
-db-migrate: ## Run database migrations inside Docker
-	@echo "🔄 Running database migrations in Docker..."
-	docker compose --profile dev run --rm dev sh -c "go run cmd/migrate/main.go"
-	@echo "✅ Migrations completed"
+# マイグレーション専用ターゲットはない: スキーマは冪等 SQL
+# (internal/infra/db.MigrateUp)として cmd/server の起動時に毎回自動適用
+# される(worker/radio は server が先に適用済みである前提)。単体適用が
+# 必要になったら cmd/migrate の新設を検討する(親判断)。
 
 db-reset: ## Reset database (destructive!)
 	@echo "⚠️  Resetting database..."

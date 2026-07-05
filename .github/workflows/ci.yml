@@ -51,7 +51,7 @@ jobs:
       - name: Generate Swagger docs
         run: |
           go install github.com/swaggo/swag/cmd/swag@v1.16.6
-          $(go env GOPATH)/bin/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal
+          $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
       - name: Run tests
         env:
@@ -88,7 +88,7 @@ jobs:
       - name: Generate Swagger docs
         run: |
           go install github.com/swaggo/swag/cmd/swag@v1.16.6
-          $(go env GOPATH)/bin/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal
+          $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
@@ -116,20 +116,20 @@ jobs:
       - name: Generate Swagger docs
         run: |
           go install github.com/swaggo/swag/cmd/swag@v1.16.6
-          $(go env GOPATH)/bin/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal
+          $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
-      - name: Build API
-        run: go build -v -o api ./cmd/api
+      - name: Build Server
+        run: go build -v -o server ./cmd/server
 
       - name: Build Worker
         run: go build -v -o worker ./cmd/worker
 
       - name: Check binary size
         run: |
-          ls -lh api worker
-          API_SIZE=$(stat -c%s api)
+          ls -lh server worker
+          SERVER_SIZE=$(stat -c%s server)
           WORKER_SIZE=$(stat -c%s worker)
-          echo "API binary size: $(($API_SIZE / 1024 / 1024)) MB"
+          echo "Server binary size: $(($SERVER_SIZE / 1024 / 1024)) MB"
           echo "Worker binary size: $(($WORKER_SIZE / 1024 / 1024)) MB"
 
   # ──────────────────────────────────────────────────────────

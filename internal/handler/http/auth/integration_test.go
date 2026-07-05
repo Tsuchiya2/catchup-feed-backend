@@ -16,7 +16,7 @@ import (
 )
 
 // newIntegrationServer wires TokenHandler and an Authz-protected mux the
-// same way cmd/api does: /auth/token is public, everything else requires
+// same way cmd/server does: /auth/token is public, everything else requires
 // the administrator's JWT.
 func newIntegrationServer(t *testing.T) http.Handler {
 	t.Helper()

@@ -181,7 +181,7 @@ services:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         BUILD_DATE: ${BUILD_DATE}
 
-    container_name: catchup-api
+    container_name: catchup-server
     restart: unless-stopped
 
     networks:
@@ -260,7 +260,7 @@ services:
     container_name: catchup-worker
     restart: unless-stopped
 
-    entrypoint: ["/usr/local/bin/api-worker"]
+    entrypoint: ["/usr/local/bin/worker"]
     command: []
 
     networks:

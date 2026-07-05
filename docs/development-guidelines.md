@@ -1186,15 +1186,15 @@ CMD ["/bin/sh"]
 # Stage 3: Build
 FROM deps AS build
 COPY . .
-RUN CGO_ENABLED=1 go build -trimpath -buildmode=pie -o api ./cmd/api
+RUN CGO_ENABLED=1 go build -trimpath -buildmode=pie -o server ./cmd/server
 
 # Stage 4: Runtime (minimal)
 FROM alpine:3.23
 RUN apk add --no-cache ca-certificates sqlite-libs
 RUN adduser -u 10001 -S -G app -H -s /sbin/nologin app
 USER app
-COPY --from=build /app/api /usr/local/bin/api
-ENTRYPOINT ["/usr/local/bin/api"]
+COPY --from=build /app/server /usr/local/bin/server
+ENTRYPOINT ["/usr/local/bin/server"]
 ```
 
 **Security features:**
@@ -1535,7 +1535,7 @@ func (h *ArticleHandler) Create(w http.ResponseWriter, r *http.Request) {
 Generate Swagger docs:
 
 ```bash
-swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal
+swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 ```
 
 ### README and Documentation

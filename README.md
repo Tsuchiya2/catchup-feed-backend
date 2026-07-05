@@ -72,7 +72,7 @@
 
 ```text
 ┌────────────────────────────────┐
-│ プレゼンテーション層            │ ← cmd/api, internal/handler/http
+│ プレゼンテーション層            │ ← cmd/server, internal/handler/http
 │ （HTTPハンドラー）              │
 ├────────────────────────────────┤
 │ ユースケース層                  │ ← internal/usecase
@@ -102,7 +102,7 @@
 ```text
 catchup-feed/
 ├── cmd/
-│   ├── api/                  # APIサーバー（ポート8080）
+│   ├── server/               # APIサーバー（ポート8080）
 │   └── worker/               # バッチクローラー（定期実行）
 ├── internal/
 │   ├── config/               # 設定管理
