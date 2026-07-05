@@ -35,7 +35,18 @@ type parsedRSS struct {
 		Title       string `xml:"title"`
 		Description string `xml:"description"`
 		Language    string `xml:"language"`
-		Items       []struct {
+		// ItunesImage is declared before Image so the namespaced field
+		// claims the itunes:image element and the plain <image> falls
+		// through to Image (encoding/xml matches fields in order).
+		ItunesImage struct {
+			Href string `xml:"href,attr"`
+		} `xml:"http://www.itunes.com/dtds/podcast-1.0.dtd image"`
+		Image struct {
+			URL   string `xml:"url"`
+			Title string `xml:"title"`
+			Link  string `xml:"link"`
+		} `xml:"image"`
+		Items []struct {
 			Title     string `xml:"title"`
 			PubDate   string `xml:"pubDate"`
 			GUID      string `xml:"guid"`
@@ -123,6 +134,50 @@ func TestRenderRSS_ChannelDescriptionCarriesVoicevoxCredit(t *testing.T) {
 			assert.Equal(t, tt.want, doc.Channel.Description)
 		})
 	}
+}
+
+// ---- channel artwork ----
+
+func TestRenderRSS_ChannelArtwork(t *testing.T) {
+	const artworkURL = "https://radio.catchup-feed.com/feeds/tok/artwork.jpg"
+	meta := channelMeta{
+		Title:       "pulse radio",
+		Link:        "https://radio.catchup-feed.com",
+		Description: "d",
+		Language:    "ja",
+		ImageURL:    artworkURL,
+	}
+	out, err := renderRSS(meta, nil, func(*entity.Episode) string { return "" })
+	require.NoError(t, err)
+
+	var doc parsedRSS
+	require.NoError(t, xml.Unmarshal(out, &doc))
+
+	// itunes:image は Apple Podcasts / Overcast が読む側。
+	assert.Equal(t, artworkURL, doc.Channel.ItunesImage.Href)
+	// RSS 2.0 <image> はフォールバック側。title/link はチャンネル自身を映す。
+	assert.Equal(t, artworkURL, doc.Channel.Image.URL)
+	assert.Equal(t, "pulse radio", doc.Channel.Image.Title)
+	assert.Equal(t, "https://radio.catchup-feed.com", doc.Channel.Image.Link)
+}
+
+func TestRenderRSS_NoImageURLOmitsArtworkTags(t *testing.T) {
+	out, err := renderRSS(channelMeta{Title: "t", Link: "l", Description: "d", Language: "ja"},
+		nil, func(*entity.Episode) string { return "" })
+	require.NoError(t, err)
+	raw := string(out)
+	assert.NotContains(t, raw, "itunes:image")
+	assert.NotContains(t, raw, "<image>")
+}
+
+func TestArtworkURLs(t *testing.T) {
+	assert.Equal(t,
+		"https://radio.catchup-feed.com/feeds/tok%2Fen/artwork.jpg",
+		publicArtworkURL("https://radio.catchup-feed.com", "tok/en"),
+		"the token segment must be path-escaped like the enclosure URLs")
+	assert.Equal(t,
+		"http://pi.tailnet:8081/private/artwork.jpg",
+		privateArtworkURL("http://pi.tailnet:8081"))
 }
 
 func TestRenderRSS_PrivateEnclosureURL(t *testing.T) {

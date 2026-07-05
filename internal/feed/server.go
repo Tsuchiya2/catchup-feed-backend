@@ -48,12 +48,14 @@ func NewServer(
 // per-IP rate limiter guarding against invalid-token hammering (§5.2).
 //
 //	GET /feeds/{token}/feed.xml
+//	GET /feeds/{token}/artwork.jpg
 //	GET /feeds/{token}/episodes/{id}.mp3
 func (s *Server) RegisterPublic(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
 	if wrap == nil {
 		wrap = func(h http.Handler) http.Handler { return h }
 	}
 	mux.Handle("GET /feeds/{token}/feed.xml", wrap(s.verifyToken(http.HandlerFunc(s.handlePublicFeed))))
+	mux.Handle("GET /feeds/{token}/artwork.jpg", wrap(s.verifyToken(http.HandlerFunc(s.handleArtwork))))
 	mux.Handle("GET /feeds/{token}/episodes/{file}", wrap(s.verifyToken(http.HandlerFunc(s.handlePublicEpisode))))
 	// Catch-all for everything else under /feeds/: unmatched variants
 	// (trailing slashes, wrong methods, stray segments) answer 404 here
@@ -68,10 +70,12 @@ func (s *Server) RegisterPublic(mux *http.ServeMux, wrap func(http.Handler) http
 // authentication.
 //
 //	GET /private/feed.xml
+//	GET /private/artwork.jpg
 //	GET /private/episodes/{id}.mp3
 func (s *Server) PrivateHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /private/feed.xml", s.handlePrivateFeed)
+	mux.HandleFunc("GET /private/artwork.jpg", s.handleArtwork)
 	mux.HandleFunc("GET /private/episodes/{file}", s.handlePrivateEpisode)
 	return mux
 }
@@ -167,7 +171,7 @@ func (s *Server) handlePublicFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plaintext := r.PathValue("token")
-	s.writeFeed(w, s.cfg.PublicBaseURL, episodes, func(ep *entity.Episode) string {
+	s.writeFeed(w, s.cfg.PublicBaseURL, publicArtworkURL(s.cfg.PublicBaseURL, plaintext), episodes, func(ep *entity.Episode) string {
 		return publicEnclosureURL(s.cfg.PublicBaseURL, plaintext, ep.ID)
 	})
 }
@@ -203,7 +207,7 @@ func (s *Server) handlePrivateFeed(w http.ResponseWriter, r *http.Request) {
 		// Tailnet-only plain HTTP; the Host header is the tailnet name.
 		base = "http://" + r.Host
 	}
-	s.writeFeed(w, base, episodes, func(ep *entity.Episode) string {
+	s.writeFeed(w, base, privateArtworkURL(base), episodes, func(ep *entity.Episode) string {
 		return privateEnclosureURL(base, ep.ID)
 	})
 }
@@ -221,12 +225,15 @@ func (s *Server) handlePrivateEpisode(w http.ResponseWriter, r *http.Request) {
 // writeFeed renders and writes the RSS document. link becomes the channel
 // <link>: the public base URL for the public feed, the private base for
 // the tailnet feed (the private feed must not advertise the public host).
-func (s *Server) writeFeed(w http.ResponseWriter, link string, episodes []*entity.Episode, enclosureURL func(*entity.Episode) string) {
+// imageURL is the absolute channel-artwork URL, built per feed flavour
+// just like the enclosure URLs.
+func (s *Server) writeFeed(w http.ResponseWriter, link, imageURL string, episodes []*entity.Episode, enclosureURL func(*entity.Episode) string) {
 	meta := channelMeta{
 		Title:       s.cfg.ChannelTitle,
 		Link:        link,
 		Description: s.cfg.ChannelDescription,
 		Language:    "ja",
+		ImageURL:    imageURL,
 	}
 	body, err := renderRSS(meta, episodes, enclosureURL)
 	if err != nil {

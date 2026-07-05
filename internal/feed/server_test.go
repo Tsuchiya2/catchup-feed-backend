@@ -361,6 +361,128 @@ func TestPublicFeed_ListError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
+// ---- channel artwork ----
+
+func TestArtwork_PublicRoute(t *testing.T) {
+	f := newFixture(t, Config{})
+
+	rec := f.get(t, f.publicMux, "/feeds/"+f.plaintext+"/artwork.jpg", nil)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "image/jpeg", rec.Header().Get("Content-Type"))
+	assert.Equal(t, fmt.Sprint(len(artworkJPEG)), rec.Header().Get("Content-Length"))
+	assert.Equal(t, "public, max-age=86400", rec.Header().Get("Cache-Control"))
+	assert.Equal(t, artworkJPEG, rec.Body.Bytes())
+	// 埋め込みアセットが実際に JPEG であることのピン留め(差し替え事故検知)。
+	require.GreaterOrEqual(t, rec.Body.Len(), 3)
+	assert.Equal(t, []byte{0xFF, 0xD8, 0xFF}, rec.Body.Bytes()[:3], "embedded artwork must be a JPEG")
+	// アートワーク取得はアプリのキャッシュ通信であり、feed.xml のポーリングと
+	// 区別できない nil-episode 行を作らない。
+	assert.Empty(t, f.accessLogs.records, "artwork fetches are not access-logged")
+	assert.Equal(t, 1, f.tokens.lookups, "artwork is served only after token verification")
+}
+
+func TestArtwork_PublicRoute_InvalidTokens(t *testing.T) {
+	tests := []struct {
+		name        string
+		token       func(f *fixture) string
+		wantLookups int
+	}{
+		{
+			name: "revoked token answers 404",
+			token: func(f *fixture) string {
+				plaintext, hash, err := entity.GenerateFeedToken()
+				require.NoError(t, err)
+				revokedAt := time.Now().Add(-time.Hour)
+				f.tokens.byHash[hash] = &entity.FeedToken{ID: 8, SubscriberID: 3, TokenHash: hash, RevokedAt: &revokedAt}
+				return plaintext
+			},
+			wantLookups: 1,
+		},
+		{
+			name: "deactivated subscriber answers 404",
+			token: func(f *fixture) string {
+				plaintext, hash, err := entity.GenerateFeedToken()
+				require.NoError(t, err)
+				f.tokens.byHash[hash] = &entity.FeedToken{ID: 9, SubscriberID: 4, TokenHash: hash}
+				f.tokens.activeSubscriber[4] = false
+				return plaintext
+			},
+			wantLookups: 1,
+		},
+		{
+			name: "unknown but well-formed token answers 404",
+			token: func(*fixture) string {
+				plaintext, err := entity.NewFeedTokenPlaintext()
+				require.NoError(t, err)
+				return plaintext
+			},
+			wantLookups: 1,
+		},
+		{
+			name:        "malformed token rejected before the DB",
+			token:       func(*fixture) string { return "abc" },
+			wantLookups: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t, Config{})
+			token := tt.token(f)
+
+			rec := f.get(t, f.publicMux, "/feeds/"+token+"/artwork.jpg", nil)
+
+			assert.Equal(t, http.StatusNotFound, rec.Code)
+			assert.Equal(t, tt.wantLookups, f.tokens.lookups, "DB lookups")
+			assert.NotEqual(t, "image/jpeg", rec.Header().Get("Content-Type"),
+				"failed verification must not leak the artwork")
+			assert.Empty(t, f.accessLogs.records)
+		})
+	}
+}
+
+func TestArtwork_PrivateRoute(t *testing.T) {
+	f := newFixture(t, Config{})
+
+	rec := f.get(t, f.server.PrivateHandler(), "/private/artwork.jpg", nil)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "image/jpeg", rec.Header().Get("Content-Type"))
+	assert.Equal(t, "public, max-age=86400", rec.Header().Get("Cache-Control"))
+	assert.Equal(t, artworkJPEG, rec.Body.Bytes())
+	// 私的経路は subscriber 概念の外: トークン照会もアクセスログもなし。
+	assert.Zero(t, f.tokens.lookups)
+	assert.Empty(t, f.accessLogs.records)
+}
+
+// 公開フィードのチャンネル画像 URL は enclosure と同じトークンパス配下(C-9)。
+func TestPublicFeed_ChannelArtworkTags(t *testing.T) {
+	f := newFixture(t, Config{})
+	f.episodes.episodes = []*entity.Episode{sampleEpisode(1, entity.FeedKindPublic, "e", time.Now())}
+
+	rec := f.get(t, f.publicMux, "/feeds/"+f.plaintext+"/feed.xml", nil)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	artworkURL := "https://radio.catchup-feed.com/feeds/" + f.plaintext + "/artwork.jpg"
+	assert.Contains(t, body, `<itunes:image href="`+artworkURL+`"`)
+	assert.Contains(t, body, "<url>"+artworkURL+"</url>")
+}
+
+// 私的フィードのチャンネル画像 URL は /private 配下で、公開ホストを広告しない。
+func TestPrivateFeed_ChannelArtworkTags(t *testing.T) {
+	f := newFixture(t, Config{})
+	f.episodes.episodes = []*entity.Episode{sampleEpisode(9, entity.FeedKindPrivate, "j", time.Now())}
+
+	rec := f.get(t, f.server.PrivateHandler(), "http://pi.tailnet:8081/private/feed.xml", nil)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, `<itunes:image href="http://pi.tailnet:8081/private/artwork.jpg"`)
+	assert.Contains(t, body, "<url>http://pi.tailnet:8081/private/artwork.jpg</url>")
+	assert.NotContains(t, body, "radio.catchup-feed.com")
+}
+
 // ---- mp3 delivery (C-10) ----
 
 // newAudioFixture writes a 16-byte fake mp3 into a temp audio dir and
