@@ -1,4 +1,4 @@
-# Pi 5 セットアップ手順(pulse Phase 1)
+# Pi 5 セットアップ手順(catchup-feed Phase 1)
 
 対象: Raspberry Pi 5(常時稼働)。server + worker + PostgreSQL 18 + mp3 アーカイブを載せる(設計書 §3)。
 旧 catchup-feed スタックとは **§9 の停止手順まで共存**する。コンテナ名・ポート・DB はすべて分離済みなので、旧側には触らない。
@@ -12,18 +12,18 @@
 ## 1. ディレクトリと mp3 アーカイブの用意
 
 ```bash
-mkdir -p ~/pulse/episodes
+mkdir -p ~/catchup-feed/episodes
 # コンテナ(uid/gid 10001 の非 root ユーザー)が読み書きできるようにする:
 #   - server は配信のため読み取り、worker は D-4 cleanup のため削除(=ディレクトリ書込)が必要
 #   - setgid(2xxx)により Mac からの rsync で置かれるファイルも gid 10001 を継承する
-sudo chgrp 10001 ~/pulse/episodes
-sudo chmod 2775 ~/pulse/episodes
+sudo chgrp 10001 ~/catchup-feed/episodes
+sudo chmod 2775 ~/catchup-feed/episodes
 ```
 
 ## 2. リポジトリ配置と .env 作成
 
 ```bash
-cd ~/pulse
+cd ~/catchup-feed
 git clone <このリポジトリ> catchup-feed-backend
 cd catchup-feed-backend
 cp deploy/env.pi.example deploy/.env
@@ -35,21 +35,21 @@ chmod 600 deploy/.env
 | キー | 入れるもの |
 |---|---|
 | `TAILNET_IP` | `tailscale ip -4` の出力 |
-| `EPISODES_DIR` | `/home/<pi-user>/pulse/episodes`(1章で作った絶対パス) |
+| `EPISODES_DIR` | `/home/<pi-user>/catchup-feed/episodes`(1章で作った絶対パス) |
 | `POSTGRES_PASSWORD` | `openssl rand -base64 24` |
 | `JWT_SECRET` | `openssl rand -base64 48`(U-3) |
 | `ADMIN_PASSWORD_HASH` | `make admin-hash` の出力。**`$` は `$$` にエスケープ**(U-3) |
 | `GEMINI_API_KEY` / `GROQ_API_KEY` | U-4 で取得した値 |
-| `OLLAMA_HOST` | `http://<Mac の MagicDNS 名>:11434`(mac.md 3章の後で) |
+| `OLLAMA_HOST` | `http://<Mac の Tailscale IP>:11434`(Mac 上で `tailscale ip -4`。mac.md 3章の後で)。**MagicDNS 名は不可**(Ollama の Host 検証が `.ts.net` を 403 で拒否。mac.md 3章参照) |
 | `DISCORD_WEBHOOK_URL` / `SLACK_WEBHOOK_URL` | U-7 で取得した値(使う側の `*_ENABLED=true` も) |
 | `SMTP_*` | U-8 で取得した値(友人メール通知を使う段階で) |
 
-旧 catchup-feed の DB とは **PostgreSQL サーバーごと分離**する(pulse は専用の `pulse-postgres` コンテナ、database 名 `pulse`、ホスト側ポート 5433)。旧 DB からデータは移行しない — sources 定義は `internal/infra/db/seeds/sources.sql` が server 起動時に自動投入される(冪等、`ON CONFLICT DO NOTHING`)。
+旧 catchup-feed の DB とは **PostgreSQL サーバーごと分離**する(catchup-feed は専用の `pulse-postgres` コンテナ、database 名 `catchup-feed`、ホスト側ポート 5433)。旧 DB からデータは移行しない — sources 定義は `internal/infra/db/seeds/sources.sql` が server 起動時に自動投入される(冪等、`ON CONFLICT DO NOTHING`)。
 
 ## 3. ビルドと起動
 
 ```bash
-cd ~/pulse/catchup-feed-backend
+cd ~/catchup-feed/catchup-feed-backend
 docker compose -f deploy/compose.pi.yml build     # Pi ネイティブ arm64 ビルド。初回は時間がかかる
 docker compose -f deploy/compose.pi.yml up -d
 docker compose -f deploy/compose.pi.yml ps        # 3コンテナとも healthy になること
@@ -63,16 +63,18 @@ docker compose -f deploy/compose.pi.yml ps        # 3コンテナとも healthy 
 
 ```bash
 # WorkingDirectory を実パスに書き換えてから配置
-sed "s|/home/CHANGEME/pulse|$HOME/pulse|" deploy/systemd/pulse.service | \
+sed "s|/home/CHANGEME/pulse|$HOME/catchup-feed|" deploy/systemd/pulse.service | \
   sudo tee /etc/systemd/system/pulse.service >/dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable --now pulse.service
 systemctl status pulse.service   # active (exited) なら正常
 ```
 
+注意: 旧システムの `catchup-feed.service` とは**別 unit**。§9 の停止手順までは共存が正しい状態であり、旧側には触らない。
+
 ## 5. Cloudflare Tunnel — ルート追加【ユーザー作業】(U-9)
 
-pulse が公開するのは `radio.catchup-feed.com` → `127.0.0.1:8090`(公開リスナー)だけ。設定例と「公開してよいルート」の一覧は `deploy/cloudflared/config.example.yml` に記載。
+catchup-feed が公開するのは `radio.catchup-feed.com` → `127.0.0.1:8090`(公開リスナー)だけ。設定例と「公開してよいルート」の一覧は `deploy/cloudflared/config.example.yml` に記載。
 
 1. DNS: 既存トンネルに向ける
    ```bash
@@ -105,7 +107,7 @@ radio バッチ(Mac)は `rsync over ssh` で mp3 を `EPISODES_DIR` に置き、
 1. 【ユーザー作業】Mac の公開鍵を Pi の `~/.ssh/authorized_keys` に登録(mac.md 7章で生成)
 2. 動作確認(Mac 側から):
    ```bash
-   ssh <pi-user>@<pi の MagicDNS 名> 'ls -ld ~/pulse/episodes'
+   ssh <pi-user>@<pi の MagicDNS 名> 'ls -ld ~/catchup-feed/episodes'
    ```
 
 rsync は **Tailscale の MagicDNS 名**を使う(公開経路にファイル転送を通さない)。`RADIO_RSYNC_DEST` の宛先パスは**ホスト側**の `EPISODES_DIR`、DB に記録されるパス(`RADIO_EPISODES_DIR`)は**コンテナ内**の `/data/episodes`。この対応は compose のマウント `${EPISODES_DIR}:/data/episodes` が固定している。
@@ -142,12 +144,12 @@ curl -s http://<pi の MagicDNS 名>:8081/private/feed.xml
 バックアップは Mac 側に日次で取られる(mac.md 10章)。戻すとき:
 
 ```bash
-# Mac から dump を Pi へ(tailnet 経由)
-scp ~/pulse/backups/db/pulse-<日付>.dump <pi-user>@<pi の MagicDNS 名>:/tmp/
+# Mac から dump を Pi へ(tailnet 経由)。ファイル名は backup-pulse-db.sh の形式
+scp ~/pulse/backups/db/pulse-<日時>.dump <pi-user>@<pi の MagicDNS 名>:/tmp/
 
-# Pi 側で(試験時は pulse_restore_test など別 DB 名にすること)
-docker exec -i pulse-postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' < /tmp/pulse-<日付>.dump
-rm /tmp/pulse-<日付>.dump
+# Pi 側で(試験時は catchup-feed_restore_test など別 DB 名にすること)
+docker exec -i pulse-postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' < /tmp/pulse-<日時>.dump
+rm /tmp/pulse-<日時>.dump
 ```
 
 mp3 は Mac 側ミラー(`~/pulse/backups/episodes/`)から `EPISODES_DIR` へ rsync で戻す。
@@ -155,5 +157,5 @@ mp3 は Mac 側ミラー(`~/pulse/backups/episodes/`)から `EPISODES_DIR` へ r
 ## トラブル時の見方(監視スタックは無い。これで足りる)
 
 - コンテナ状態: `docker compose -f deploy/compose.pi.yml ps` / `docker logs pulse-server|pulse-worker`
-- 要約フォールバックの発生: `summaries.provider` を見る(`docker exec -it pulse-postgres psql -U pulse -c "select provider, count(*) from summaries group by 1"`)
+- 要約フォールバックの発生: `summaries.provider` を見る(`docker exec -it pulse-postgres psql -U catchup-feed -c "select provider, count(*) from summaries group by 1"`)
 - 朝エピソードが無い日: 正常系の欠番(Mac 不在)か、radio の失敗通知(Discord/Slack の notify_error)かをまず確認
