@@ -136,6 +136,7 @@ func setupJobsConsumer(logger *slog.Logger, database *sql.DB) *jobs.Consumer {
 		Subscribers:    pgRepo.NewSubscriberRepo(database),
 		Destinations:   destinations,
 		PrivateBaseURL: feedCfg.PrivateBaseURL,
+		AudioDir:       feedCfg.AudioDir,
 		Logger:         logger,
 	}
 	if mailer != nil {

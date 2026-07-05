@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/notify"
@@ -50,7 +51,12 @@ type NotifyEpisodeHandler struct {
 	// cannot exist because every public URL embeds a friend's token (C-9)
 	// and tokens are unrecoverable hashes (D-5).
 	PrivateBaseURL string
-	Logger         *slog.Logger
+	// AudioDir is the episodes directory (same value cleanup and the feed
+	// server use). The mp3 is offered for attachment only when
+	// episodes.audio_path resolves inside it — the same traversal guard
+	// applied everywhere a DB path touches the filesystem.
+	AudioDir string
+	Logger   *slog.Logger
 }
 
 // Handle sends the notifications. Failures of individual channels are
@@ -83,9 +89,16 @@ func (h *NotifyEpisodeHandler) Handle(ctx context.Context, job *entity.Job) erro
 	}
 	if episode.FeedKind == entity.FeedKindPublic {
 		// §7: Discord attaches the mp3 when it is small enough — public
-		// episodes only; the destination enforces the size limit.
-		msg.AttachmentPath = episode.AudioPath
-		msg.AttachmentBytes = episode.AudioBytes
+		// episodes only; the destination enforces the size limit. A path
+		// that escapes AudioDir is never handed out; the notification
+		// degrades to text-only (§8), the audio stays reachable via the feed.
+		if rel, ok := relInsideDir(h.AudioDir, episode.AudioPath); ok {
+			msg.AttachmentPath = filepath.Join(h.AudioDir, rel)
+			msg.AttachmentBytes = episode.AudioBytes
+		} else {
+			logger.Warn("notify_episode: audio path outside audio dir, notifying without attachment",
+				slog.Int64("episode_id", episode.ID), slog.String("audio_path", episode.AudioPath))
+		}
 	}
 
 	var errs []error

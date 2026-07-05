@@ -18,6 +18,9 @@ type RunFunc func(ctx context.Context, name string, args ...string) error
 // execRun is the real runner: on failure the combined output tail is folded
 // into the error so ffmpeg diagnostics reach the slog line.
 func execRun(ctx context.Context, name string, args ...string) error {
+	// #nosec G204 -- name is the operator-configured ffmpeg binary
+	// (FFMPEG_PATH) and args are internally built encoder flags and temp-dir
+	// paths (§6-4); nothing here comes from user input.
 	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
 	if err != nil {
 		const maxTail = 1024

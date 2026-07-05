@@ -314,14 +314,21 @@ func TestRateLimiter_Integration_MultipleConcurrentClients(t *testing.T) {
 	requestsPerClient := 15
 	var wg sync.WaitGroup
 
+	// Populate the results map for every client before starting any
+	// goroutine: the map itself is written only here, so the concurrent
+	// results[cid] lookups below never race with a map write.
+	clientIDs := make([]string, 0, numClients)
 	for clientID := 1; clientID <= numClients; clientID++ {
 		clientIDStr := fmt.Sprintf("%d", clientID)
+		clientIDs = append(clientIDs, clientIDStr)
 		results[clientIDStr] = &struct {
 			success int
 			limited int
 			mu      sync.Mutex
 		}{}
+	}
 
+	for _, clientIDStr := range clientIDs {
 		wg.Add(1)
 		go func(cid string) {
 			defer wg.Done()

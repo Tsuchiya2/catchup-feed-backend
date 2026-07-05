@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"catchup-feed/internal/domain/entity"
@@ -171,8 +172,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	}
 
 	if opts.DryRun {
-		p.printDryRun(title, since, showNotes, segments)
-		return nil
+		return p.printDryRun(title, since, showNotes, segments)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "radio-episode-")
@@ -305,15 +305,22 @@ func (p *Pipeline) synthesize(ctx context.Context, dir string, segments []*entit
 }
 
 // printDryRun writes the would-be episode to Out (D-2: 台本を目視で調整).
-func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, segments []*entity.Segment) {
+// The report is the sole product of a dry-run, so it is rendered in memory
+// and written once, with the write error surfaced to the caller.
+func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, segments []*entity.Segment) error {
 	out := p.Out
 	if out == nil {
 		out = os.Stdout
 	}
-	fmt.Fprintf(out, "=== dry-run: %s ===\n", title)
-	fmt.Fprintf(out, "selection since: %s\n\n", since.Format(time.RFC3339))
-	fmt.Fprintf(out, "--- show notes ---\n%s\n\n", showNotes)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "=== dry-run: %s ===\n", title)
+	fmt.Fprintf(&sb, "selection since: %s\n\n", since.Format(time.RFC3339))
+	fmt.Fprintf(&sb, "--- show notes ---\n%s\n\n", showNotes)
 	for _, segment := range segments {
-		fmt.Fprintf(out, "--- segment %d [%s] ---\n%s\n\n", segment.Position, segment.Kind, segment.Script)
+		fmt.Fprintf(&sb, "--- segment %d [%s] ---\n%s\n\n", segment.Position, segment.Kind, segment.Script)
 	}
+	if _, err := io.WriteString(out, sb.String()); err != nil {
+		return fmt.Errorf("radio: write dry-run report: %w", err)
+	}
+	return nil
 }

@@ -114,6 +114,9 @@ func (d *Discord) Notify(ctx context.Context, msg Message) error {
 // mp3 as files[0]. The whole file is buffered — episodes are <10MiB by the
 // attach guard, fine on the Pi.
 func (d *Discord) multipartRequest(ctx context.Context, payloadJSON []byte, path string) (*http.Request, error) {
+	// #nosec G304 -- path is episodes.audio_path, written only by the radio
+	// pipeline and confined to the episodes dir by NotifyEpisodeHandler
+	// (relInsideDir) before it reaches this destination; not user input.
 	audio, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read attachment: %w", err)

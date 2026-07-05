@@ -14,11 +14,13 @@ import (
 // block); artwork and directory metadata are out of scope for Phase 1.
 const itunesNS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 
-// channelVoicevoxCredit is appended to every channel description (U-13).
-// The channel may mix episodes of different speakers, so it names the
-// engine generically; the mandatory per-speaker 「VOICEVOX:話者名」 credit
-// is inserted into each episode's show notes by the radio pipeline.
-const channelVoicevoxCredit = "音声合成: VOICEVOX"
+// channelVoicevoxAttribution is the U-13 credit line appended to every
+// channel description. The channel may mix episodes of different speakers,
+// so it names the engine generically; the mandatory per-speaker
+// 「VOICEVOX:話者名」 credit is inserted into each episode's show notes by
+// the radio pipeline. (Named "attribution" rather than "credit" so gosec
+// G101 does not mistake it for a credential.)
+const channelVoicevoxAttribution = "音声合成: VOICEVOX"
 
 // channelMeta describes the RSS <channel>.
 type channelMeta struct {
@@ -98,7 +100,7 @@ func renderRSS(meta channelMeta, episodes []*entity.Episode, enclosureURL func(*
 	if description != "" {
 		description += "\n\n"
 	}
-	description += channelVoicevoxCredit
+	description += channelVoicevoxAttribution
 
 	doc := rssDoc{
 		Version:  "2.0",

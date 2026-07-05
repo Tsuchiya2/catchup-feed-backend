@@ -111,6 +111,7 @@ func TestNotifyEpisodeHandler_Handle(t *testing.T) {
 			Destinations:   []notify.Destination{destination},
 			Mailer:         mailer,
 			PrivateBaseURL: "http://pi.tailnet:8081",
+			AudioDir:       "/data/episodes",
 			Logger:         slog.New(slog.DiscardHandler),
 		}
 		require.NoError(t, handler.Handle(context.Background(), episodeJob(7)))
@@ -127,6 +128,26 @@ func TestNotifyEpisodeHandler_Handle(t *testing.T) {
 		assert.Equal(t, "friend@example.com", mailer.sent[0].to)
 		assert.Equal(t, "pulse 2026-07-05", mailer.sent[0].subject)
 		assert.Contains(t, mailer.sent[0].body, "notes")
+	})
+
+	t.Run("audio path outside the audio dir is never offered for attachment", func(t *testing.T) {
+		escaped := &entity.Episode{
+			ID: 9, FeedKind: entity.FeedKindPublic, Title: "escaped",
+			ShowNotes: "notes", AudioPath: "/data/episodes/../../etc/passwd", AudioBytes: 1024,
+		}
+		destination := &fakeDestination{name: "discord"}
+		handler := &jobs.NotifyEpisodeHandler{
+			Episodes:     &fakeEpisodeGetter{episodes: map[int64]*entity.Episode{9: escaped}},
+			Subscribers:  &fakeSubscriberLister{},
+			Destinations: []notify.Destination{destination},
+			AudioDir:     "/data/episodes",
+			Logger:       slog.New(slog.DiscardHandler),
+		}
+		require.NoError(t, handler.Handle(context.Background(), episodeJob(9)))
+
+		require.Len(t, destination.got, 1, "notification still goes out, text-only (§8)")
+		assert.Empty(t, destination.got[0].AttachmentPath)
+		assert.Zero(t, destination.got[0].AttachmentBytes)
 	})
 
 	t.Run("private episode: no friend mail, no attachment (C-5)", func(t *testing.T) {

@@ -21,6 +21,9 @@ type Transferer interface {
 type RunFunc func(ctx context.Context, name string, args ...string) error
 
 func execRun(ctx context.Context, name string, args ...string) error {
+	// #nosec G204 -- name is the operator-configured rsync binary
+	// (RADIO_RSYNC_PATH) and args are internally built flags/paths (§6-5);
+	// nothing here comes from user input.
 	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
 	if err != nil {
 		const maxTail = 1024
@@ -64,7 +67,7 @@ type LocalTransfer struct {
 }
 
 func (l *LocalTransfer) Transfer(_ context.Context, localPath, filename string) (string, error) {
-	if err := os.MkdirAll(l.EpisodesDir, 0o755); err != nil {
+	if err := os.MkdirAll(l.EpisodesDir, 0o750); err != nil {
 		return "", fmt.Errorf("radio: create episodes dir: %w", err)
 	}
 	dst := filepath.Join(l.EpisodesDir, filename)
@@ -75,13 +78,21 @@ func (l *LocalTransfer) Transfer(_ context.Context, localPath, filename string) 
 }
 
 func copyFile(src, dst string) error {
+	// #nosec G304 -- src is the mp3 this batch just encoded inside its own
+	// MkdirTemp dir (§6-6) and dst is EpisodesDir + the generated episode
+	// filename; neither is user input.
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = in.Close() }()
 
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	// #nosec G302 G304 G306 -- dst is EpisodesDir + the generated episode
+	// filename, not user input. 0640 (not 0600): group read is a delivery
+	// requirement — on the Pi the episodes dir is setgid with gid 10001
+	// (deploy/pi.md §1) and the server container (uid/gid 10001) must read
+	// the mp3 to serve it.
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o640)
 	if err != nil {
 		return err
 	}
