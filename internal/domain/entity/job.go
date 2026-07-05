@@ -16,8 +16,10 @@ const (
 // Well-known job kinds (§4: jobs.kind). The list is open-ended; these
 // constants only name the kinds known so far.
 const (
-	JobKindRegenerateFeed = "regenerate_feed"
-	JobKindNotifyEpisode  = "notify_episode"
+	JobKindRegenerateFeed  = "regenerate_feed"
+	JobKindNotifyEpisode   = "notify_episode"
+	JobKindNotifyError     = "notify_error"      // §8: radio バッチ失敗の本人通知(best-effort)
+	JobKindCleanupOldMedia = "cleanup_old_media" // D-4: 45日より古い mp3 の掃除
 )
 
 // Job is one row of the jobs table (§4), the sole inter-process channel

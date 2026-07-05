@@ -9,7 +9,6 @@ import (
 
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/repository"
-	"catchup-feed/internal/usecase/notify"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -40,13 +39,16 @@ type FeedItem struct {
 
 // Service provides feed crawling and article fetching use cases.
 // It orchestrates the process of fetching feeds, summarizing content, and storing articles.
+//
+// Note: the old per-article notification hook is gone by design. pulse
+// notifies per *episode* via the jobs queue (§3.3 / §7); per-article pings
+// were the old system's failure mode (最適化目標の転換, design doc §1).
 type Service struct {
 	SourceRepo     repository.SourceRepository
 	ArticleRepo    repository.ArticleRepository
 	Summarizer     Summarizer
 	FeedFetcher    FeedFetcher
-	ContentFetcher ContentFetcher // Content enhancement for B-rated feeds
-	NotifyService  notify.Service
+	ContentFetcher ContentFetcher     // Content enhancement for B-rated feeds
 	contentConfig  ContentFetchConfig // Configuration for content fetching behavior
 }
 
@@ -73,7 +75,6 @@ type ProviderSummarizer interface {
 //   - summarizer: AI service for text summarization
 //   - feedFetcher: Service for fetching RSS/Atom feeds
 //   - contentFetcher: Service for fetching full article content (can be nil to disable)
-//   - notifyService: Service for sending notifications
 //   - contentConfig: Configuration for content fetching behavior (parallelism, threshold)
 //
 // Returns:
@@ -82,14 +83,13 @@ type ProviderSummarizer interface {
 // Example:
 //
 //	config := ContentFetchConfig{Parallelism: 10, Threshold: 1500}
-//	service := NewService(sourceRepo, articleRepo, summarizer, feedFetcher, contentFetcher, notifyService, config)
+//	service := NewService(sourceRepo, articleRepo, summarizer, feedFetcher, contentFetcher, config)
 func NewService(
 	sourceRepo repository.SourceRepository,
 	articleRepo repository.ArticleRepository,
 	summarizer Summarizer,
 	feedFetcher FeedFetcher,
 	contentFetcher ContentFetcher,
-	notifyService notify.Service,
 	contentConfig ContentFetchConfig,
 ) Service {
 	return Service{
@@ -98,7 +98,6 @@ func NewService(
 		Summarizer:     summarizer,
 		FeedFetcher:    feedFetcher,
 		ContentFetcher: contentFetcher,
-		NotifyService:  notifyService,
 		contentConfig:  contentConfig,
 	}
 }
@@ -304,16 +303,6 @@ func (s *Service) processFeedItems(
 				slog.Int64("article_id", art.ID),
 				slog.String("url", art.URL),
 				slog.String("summary_provider", provider))
-
-			// Notify about new article (non-blocking)
-			// Note: NotifyService handles goroutines internally, no need for go func() here
-			if err := s.NotifyService.NotifyNewArticle(context.Background(), art, src); err != nil {
-				// NotifyNewArticle returns nil (fire-and-forget), but keeping error check for future
-				slog.Warn("Failed to dispatch notification",
-					slog.Int64("article_id", art.ID),
-					slog.String("url", art.URL),
-					slog.Any("error", err))
-			}
 
 			return nil
 		})

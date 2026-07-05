@@ -19,7 +19,6 @@ import (
 	"catchup-feed/internal/infra/scraper"
 	"catchup-feed/internal/infra/summarizer"
 	fetchUC "catchup-feed/internal/usecase/fetch"
-	"catchup-feed/internal/usecase/notify"
 )
 
 func main() {
@@ -119,16 +118,12 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 		Threshold:   contentFetchConfig.Threshold,
 	}
 
-	// Create a no-op notification service for one-time crawl
-	notifyService := notify.NewService(nil, 1)
-
 	return fetchUC.NewService(
 		srcRepo,
 		artRepo,
 		sum,
 		feedFetcher,
 		contentFetcher,
-		notifyService,
 		fetchConfig,
 	)
 }

@@ -59,6 +59,14 @@ func (s *stubEpisodeRepo) ListByKind(_ context.Context, feedKind string, limit i
 	return sortAndLimit(out, limit), nil
 }
 
+func (s *stubEpisodeRepo) ListWithAudioBefore(context.Context, time.Time, int) ([]*entity.Episode, error) {
+	return nil, nil
+}
+
+func (s *stubEpisodeRepo) ClearAudio(context.Context, int64) error { return nil }
+
+func (s *stubEpisodeRepo) ListAudioPaths(context.Context) ([]string, error) { return nil, nil }
+
 func (s *stubEpisodeRepo) ListRecent(_ context.Context, limit int) ([]*entity.Episode, error) {
 	if s.listErr != nil {
 		return nil, s.listErr

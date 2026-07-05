@@ -15,6 +15,25 @@ type DTO struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// CreateRequest is the POST /sources body. name / feedURL / category are
+// required; lang defaults to 'en' when empty.
+type CreateRequest struct {
+	Name     string `json:"name" example:"Go Blog"`
+	FeedURL  string `json:"feedURL" example:"https://go.dev/blog/feed.atom"`
+	Category string `json:"category" example:"go"`
+	Lang     string `json:"lang,omitempty" example:"en"`
+}
+
+// UpdateRequest is the PUT /sources/{id} body. Empty strings keep the
+// current value; active is optional (null = unchanged).
+type UpdateRequest struct {
+	Name     string `json:"name,omitempty" example:"Go Blog"`
+	FeedURL  string `json:"feedURL,omitempty" example:"https://go.dev/blog/feed.atom"`
+	Category string `json:"category,omitempty" example:"go"`
+	Lang     string `json:"lang,omitempty" example:"en"`
+	Active   *bool  `json:"active,omitempty" example:"true"`
+}
+
 // fromEntityFields builds a DTO from the source entity fields shared by
 // list and search responses.
 func toDTO(id int64, name, feedURL, category, lang string, active bool, createdAt time.Time) DTO {

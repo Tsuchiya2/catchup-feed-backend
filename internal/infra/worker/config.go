@@ -48,12 +48,6 @@ type WorkerConfig struct {
 	// Default: "Asia/Tokyo"
 	Timezone string
 
-	// NotifyMaxConcurrent is the maximum number of concurrent notification operations.
-	// This controls how many notification channels can be called simultaneously.
-	// Range: 1-100
-	// Default: 10
-	NotifyMaxConcurrent int
-
 	// CrawlTimeout is the maximum duration for a single crawl job.
 	// After this timeout, the crawl operation will be cancelled.
 	// Must be positive (> 0)
@@ -70,7 +64,6 @@ type WorkerConfig struct {
 // These defaults are optimized for:
 //   - Typical usage: Daily crawl at 5:30 AM JST
 //   - Safety: 30-minute timeout prevents stuck jobs
-//   - Performance: 10 concurrent notifications balances throughput and resources
 //   - Standard ports: 9091 for health checks (common Prometheus exporter port)
 //
 // Returns:
@@ -82,11 +75,10 @@ type WorkerConfig struct {
 //	config.CronSchedule = "0 */6 * * *"  // Customize to run every 6 hours
 func DefaultConfig() WorkerConfig {
 	return WorkerConfig{
-		CronSchedule:        "30 5 * * *",      // Every day at 5:30 AM
-		Timezone:            "Asia/Tokyo",      // JST
-		NotifyMaxConcurrent: 10,                // 10 concurrent notifications
-		CrawlTimeout:        30 * time.Minute,  // 30 minutes
-		HealthPort:          9091,              // Standard Prometheus exporter port
+		CronSchedule: "30 5 * * *",     // Every day at 5:30 AM
+		Timezone:     "Asia/Tokyo",     // JST
+		CrawlTimeout: 30 * time.Minute, // 30 minutes
+		HealthPort:   9091,             // Standard Prometheus exporter port
 	}
 }
 
@@ -97,7 +89,6 @@ func DefaultConfig() WorkerConfig {
 // Validation rules:
 //   - CronSchedule: Must be a valid cron expression (validated by robfig/cron parser)
 //   - Timezone: Must be a valid IANA timezone name (validated by time.LoadLocation)
-//   - NotifyMaxConcurrent: Must be between 1 and 100 (inclusive)
 //   - CrawlTimeout: Must be positive (> 0)
 //   - HealthPort: Must be between 1024 and 65535 (avoid privileged ports)
 //
@@ -113,9 +104,8 @@ func DefaultConfig() WorkerConfig {
 //
 //	// Invalid configuration
 //	config.CronSchedule = "invalid"
-//	config.NotifyMaxConcurrent = 0
 //	err := config.Validate()
-//	// err contains: "validation errors: [invalid cron schedule, NotifyMaxConcurrent out of range]"
+//	// err contains: "validation errors: [invalid cron schedule, ...]"
 func (c *WorkerConfig) Validate() error {
 	var errors []error
 
@@ -127,11 +117,6 @@ func (c *WorkerConfig) Validate() error {
 	// Validate Timezone
 	if err := config.ValidateTimezone(c.Timezone); err != nil {
 		errors = append(errors, fmt.Errorf("timezone: %w", err))
-	}
-
-	// Validate NotifyMaxConcurrent (range: 1-50, reduced for safety)
-	if err := config.ValidateIntRange(c.NotifyMaxConcurrent, 1, 50); err != nil {
-		errors = append(errors, fmt.Errorf("notify max concurrent: %w", err))
 	}
 
 	// Validate CrawlTimeout (must be positive)
@@ -165,7 +150,6 @@ func (c *WorkerConfig) Validate() error {
 // Environment variables:
 //   - CRON_SCHEDULE: Cron expression (default: "30 5 * * *")
 //   - WORKER_TIMEZONE: IANA timezone name (default: "Asia/Tokyo")
-//   - NOTIFY_MAX_CONCURRENT: Integer 1-100 (default: 10)
 //   - CRAWL_TIMEOUT: Duration string, e.g., "30m" (default: 30 minutes)
 //   - WORKER_HEALTH_PORT: Integer 1024-65535 (default: 9091)
 //
@@ -215,20 +199,6 @@ func LoadConfigFromEnv(logger *slog.Logger) (*WorkerConfig, error) {
 		for _, warning := range result.Warnings {
 			logger.Warn("Configuration fallback applied",
 				slog.String("field", "Timezone"),
-				slog.String("warning", warning))
-		}
-	}
-
-	// Load NotifyMaxConcurrent
-	result = config.LoadEnvInt("NOTIFY_MAX_CONCURRENT", cfg.NotifyMaxConcurrent, func(v int) error {
-		return config.ValidateIntRange(v, 1, 100)
-	})
-	cfg.NotifyMaxConcurrent = result.Value.(int)
-	if result.FallbackApplied {
-		fallbackApplied = true
-		for _, warning := range result.Warnings {
-			logger.Warn("Configuration fallback applied",
-				slog.String("field", "NotifyMaxConcurrent"),
 				slog.String("warning", warning))
 		}
 	}

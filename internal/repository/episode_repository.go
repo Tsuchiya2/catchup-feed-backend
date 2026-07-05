@@ -32,4 +32,20 @@ type EpisodeRepository interface {
 	// episodes to number same-day re-runs as new revisions (§6-6: 冪等性 —
 	// 上書きせず rev 付与で新規版).
 	CountByKindSince(ctx context.Context, feedKind string, since time.Time) (int, error)
+
+	// ---- media retention (D-4: mp3 は直近45日で削除) ----
+	// The episode row itself is never deleted: show notes and segment
+	// scripts are Phase 3 assets. Cleanup deletes the mp3 file and clears
+	// the file reference (audio_path / audio_bytes) on the row.
+
+	// ListWithAudioBefore returns up to limit episodes published before
+	// cutoff that still reference an audio file, oldest first.
+	ListWithAudioBefore(ctx context.Context, cutoff time.Time, limit int) ([]*entity.Episode, error)
+	// ClearAudio removes the file reference from the episode row
+	// (audio_path = '', audio_bytes = 0) after the mp3 has been deleted.
+	ClearAudio(ctx context.Context, id int64) error
+	// ListAudioPaths returns every non-empty audio_path. The cleanup job
+	// uses it to detect orphan mp3 files (rsync succeeded, INSERT failed)
+	// that no episode row references.
+	ListAudioPaths(ctx context.Context) ([]string, error)
 }

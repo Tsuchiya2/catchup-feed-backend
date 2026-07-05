@@ -95,7 +95,6 @@ func TestEnhanceContent_InsufficientRSSContent_FetchSuccess(t *testing.T) {
 			},
 		},
 		mockFetcher,
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -171,7 +170,6 @@ func TestEnhanceContent_InsufficientRSSContent_FetchFailed(t *testing.T) {
 			},
 		},
 		mockFetcher,
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -250,7 +248,6 @@ func TestEnhanceContent_FetchedShorterThanRSS(t *testing.T) {
 			},
 		},
 		mockFetcher,
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -329,7 +326,6 @@ func TestEnhanceContent_EmptyRSSContent(t *testing.T) {
 			},
 		},
 		mockFetcher,
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -394,7 +390,6 @@ func TestEnhanceContent_ContentFetcherNil(t *testing.T) {
 			},
 		},
 		nil, // Feature disabled
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,

@@ -26,10 +26,13 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"catchup-feed/internal/domain/entity"
 	pgRepo "catchup-feed/internal/infra/adapter/persistence/postgres"
 	"catchup-feed/internal/infra/db"
 	"catchup-feed/internal/infra/summarizer"
+	"catchup-feed/internal/jobs"
 	"catchup-feed/internal/radio"
+	"catchup-feed/internal/repository"
 	"catchup-feed/internal/script"
 	"catchup-feed/internal/tts"
 )
@@ -106,8 +109,30 @@ func main() {
 			return
 		}
 		logger.Error("episode generation failed, skipping today (§8)", slog.Any("error", err))
+		enqueueFailureNotice(logger, pgRepo.NewJobRepo(database), err)
 		os.Exit(1)
 	}
+}
+
+// enqueueFailureNotice queues a 'notify_error' job so the worker tells the
+// admin the morning episode is missing (§8: VOICEVOX 障害→当日スキップ+通知).
+// Strictly best-effort with its own fresh context: the run context may
+// already be dead (timeout), and when the failure *is* the database, the
+// enqueue fails too — then the notice is only in the logs and the silent
+// morning is the signal. No retry loops here.
+func enqueueFailureNotice(logger *slog.Logger, queue repository.JobRepository, runErr error) {
+	payload, err := jobs.NewNotifyErrorPayload("radio", runErr.Error())
+	if err != nil {
+		logger.Error("failed to marshal failure notice", slog.Any("error", err))
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := queue.Enqueue(ctx, entity.JobKindNotifyError, payload, time.Time{}); err != nil {
+		logger.Error("failed to enqueue failure notice (best-effort, giving up)", slog.Any("error", err))
+		return
+	}
+	logger.Info("failure notice enqueued for the worker (notify_error)")
 }
 
 func initLogger() *slog.Logger {

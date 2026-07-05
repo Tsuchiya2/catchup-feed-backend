@@ -132,6 +132,9 @@ func TestCreateHandler(t *testing.T) {
 	}{
 		{name: "created", body: `{"name":"友人A","email":"a@example.com"}`, wantCode: http.StatusCreated},
 		{name: "name required", body: `{"email":"a@example.com"}`, wantCode: http.StatusBadRequest},
+		{name: "invalid email format", body: `{"name":"友人A","email":"not-an-email"}`, wantCode: http.StatusBadRequest},
+		{name: "empty email string", body: `{"name":"友人A","email":""}`, wantCode: http.StatusBadRequest},
+		{name: "null email allowed", body: `{"name":"友人A","email":null}`, wantCode: http.StatusCreated},
 		{name: "invalid json", body: `{`, wantCode: http.StatusBadRequest},
 	}
 

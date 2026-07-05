@@ -163,6 +163,66 @@ WHERE feed_kind = $1 AND published_at >= $2`
 	return count, nil
 }
 
+// ListWithAudioBefore returns up to limit episodes published before cutoff
+// that still reference an audio file, oldest first (D-4 retention sweep).
+func (repo *EpisodeRepo) ListWithAudioBefore(ctx context.Context, cutoff time.Time, limit int) ([]*entity.Episode, error) {
+	query := `
+SELECT ` + episodeColumns + `
+FROM episodes
+WHERE published_at < $1 AND audio_path <> ''
+ORDER BY published_at ASC, id ASC
+LIMIT $2`
+	rows, err := repo.db.QueryContext(ctx, query, cutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("ListWithAudioBefore: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	episodes := make([]*entity.Episode, 0, limit)
+	for rows.Next() {
+		episode, err := scanEpisode(rows)
+		if err != nil {
+			return nil, fmt.Errorf("ListWithAudioBefore: %w", err)
+		}
+		episodes = append(episodes, episode)
+	}
+	return episodes, rows.Err()
+}
+
+// ClearAudio removes the file reference after the mp3 has been deleted
+// (D-4). The row — show notes, duration, segments — survives as an asset.
+func (repo *EpisodeRepo) ClearAudio(ctx context.Context, id int64) error {
+	const query = `UPDATE episodes SET audio_path = '', audio_bytes = 0 WHERE id = $1`
+	res, err := repo.db.ExecContext(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("ClearAudio: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("ClearAudio: no rows affected")
+	}
+	return nil
+}
+
+// ListAudioPaths returns every non-empty audio_path (orphan mp3 detection).
+func (repo *EpisodeRepo) ListAudioPaths(ctx context.Context) ([]string, error) {
+	const query = `SELECT audio_path FROM episodes WHERE audio_path <> ''`
+	rows, err := repo.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("ListAudioPaths: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, fmt.Errorf("ListAudioPaths: %w", err)
+		}
+		paths = append(paths, path)
+	}
+	return paths, rows.Err()
+}
+
 // ListSegments returns the episode's segments ordered by position.
 func (repo *EpisodeRepo) ListSegments(ctx context.Context, episodeID int64) ([]*entity.Segment, error) {
 	const query = `

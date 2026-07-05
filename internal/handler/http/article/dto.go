@@ -23,3 +23,25 @@ type DTO struct {
 	PublishedAt time.Time `json:"published_at" example:"2025-10-26T10:00:00Z"`
 	CrawledAt   time.Time `json:"crawled_at" example:"2025-10-26T12:00:00Z"`
 }
+
+// CreateRequest is the POST /articles body (パイプライン外から記事を投入する
+// 管理経路). source_id / title / url are required.
+type CreateRequest struct {
+	SourceID int64  `json:"source_id" example:"1"`
+	Title    string `json:"title" example:"Go 1.23 リリース"`
+	URL      string `json:"url" example:"https://example.com/article/1"`
+	Content  string `json:"content,omitempty" example:"記事全文..."`
+	// PublishedAt is an RFC 3339 timestamp; empty means unknown.
+	PublishedAt string `json:"published_at,omitempty" example:"2025-10-26T10:00:00Z"`
+}
+
+// UpdateRequest is the PUT /articles/{id} body. Every field is optional;
+// omitted (null) fields keep their current value.
+type UpdateRequest struct {
+	SourceID *int64  `json:"source_id,omitempty" example:"1"`
+	Title    *string `json:"title,omitempty" example:"Go 1.23 リリース"`
+	URL      *string `json:"url,omitempty" example:"https://example.com/article/1"`
+	Content  *string `json:"content,omitempty" example:"記事全文..."`
+	// PublishedAt is an RFC 3339 timestamp.
+	PublishedAt *string `json:"published_at,omitempty" example:"2025-10-26T10:00:00Z"`
+}

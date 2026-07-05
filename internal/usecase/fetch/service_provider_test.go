@@ -66,7 +66,6 @@ func newProviderTestService(summarizer fetchUC.Summarizer, artRepo *stubArticleR
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{Parallelism: 10, Threshold: 1500},
 	)
 }

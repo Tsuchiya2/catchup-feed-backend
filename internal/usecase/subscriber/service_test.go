@@ -3,6 +3,7 @@ package subscriber_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -298,4 +299,49 @@ func TestService_ListTokens_UnknownSubscriber(t *testing.T) {
 	svc := newService(&stubSubscriberRepo{byID: map[int64]*entity.Subscriber{}}, &stubTokenRepo{})
 	_, err := svc.ListTokens(context.Background(), 99)
 	assert.ErrorIs(t, err, subUC.ErrSubscriberNotFound)
+}
+
+/* ───────── email validation (§5 持ち越し / C-11) ───────── */
+
+func TestService_EmailValidation(t *testing.T) {
+	strPtr := func(s string) *string { return &s }
+
+	tests := []struct {
+		name    string
+		email   *string
+		wantErr error
+	}{
+		{name: "nil email is allowed (clears the address)", email: nil},
+		{name: "plain address", email: strPtr("friend@example.com")},
+		{name: "address with plus tag", email: strPtr("friend+pulse@example.co.jp")},
+		{name: "empty string rejected (use null to clear)", email: strPtr(""), wantErr: subUC.ErrInvalidEmail},
+		{name: "missing @ rejected", email: strPtr("friend.example.com"), wantErr: subUC.ErrInvalidEmail},
+		{name: "display-name form rejected", email: strPtr("Friend <friend@example.com>"), wantErr: subUC.ErrInvalidEmail},
+		{name: "surrounding whitespace rejected", email: strPtr(" friend@example.com "), wantErr: subUC.ErrInvalidEmail},
+		{name: "dotless domain rejected (goes into SMTP RCPT TO)", email: strPtr("user@localhost"), wantErr: subUC.ErrInvalidEmail},
+		{name: "header injection rejected", email: strPtr("a@example.com\r\nBcc: x@example.com"), wantErr: subUC.ErrInvalidEmail},
+		{name: "overlong address rejected", email: strPtr(strings.Repeat("a", 250) + "@e.com"), wantErr: subUC.ErrInvalidEmail},
+	}
+
+	for _, tt := range tests {
+		t.Run("create/"+tt.name, func(t *testing.T) {
+			svc := newService(&stubSubscriberRepo{}, &stubTokenRepo{})
+			_, err := svc.Create(context.Background(), subUC.Input{Name: "友人A", Email: tt.email})
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			assert.NoError(t, err)
+		})
+		t.Run("update/"+tt.name, func(t *testing.T) {
+			subs := &stubSubscriberRepo{byID: map[int64]*entity.Subscriber{1: activeSubscriber(1)}}
+			svc := newService(subs, &stubTokenRepo{})
+			_, err := svc.Update(context.Background(), 1, subUC.Input{Name: "友人A", Email: tt.email})
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
 }

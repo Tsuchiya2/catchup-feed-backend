@@ -20,7 +20,7 @@ type UpdateHandler struct{ Svc srcUC.Service }
 // @Accept       json
 // @Produce      json
 // @Param        id path int true "ソースID"
-// @Param        source body object true "更新するソース情報"
+// @Param        source body UpdateRequest true "更新するソース情報"
 // @Success      204 "No Content"
 // @Failure      400 {string} string "Bad request - invalid input"
 // @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
@@ -33,20 +33,14 @@ func (h UpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Name     string `json:"name"`
-		Feed     string `json:"feedURL"`
-		Category string `json:"category"`
-		Lang     string `json:"lang"`
-		Active   *bool  `json:"active"`
-	}
+	var req UpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respond.SafeError(w, http.StatusBadRequest, err)
 		return
 	}
 
 	err = h.Svc.Update(r.Context(), srcUC.UpdateInput{
-		ID: id, Name: req.Name, FeedURL: req.Feed,
+		ID: id, Name: req.Name, FeedURL: req.FeedURL,
 		Category: req.Category, Lang: req.Lang,
 		Active: req.Active,
 	})

@@ -21,4 +21,9 @@ var (
 
 	// ErrNameRequired indicates a missing subscriber name.
 	ErrNameRequired = errors.New("name is required")
+
+	// ErrInvalidEmail indicates a malformed subscriber email address.
+	// The address feeds the C-11 SMTP channel, so it is validated at the
+	// door instead of failing silently at notification time.
+	ErrInvalidEmail = errors.New("email is invalid")
 )

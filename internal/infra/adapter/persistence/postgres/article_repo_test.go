@@ -202,9 +202,7 @@ func TestArticleRepo_SearchWithFilters(t *testing.T) {
 
 			if !tt.noQuery {
 				args := make([]driver.Value, len(tt.wantArgs))
-				for i, a := range tt.wantArgs {
-					args[i] = a
-				}
+				copy(args, tt.wantArgs)
 				mock.ExpectQuery(regexp.QuoteMeta(tt.wantQuery)).
 					WithArgs(args...).
 					WillReturnRows(sqlmock.NewRows(articleCols))

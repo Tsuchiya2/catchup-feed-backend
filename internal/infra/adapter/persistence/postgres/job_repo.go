@@ -105,6 +105,26 @@ func (repo *JobRepo) MarkDone(ctx context.Context, id int64) error {
 	return nil
 }
 
+// RequeueRunning flips every running job back to pending (stale-job sweep,
+// see repository.JobRepository). last_error records the sweep so the
+// dashboard of a crash-looping job tells the story.
+func (repo *JobRepo) RequeueRunning(ctx context.Context) (int64, error) {
+	const query = `
+UPDATE jobs SET
+       status     = 'pending',
+       last_error = 'requeued: claimed by a worker that did not finish (stale running sweep)'
+WHERE status = 'running'`
+	res, err := repo.db.ExecContext(ctx, query)
+	if err != nil {
+		return 0, fmt.Errorf("RequeueRunning: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("RequeueRunning: %w", err)
+	}
+	return n, nil
+}
+
 // MarkFailed records the error. With retryAt set the job goes back to
 // pending with run_after = retryAt (attempts stay incremented from the
 // claim); with retryAt nil the job is failed terminally.

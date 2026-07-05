@@ -219,3 +219,68 @@ func TestEpisodeRepo_ListSegments(t *testing.T) {
 	require.NotNil(t, got[1].ArticleID)
 	assert.Equal(t, articleID, *got[1].ArticleID)
 }
+
+/* ───────────── media retention (D-4) ───────────── */
+
+func TestEpisodeRepo_ListWithAudioBefore(t *testing.T) {
+	repo, mock, closeFn := newEpisodeRepo(t)
+	defer closeFn()
+
+	cutoff := time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)
+	published := time.Date(2026, 5, 1, 4, 30, 0, 0, time.UTC)
+	mock.ExpectQuery(regexp.QuoteMeta("WHERE published_at < $1 AND audio_path <> ''")).
+		WithArgs(cutoff, 500).
+		WillReturnRows(sqlmock.NewRows(episodeCols).
+			AddRow(int64(1), entity.FeedKindPublic, "pulse 2026-05-01", "notes",
+				"/data/episodes/2026-05-01.mp3", int64(7_000_000), 900, published))
+
+	episodes, err := repo.ListWithAudioBefore(context.Background(), cutoff, 500)
+	require.NoError(t, err)
+	require.Len(t, episodes, 1)
+	assert.Equal(t, "/data/episodes/2026-05-01.mp3", episodes[0].AudioPath)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestEpisodeRepo_ClearAudio(t *testing.T) {
+	tests := []struct {
+		name     string
+		affected int64
+		wantErr  bool
+	}{
+		{name: "clears the file reference", affected: 1},
+		{name: "missing episode is an error", affected: 0, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, mock, closeFn := newEpisodeRepo(t)
+			defer closeFn()
+
+			mock.ExpectExec(regexp.QuoteMeta("UPDATE episodes SET audio_path = '', audio_bytes = 0 WHERE id = $1")).
+				WithArgs(int64(7)).
+				WillReturnResult(sqlmock.NewResult(0, tt.affected))
+
+			err := repo.ClearAudio(context.Background(), 7)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestEpisodeRepo_ListAudioPaths(t *testing.T) {
+	repo, mock, closeFn := newEpisodeRepo(t)
+	defer closeFn()
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT audio_path FROM episodes WHERE audio_path <> ''")).
+		WillReturnRows(sqlmock.NewRows([]string{"audio_path"}).
+			AddRow("/data/episodes/2026-07-04.mp3").
+			AddRow("/data/episodes/2026-07-05.mp3"))
+
+	paths, err := repo.ListAudioPaths(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/data/episodes/2026-07-04.mp3", "/data/episodes/2026-07-05.mp3"}, paths)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

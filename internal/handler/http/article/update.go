@@ -21,7 +21,7 @@ type UpdateHandler struct{ Svc artUC.Service }
 // @Accept       json
 // @Produce      json
 // @Param        id path int true "記事ID"
-// @Param        article body object true "更新する記事情報"
+// @Param        article body UpdateRequest true "更新する記事情報"
 // @Success      204 "No Content"
 // @Failure      400 {string} string "Bad request - invalid input"
 // @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
@@ -34,13 +34,7 @@ func (h UpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		SourceID    *int64  `json:"source_id"`
-		Title       *string `json:"title"`
-		URL         *string `json:"url"`
-		Content     *string `json:"content"`
-		PublishedAt *string `json:"published_at"`
-	}
+	var req UpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respond.SafeError(w, http.StatusBadRequest, err)
 		return

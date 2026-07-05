@@ -215,3 +215,40 @@ func TestJobRepo_MarkFailed(t *testing.T) {
 		})
 	}
 }
+
+/* ─────────────────────── RequeueRunning ─────────────────────── */
+
+func TestJobRepo_RequeueRunning(t *testing.T) {
+	tests := []struct {
+		name string
+		rows int64
+	}{
+		{name: "requeues orphaned running jobs", rows: 2},
+		{name: "no running jobs is a no-op", rows: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, mock, closeFn := newJobRepo(t)
+			defer closeFn()
+
+			mock.ExpectExec(regexp.QuoteMeta("WHERE status = 'running'")).
+				WillReturnResult(sqlmock.NewResult(0, tt.rows))
+
+			n, err := repo.RequeueRunning(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, tt.rows, n)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestJobRepo_RequeueRunning_Error(t *testing.T) {
+	repo, mock, closeFn := newJobRepo(t)
+	defer closeFn()
+
+	mock.ExpectExec(regexp.QuoteMeta("WHERE status = 'running'")).
+		WillReturnError(errors.New("connection refused"))
+
+	_, err := repo.RequeueRunning(context.Background())
+	assert.ErrorContains(t, err, "RequeueRunning")
+}

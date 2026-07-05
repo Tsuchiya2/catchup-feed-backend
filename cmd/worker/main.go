@@ -1,3 +1,8 @@
+// Command worker is the Pi-resident daemon (§3.2 / §3.3): robfig/cron
+// drives the hourly crawl → summarize pipeline, and a jobs-table consumer
+// executes the follow-up work the radio batch enqueues (regenerate_feed,
+// notify_episode, notify_error) plus the daily media retention job (D-4).
+// All inter-process coordination happens through PostgreSQL (C-4).
 package main
 
 import (
@@ -7,25 +12,33 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
-	"strings"
+	"os/signal"
+	"syscall"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/robfig/cron/v3"
 
+	"catchup-feed/internal/domain/entity"
+	"catchup-feed/internal/feed"
 	hhttp "catchup-feed/internal/handler/http/respond"
 	pgRepo "catchup-feed/internal/infra/adapter/persistence/postgres"
 	"catchup-feed/internal/infra/db"
 	"catchup-feed/internal/infra/fetcher"
-	"catchup-feed/internal/infra/notifier"
 	"catchup-feed/internal/infra/scraper"
 	"catchup-feed/internal/infra/summarizer"
 	workerPkg "catchup-feed/internal/infra/worker"
+	"catchup-feed/internal/jobs"
+	"catchup-feed/internal/notify"
+	"catchup-feed/internal/repository"
 	fetchUC "catchup-feed/internal/usecase/fetch"
-	"catchup-feed/internal/usecase/notify"
+	pkgconfig "catchup-feed/pkg/config"
 )
+
+// cleanupCronDefault schedules the daily cleanup_old_media enqueue (D-4:
+// worker の日次ジョブ), after the 04:30 radio batch window.
+const cleanupCronDefault = "30 6 * * *"
 
 func waitForMigrations(logger *slog.Logger, db *sql.DB) {
 	const probe = "SELECT 1 FROM sources LIMIT 1"
@@ -49,8 +62,8 @@ func main() {
 		}
 	}()
 
-	// Create context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+	// SIGINT/SIGTERM stop the consumer loop and the main wait.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	// Load worker configuration (fail-open strategy)
@@ -62,43 +75,8 @@ func main() {
 	logger.Info("worker configuration loaded",
 		slog.String("cron_schedule", workerConfig.CronSchedule),
 		slog.String("timezone", workerConfig.Timezone),
-		slog.Int("notify_max_concurrent", workerConfig.NotifyMaxConcurrent),
 		slog.Duration("crawl_timeout", workerConfig.CrawlTimeout),
 		slog.Int("health_port", workerConfig.HealthPort))
-
-	// Initialize Discord notification channel
-	discordConfig := loadDiscordConfig(logger)
-	var discordChannel notify.Channel
-	if discordConfig.Enabled {
-		discordChannel = notify.NewDiscordChannel(discordConfig)
-		logger.Info("Discord channel initialized", slog.String("status", "enabled"))
-	} else {
-		logger.Info("Discord channel disabled")
-	}
-
-	// Initialize Slack notification channel
-	slackConfig := loadSlackConfig(logger)
-	var slackChannel notify.Channel
-	if slackConfig.Enabled {
-		slackChannel = notify.NewSlackChannel(slackConfig)
-		logger.Info("Slack channel initialized", slog.String("status", "enabled"))
-	} else {
-		logger.Info("Slack channel disabled")
-	}
-
-	// Initialize notification service (use workerConfig)
-	var channels []notify.Channel
-	if discordChannel != nil {
-		channels = append(channels, discordChannel)
-	}
-	if slackChannel != nil {
-		channels = append(channels, slackChannel)
-	}
-
-	notifyService := notify.NewService(channels, workerConfig.NotifyMaxConcurrent)
-	logger.Info("Notification service initialized",
-		slog.Int("channels", len(channels)),
-		slog.Int("max_concurrent", workerConfig.NotifyMaxConcurrent))
 
 	// Start health check server
 	healthAddr := fmt.Sprintf(":%d", workerConfig.HealthPort)
@@ -110,9 +88,17 @@ func main() {
 	}()
 	logger.Info("health check server started", slog.String("addr", healthAddr))
 
-	svc := setupFetchService(logger, database, notifyService)
+	svc := setupFetchService(logger, database)
 
-	startCronWorker(logger, svc, workerConfig, healthServer)
+	// jobs consumer (§3.3): drains the queue the radio batch feeds.
+	consumer := setupJobsConsumer(logger, database)
+	go func() {
+		if err := consumer.Run(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("jobs consumer stopped unexpectedly", slog.Any("error", err))
+		}
+	}()
+
+	startCronWorker(ctx, logger, svc, workerConfig, healthServer, pgRepo.NewJobRepo(database))
 }
 
 // initLogger initializes and returns a structured logger based on environment configuration.
@@ -135,8 +121,46 @@ func initDatabase(logger *slog.Logger) *sql.DB {
 	return database
 }
 
+// setupJobsConsumer wires the §3.3 consumer: destinations from environment
+// (D-7: 宣言的に有効/無効), the friend mailer (C-11) and the four Phase 1
+// handlers. Feed config supplies the audio dir (D-4 cleanup) and the
+// private base URL used for the admin-facing episode link.
+func setupJobsConsumer(logger *slog.Logger, database *sql.DB) *jobs.Consumer {
+	destinations := notify.LoadDestinationsFromEnv(logger)
+	mailer := notify.LoadSMTPFromEnv(logger)
+	feedCfg := feed.LoadConfig()
+	episodeRepo := pgRepo.NewEpisodeRepo(database)
+
+	episodeHandler := &jobs.NotifyEpisodeHandler{
+		Episodes:       episodeRepo,
+		Subscribers:    pgRepo.NewSubscriberRepo(database),
+		Destinations:   destinations,
+		PrivateBaseURL: feedCfg.PrivateBaseURL,
+		Logger:         logger,
+	}
+	if mailer != nil {
+		episodeHandler.Mailer = mailer
+	}
+
+	return &jobs.Consumer{
+		Jobs: pgRepo.NewJobRepo(database),
+		Handlers: map[string]jobs.Handler{
+			entity.JobKindRegenerateFeed: jobs.NewRegenerateFeedHandler(logger),
+			entity.JobKindNotifyEpisode:  episodeHandler,
+			entity.JobKindNotifyError:    &jobs.NotifyErrorHandler{Destinations: destinations, Logger: logger},
+			entity.JobKindCleanupOldMedia: &jobs.CleanupHandler{
+				Episodes: episodeRepo,
+				AudioDir: feedCfg.AudioDir,
+				Logger:   logger,
+			},
+		},
+		PollInterval: pkgconfig.GetEnvDuration("JOBS_POLL_INTERVAL", jobs.DefaultPollInterval),
+		Logger:       logger,
+	}
+}
+
 // setupFetchService creates and configures the fetch service with all dependencies.
-func setupFetchService(logger *slog.Logger, database *sql.DB, notifyService notify.Service) fetchUC.Service {
+func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 	srcRepo := pgRepo.NewSourceRepo(database)
 	artRepo := pgRepo.NewArticleRepo(database)
 
@@ -179,7 +203,6 @@ func setupFetchService(logger *slog.Logger, database *sql.DB, notifyService noti
 		sum,
 		feedFetcher,
 		contentFetcher,
-		notifyService,
 		fetchConfig,
 	)
 }
@@ -215,108 +238,9 @@ func createHTTPClient() *http.Client {
 	}
 }
 
-// loadDiscordConfig loads Discord configuration from environment variables.
-//
-// Environment variables:
-//   - DISCORD_ENABLED: Boolean flag to enable Discord notifications (default: false)
-//   - DISCORD_WEBHOOK_URL: Discord webhook URL (required if enabled)
-//
-// Returns:
-//   - notifier.DiscordConfig: Configuration with validation applied
-func loadDiscordConfig(logger *slog.Logger) notifier.DiscordConfig {
-	enabled := os.Getenv("DISCORD_ENABLED") == "true"
-	webhookURL := os.Getenv("DISCORD_WEBHOOK_URL")
-
-	if !enabled {
-		return notifier.DiscordConfig{Enabled: false}
-	}
-
-	// Validate webhook URL format
-	if webhookURL == "" {
-		logger.Warn("Discord webhook URL is empty, disabling notifications")
-		return notifier.DiscordConfig{Enabled: false}
-	}
-
-	u, err := url.Parse(webhookURL)
-	if err != nil {
-		logger.Warn("Invalid Discord webhook URL format, disabling notifications", slog.Any("error", err))
-		return notifier.DiscordConfig{Enabled: false}
-	}
-
-	if u.Scheme != "https" {
-		logger.Warn("Discord webhook URL must use HTTPS, disabling notifications")
-		return notifier.DiscordConfig{Enabled: false}
-	}
-
-	if u.Host != "discord.com" {
-		logger.Warn("Invalid Discord webhook host, disabling notifications", slog.String("host", u.Host))
-		return notifier.DiscordConfig{Enabled: false}
-	}
-
-	if !strings.HasPrefix(u.Path, "/api/webhooks/") {
-		logger.Warn("Invalid Discord webhook path, disabling notifications", slog.String("path", u.Path))
-		return notifier.DiscordConfig{Enabled: false}
-	}
-
-	return notifier.DiscordConfig{
-		Enabled:    true,
-		WebhookURL: webhookURL,
-		Timeout:    30 * time.Second,
-	}
-}
-
-// loadSlackConfig loads Slack configuration from environment variables.
-//
-// Environment variables:
-//   - SLACK_ENABLED: Boolean flag to enable Slack notifications (default: false)
-//   - SLACK_WEBHOOK_URL: Slack webhook URL (required if enabled)
-//
-// Returns:
-//   - notifier.SlackConfig: Configuration with validation applied
-func loadSlackConfig(logger *slog.Logger) notifier.SlackConfig {
-	enabled := os.Getenv("SLACK_ENABLED") == "true"
-	webhookURL := os.Getenv("SLACK_WEBHOOK_URL")
-
-	if !enabled {
-		return notifier.SlackConfig{Enabled: false}
-	}
-
-	// Validate webhook URL format
-	if webhookURL == "" {
-		logger.Warn("Slack webhook URL is empty, disabling notifications")
-		return notifier.SlackConfig{Enabled: false}
-	}
-
-	u, err := url.Parse(webhookURL)
-	if err != nil {
-		logger.Warn("Invalid Slack webhook URL format, disabling notifications", slog.Any("error", err))
-		return notifier.SlackConfig{Enabled: false}
-	}
-
-	if u.Scheme != "https" {
-		logger.Warn("Slack webhook URL must use HTTPS, disabling notifications")
-		return notifier.SlackConfig{Enabled: false}
-	}
-
-	if u.Host != "hooks.slack.com" {
-		logger.Warn("Invalid Slack webhook host, disabling notifications", slog.String("host", u.Host))
-		return notifier.SlackConfig{Enabled: false}
-	}
-
-	if !strings.HasPrefix(u.Path, "/services/") {
-		logger.Warn("Invalid Slack webhook path, disabling notifications", slog.String("path", u.Path))
-		return notifier.SlackConfig{Enabled: false}
-	}
-
-	return notifier.SlackConfig{
-		Enabled:    true,
-		WebhookURL: webhookURL,
-		Timeout:    30 * time.Second,
-	}
-}
-
-// startCronWorker starts the cron scheduler and runs the crawl job periodically.
-func startCronWorker(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.WorkerConfig, healthServer *workerPkg.HealthServer) {
+// startCronWorker starts the cron scheduler (crawl + daily cleanup
+// enqueue) and blocks until ctx is done.
+func startCronWorker(ctx context.Context, logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.WorkerConfig, healthServer *workerPkg.HealthServer, jobQueue repository.JobRepository) {
 	// Load timezone
 	loc, err := time.LoadLocation(cfg.Timezone)
 	if err != nil {
@@ -332,14 +256,34 @@ func startCronWorker(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.Wo
 		logger.Error("failed to add cron job", slog.Any("error", err))
 		os.Exit(1)
 	}
+
+	// D-4: enqueue the daily media retention job. Going through the queue
+	// (instead of running inline) gives the cleanup the same retry /
+	// last_error bookkeeping as every other job.
+	cleanupSchedule := pkgconfig.GetEnvString("CLEANUP_CRON_SCHEDULE", cleanupCronDefault)
+	_, err = c.AddFunc(cleanupSchedule, func() {
+		if _, err := jobQueue.Enqueue(context.Background(), entity.JobKindCleanupOldMedia, nil, time.Time{}); err != nil {
+			logger.Error("failed to enqueue cleanup_old_media", slog.Any("error", err))
+		}
+	})
+	if err != nil {
+		logger.Error("failed to add cleanup cron job", slog.Any("error", err))
+		os.Exit(1)
+	}
 	c.Start()
 
 	// Mark as ready after cron is set up
 	healthServer.SetReady(true)
 	logger.Info("worker marked as ready")
 
-	logger.Info("worker started", slog.String("schedule", cfg.CronSchedule), slog.String("timezone", cfg.Timezone))
-	select {}
+	logger.Info("worker started",
+		slog.String("schedule", cfg.CronSchedule),
+		slog.String("cleanup_schedule", cleanupSchedule),
+		slog.String("timezone", cfg.Timezone))
+
+	<-ctx.Done()
+	logger.Info("shutting down")
+	<-c.Stop().Done()
 }
 
 // runCrawlJob executes a single crawl job with timeout and error handling.

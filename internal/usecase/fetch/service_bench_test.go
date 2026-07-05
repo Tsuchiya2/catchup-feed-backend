@@ -44,7 +44,6 @@ func BenchmarkCrawlAllSources_SmallFeed(b *testing.B) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -95,7 +94,6 @@ func BenchmarkCrawlAllSources_LargeFeed(b *testing.B) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -151,7 +149,6 @@ func BenchmarkCrawlAllSources_MultipleSources(b *testing.B) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -208,7 +205,6 @@ func BenchmarkCrawlAllSources_WithDuplicates(b *testing.B) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,

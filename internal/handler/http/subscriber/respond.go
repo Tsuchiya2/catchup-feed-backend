@@ -17,7 +17,7 @@ func respondUsecaseError(w http.ResponseWriter, err error) {
 		respond.SafeError(w, http.StatusNotFound, err)
 	case errors.Is(err, subUC.ErrSubscriberDeactivated):
 		respond.SafeError(w, http.StatusConflict, err)
-	case errors.Is(err, subUC.ErrNameRequired):
+	case errors.Is(err, subUC.ErrNameRequired), errors.Is(err, subUC.ErrInvalidEmail):
 		respond.SafeError(w, http.StatusBadRequest, err)
 	default:
 		respond.SafeError(w, http.StatusInternalServerError, err)

@@ -4,36 +4,15 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/repository"
 	fetchUC "catchup-feed/internal/usecase/fetch"
-	"catchup-feed/internal/usecase/notify"
 )
 
 /* ───────── モック実装 ───────── */
-
-// mockNotifyService はnotify.Serviceのモック実装
-type mockNotifyService struct {
-	notifyCalled int32
-	notifyError  error
-}
-
-func (m *mockNotifyService) NotifyNewArticle(ctx context.Context, article *entity.Article, source *entity.Source) error {
-	atomic.AddInt32(&m.notifyCalled, 1)
-	return m.notifyError
-}
-
-func (m *mockNotifyService) Shutdown(ctx context.Context) error {
-	return nil
-}
-
-func (m *mockNotifyService) GetChannelHealth() []notify.ChannelHealthStatus {
-	return nil
-}
 
 // stubSourceRepo はSourceRepositoryのモック実装
 type stubSourceRepo struct {
@@ -269,7 +248,6 @@ func TestService_CrawlAllSources_HappyPath(t *testing.T) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -365,7 +343,6 @@ func TestService_CrawlAllSources_DuplicateHandling(t *testing.T) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -420,7 +397,6 @@ func TestService_CrawlAllSources_EmptyFeed(t *testing.T) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -468,7 +444,6 @@ func TestService_CrawlAllSources_FetchError(t *testing.T) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -525,7 +500,6 @@ func TestService_CrawlAllSources_SummarizerError(t *testing.T) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -587,7 +561,6 @@ func TestService_CrawlAllSources_ExistsByURLBatchError(t *testing.T) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -624,7 +597,6 @@ func TestService_CrawlAllSources_NoActiveSources(t *testing.T) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -662,7 +634,6 @@ func TestService_CrawlAllSources_ListActiveError(t *testing.T) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -724,7 +695,6 @@ func TestService_CrawlAllSources_PartialSummarizationFailure(t *testing.T) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -798,7 +768,6 @@ func TestService_CrawlAllSources_DatabaseError(t *testing.T) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -870,7 +839,6 @@ func TestService_CrawlAllSources_ContextCancellation(t *testing.T) {
 		summarizer,
 		fetcher,
 		nil, // ContentFetcher
-		&mockNotifyService{},
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,

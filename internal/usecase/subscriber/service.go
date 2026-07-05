@@ -3,12 +3,16 @@ package subscriber
 import (
 	"context"
 	"fmt"
+	"net/mail"
 	"strings"
 	"time"
 
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/repository"
 )
+
+// maxEmailLength is the RFC 5321 ceiling for a complete address.
+const maxEmailLength = 254
 
 // Input carries the subscriber fields shared by create and update. Name is
 // required; Note / Email are optional (nil clears them on update).
@@ -40,6 +44,34 @@ func (s *Service) now() time.Time {
 func (in *Input) validate() error {
 	if strings.TrimSpace(in.Name) == "" {
 		return ErrNameRequired
+	}
+	if in.Email != nil {
+		if err := validateEmail(*in.Email); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateEmail rejects anything that is not a single bare address
+// (name@domain, no display name, no groups): the value goes verbatim into
+// SMTP RCPT TO (C-11). Clearing the address is done with a null email, not
+// an empty string.
+func validateEmail(email string) error {
+	if email == "" || len(email) > maxEmailLength || strings.TrimSpace(email) != email {
+		return ErrInvalidEmail
+	}
+	addr, err := mail.ParseAddress(email)
+	if err != nil || addr.Address != email {
+		// addr.Address != email catches display-name forms such as
+		// "Alice <a@example.com>".
+		return ErrInvalidEmail
+	}
+	// mail.ParseAddress accepts local domains ("user@localhost"); friend
+	// notifications ride the public internet, so require a dotted domain.
+	at := strings.LastIndex(addr.Address, "@")
+	if at < 0 || !strings.Contains(addr.Address[at+1:], ".") {
+		return ErrInvalidEmail
 	}
 	return nil
 }
