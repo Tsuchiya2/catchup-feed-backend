@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"catchup-feed/internal/domain/entity"
 )
@@ -26,4 +27,9 @@ type EpisodeRepository interface {
 	ListRecent(ctx context.Context, limit int) ([]*entity.Episode, error)
 	// ListSegments returns the episode's segments ordered by position.
 	ListSegments(ctx context.Context, episodeID int64) ([]*entity.Segment, error)
+	// CountByKindSince returns how many episodes of the feed kind were
+	// published at or after `since`. The radio batch counts today's
+	// episodes to number same-day re-runs as new revisions (§6-6: 冪等性 —
+	// 上書きせず rev 付与で新規版).
+	CountByKindSince(ctx context.Context, feedKind string, since time.Time) (int, error)
 }

@@ -114,10 +114,15 @@ type geminiResponse struct {
 
 // Summarize implements Provider using the generateContent endpoint.
 func (g *Gemini) Summarize(ctx context.Context, text string) (string, error) {
+	prompt := buildPrompt(g.config.Options.CharacterLimit, truncateInput(ProviderGemini, text))
+	return g.Generate(ctx, prompt)
+}
+
+// Generate implements Provider: the prompt is sent verbatim.
+func (g *Gemini) Generate(ctx context.Context, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, g.config.Options.Timeout)
 	defer cancel()
 
-	prompt := buildPrompt(g.config.Options.CharacterLimit, truncateInput(ProviderGemini, text))
 	reqBody := geminiRequest{
 		Contents: []geminiContent{{Parts: []geminiPart{{Text: prompt}}}},
 		GenerationConfig: &geminiGenerationConfig{
@@ -142,9 +147,9 @@ func (g *Gemini) Summarize(ctx context.Context, text string) (string, error) {
 	for _, part := range resp.Candidates[0].Content.Parts {
 		sb.WriteString(part.Text)
 	}
-	summary := strings.TrimSpace(sb.String())
-	if summary == "" {
-		return "", fmt.Errorf("%s: api returned empty summary", ProviderGemini)
+	out := strings.TrimSpace(sb.String())
+	if out == "" {
+		return "", fmt.Errorf("%s: api returned empty response", ProviderGemini)
 	}
-	return summary, nil
+	return out, nil
 }

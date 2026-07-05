@@ -16,17 +16,30 @@ import (
 
 // fakeProvider is a scriptable Provider for chain-order tests.
 type fakeProvider struct {
-	name    string
-	summary string
-	err     error
-	calls   int
-	onCall  func() // optional hook (e.g. cancel the parent context)
+	name       string
+	summary    string
+	err        error
+	calls      int
+	lastPrompt string // prompt received by Generate
+	onCall     func() // optional hook (e.g. cancel the parent context)
 }
 
 func (f *fakeProvider) Name() string { return f.name }
 
 func (f *fakeProvider) Summarize(_ context.Context, _ string) (string, error) {
 	f.calls++
+	if f.onCall != nil {
+		f.onCall()
+	}
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.summary, nil
+}
+
+func (f *fakeProvider) Generate(_ context.Context, prompt string) (string, error) {
+	f.calls++
+	f.lastPrompt = prompt
 	if f.onCall != nil {
 		f.onCall()
 	}
@@ -97,7 +110,7 @@ func TestChain_SummarizeWithProvider(t *testing.T) {
 				{name: "ollama", err: errOllama},
 			},
 			wantErrSubs: []string{
-				"all summarizer providers failed",
+				"all summarize providers failed",
 				"status 429",
 				"status 503",
 				"connection refused",
@@ -149,6 +162,81 @@ func TestChain_Summarize_DelegatesToChain(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "要約", summary)
+}
+
+// TestChain_Generate covers the generic generation entry point used by the
+// radio script generator (D-3): same fallback order, prompt passed verbatim.
+func TestChain_Generate(t *testing.T) {
+	tests := []struct {
+		name         string
+		providers    []*fakeProvider
+		wantOut      string
+		wantProvider string
+		wantErrSubs  []string
+		wantCalls    []int
+	}{
+		{
+			name: "first provider succeeds",
+			providers: []*fakeProvider{
+				{name: "gemini", summary: "台本原稿"},
+				{name: "groq", summary: "unused"},
+			},
+			wantOut:      "台本原稿",
+			wantProvider: "gemini",
+			wantCalls:    []int{1, 0},
+		},
+		{
+			name: "first fails, second succeeds",
+			providers: []*fakeProvider{
+				{name: "gemini", err: errors.New("gemini: api error: status 429")},
+				{name: "groq", summary: "groq 台本"},
+			},
+			wantOut:      "groq 台本",
+			wantProvider: "groq",
+			wantCalls:    []int{1, 1},
+		},
+		{
+			name: "all providers fail",
+			providers: []*fakeProvider{
+				{name: "gemini", err: errors.New("gemini: down")},
+				{name: "groq", err: errors.New("groq: down")},
+			},
+			wantErrSubs: []string{"all generate providers failed", "gemini: down", "groq: down"},
+			wantCalls:   []int{1, 1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			providers := make([]summarizer.Provider, len(tt.providers))
+			for i, p := range tt.providers {
+				providers[i] = p
+			}
+			chain, err := summarizer.NewChain(providers...)
+			require.NoError(t, err)
+
+			out, provider, err := chain.Generate(context.Background(), "ラジオ台本プロンプト")
+
+			if len(tt.wantErrSubs) > 0 {
+				require.Error(t, err)
+				for _, sub := range tt.wantErrSubs {
+					assert.Contains(t, err.Error(), sub)
+				}
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantOut, out)
+				assert.Equal(t, tt.wantProvider, provider)
+			}
+			for i, p := range tt.providers {
+				assert.Equal(t, tt.wantCalls[i], p.calls,
+					"unexpected call count for provider %s", p.name)
+				if tt.wantCalls[i] > 0 {
+					assert.Equal(t, "ラジオ台本プロンプト", p.lastPrompt,
+						"Generate must pass the prompt verbatim")
+				}
+			}
+		})
+	}
 }
 
 func TestChain_ParentContextCanceled_AbortsChain(t *testing.T) {

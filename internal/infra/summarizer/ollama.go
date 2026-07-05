@@ -92,10 +92,15 @@ type ollamaResponse struct {
 
 // Summarize implements Provider using the /api/generate endpoint.
 func (o *Ollama) Summarize(ctx context.Context, text string) (string, error) {
+	prompt := buildPrompt(o.config.Options.CharacterLimit, truncateInput(ProviderOllama, text))
+	return o.Generate(ctx, prompt)
+}
+
+// Generate implements Provider: the prompt is sent verbatim.
+func (o *Ollama) Generate(ctx context.Context, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, o.config.Options.Timeout)
 	defer cancel()
 
-	prompt := buildPrompt(o.config.Options.CharacterLimit, truncateInput(ProviderOllama, text))
 	reqBody := ollamaRequest{
 		Model:  o.config.Model,
 		Prompt: prompt,
@@ -109,9 +114,9 @@ func (o *Ollama) Summarize(ctx context.Context, text string) (string, error) {
 		return "", err
 	}
 
-	summary := strings.TrimSpace(resp.Response)
-	if summary == "" {
-		return "", fmt.Errorf("%s: api returned empty summary", ProviderOllama)
+	out := strings.TrimSpace(resp.Response)
+	if out == "" {
+		return "", fmt.Errorf("%s: api returned empty response", ProviderOllama)
 	}
-	return summary, nil
+	return out, nil
 }

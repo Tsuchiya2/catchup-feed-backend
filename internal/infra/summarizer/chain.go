@@ -133,19 +133,39 @@ func (c *Chain) Summarize(ctx context.Context, articleText string) (string, erro
 // together with the name of the provider that produced it (for
 // summaries.provider / fallback observability, §8).
 func (c *Chain) SummarizeWithProvider(ctx context.Context, articleText string) (string, string, error) {
+	return c.fallback(ctx, "summarize", func(p Provider) (string, error) {
+		return p.Summarize(ctx, articleText)
+	})
+}
+
+// Generate tries each provider in order with the prompt sent verbatim and
+// returns the completion together with the winning provider name. It is the
+// generic entry point used by the radio script generator (D-3: 台本は要約と
+// 同一のフォールバック連鎖). Same semantics as SummarizeWithProvider: no
+// retry, no circuit breaker (C-3); only public-article-derived text may be
+// embedded in the prompt (C-12).
+func (c *Chain) Generate(ctx context.Context, prompt string) (string, string, error) {
+	return c.fallback(ctx, "generate", func(p Provider) (string, error) {
+		return p.Generate(ctx, prompt)
+	})
+}
+
+// fallback runs the provider chain for one operation and returns the first
+// successful output with the provider name.
+func (c *Chain) fallback(ctx context.Context, op string, call func(Provider) (string, error)) (string, string, error) {
 	var errs []error
 
 	for _, p := range c.providers {
 		start := time.Now()
-		summary, err := p.Summarize(ctx, articleText)
+		out, err := call(p)
 		duration := time.Since(start)
 
 		if err == nil {
-			c.logger.InfoContext(ctx, "summarization completed",
+			c.logger.InfoContext(ctx, op+" completed",
 				slog.String("provider", p.Name()),
-				slog.Int("summary_length", text.CountRunes(summary)),
+				slog.Int("output_length", text.CountRunes(out)),
 				slog.Duration("duration", duration))
-			return summary, p.Name(), nil
+			return out, p.Name(), nil
 		}
 
 		// Provider errors already carry the provider name prefix.
@@ -154,14 +174,14 @@ func (c *Chain) SummarizeWithProvider(ctx context.Context, articleText string) (
 		// Parent context is gone (shutdown / crawl deadline): abort instead
 		// of hammering the remaining providers with a dead context.
 		if ctx.Err() != nil {
-			return "", "", fmt.Errorf("summarize aborted: %w", errors.Join(errs...))
+			return "", "", fmt.Errorf("%s aborted: %w", op, errors.Join(errs...))
 		}
 
-		c.logger.WarnContext(ctx, "summarization provider failed, falling back",
+		c.logger.WarnContext(ctx, op+" provider failed, falling back",
 			slog.String("provider", p.Name()),
 			slog.Duration("duration", duration),
 			slog.String("error", err.Error()))
 	}
 
-	return "", "", fmt.Errorf("all summarizer providers failed: %w", errors.Join(errs...))
+	return "", "", fmt.Errorf("all %s providers failed: %w", op, errors.Join(errs...))
 }

@@ -100,7 +100,7 @@ func TestGroq_Summarize_Errors(t *testing.T) {
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = w.Write([]byte(groqSuccessBody("")))
 			},
-			wantErrSub: "empty summary",
+			wantErrSub: "empty response",
 		},
 		{
 			name: "malformed JSON response",

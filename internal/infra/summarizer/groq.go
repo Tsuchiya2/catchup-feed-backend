@@ -99,10 +99,15 @@ type groqResponse struct {
 
 // Summarize implements Provider using the chat/completions endpoint.
 func (g *Groq) Summarize(ctx context.Context, text string) (string, error) {
+	prompt := buildPrompt(g.config.Options.CharacterLimit, truncateInput(ProviderGroq, text))
+	return g.Generate(ctx, prompt)
+}
+
+// Generate implements Provider: the prompt is sent verbatim.
+func (g *Groq) Generate(ctx context.Context, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, g.config.Options.Timeout)
 	defer cancel()
 
-	prompt := buildPrompt(g.config.Options.CharacterLimit, truncateInput(ProviderGroq, text))
 	reqBody := groqRequest{
 		Model:    g.config.Model,
 		Messages: []groqMessage{{Role: "user", Content: prompt}},
@@ -119,9 +124,9 @@ func (g *Groq) Summarize(ctx context.Context, text string) (string, error) {
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("%s: api returned no choices", ProviderGroq)
 	}
-	summary := strings.TrimSpace(resp.Choices[0].Message.Content)
-	if summary == "" {
-		return "", fmt.Errorf("%s: api returned empty summary", ProviderGroq)
+	out := strings.TrimSpace(resp.Choices[0].Message.Content)
+	if out == "" {
+		return "", fmt.Errorf("%s: api returned empty response", ProviderGroq)
 	}
-	return summary, nil
+	return out, nil
 }

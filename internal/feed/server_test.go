@@ -70,6 +70,10 @@ func (s *stubEpisodeRepo) ListSegments(context.Context, int64) ([]*entity.Segmen
 	return nil, nil
 }
 
+func (s *stubEpisodeRepo) CountByKindSince(context.Context, string, time.Time) (int, error) {
+	return 0, errors.New("not implemented")
+}
+
 func sortAndLimit(eps []*entity.Episode, limit int) []*entity.Episode {
 	sort.Slice(eps, func(i, j int) bool { return eps[i].PublishedAt.After(eps[j].PublishedAt) })
 	if len(eps) > limit {

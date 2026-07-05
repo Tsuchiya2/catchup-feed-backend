@@ -110,7 +110,7 @@ func TestGemini_Summarize_Errors(t *testing.T) {
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = w.Write([]byte(geminiSuccessBody("   ")))
 			},
-			wantErrSub: "empty summary",
+			wantErrSub: "empty response",
 		},
 	}
 

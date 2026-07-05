@@ -13,7 +13,7 @@ import (
 	"unicode/utf8"
 )
 
-// Provider is a single summarization backend (gemini / groq / ollama).
+// Provider is a single generation backend (gemini / groq / ollama).
 // Implementations must be safe for concurrent use.
 type Provider interface {
 	// Name returns the stable provider identifier recorded in
@@ -24,6 +24,13 @@ type Provider interface {
 	// Errors are returned as-is; there is no retry (C-3) — the fallback
 	// chain or the next cron run handles failures.
 	Summarize(ctx context.Context, text string) (string, error)
+
+	// Generate sends the prompt verbatim and returns the raw completion.
+	// It is the generic entry point used by the radio script generator
+	// (D-3: same chain as summaries). The caller owns prompt size; no
+	// truncation is applied. Only public-article-derived text may be
+	// embedded in prompts sent to cloud providers (C-12).
+	Generate(ctx context.Context, prompt string) (string, error)
 }
 
 // maxInputChars limits prompt input to avoid provider token limits.

@@ -50,9 +50,10 @@ func TestEpisodeRepo_Create_WithSegments(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
+	// Zero PublishedAt is sent as NULL and COALESCEd to the DB's now().
 	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO episodes")).
 		WithArgs(entity.FeedKindPublic, episode.Title, episode.ShowNotes,
-			episode.AudioPath, episode.AudioBytes, episode.DurationSec).
+			episode.AudioPath, episode.AudioBytes, episode.DurationSec, nil).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "published_at"}).AddRow(int64(12), now))
 	for i, seg := range segments {
 		mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO segments")).
@@ -68,6 +69,35 @@ func TestEpisodeRepo_Create_WithSegments(t *testing.T) {
 		assert.Equal(t, int64(12), seg.EpisodeID)
 		assert.Equal(t, int64(100+i), seg.ID)
 	}
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestEpisodeRepo_Create_ExplicitPublishedAt pins the selection-window fix:
+// the radio batch stores its article-selection timestamp as published_at,
+// so the next run's cursor starts where this run's SELECT ran — summaries
+// the worker created during the batch are picked up next time instead of
+// being lost in the SELECT-to-INSERT window.
+func TestEpisodeRepo_Create_ExplicitPublishedAt(t *testing.T) {
+	repo, mock, closeFn := newEpisodeRepo(t)
+	defer closeFn()
+
+	selectedAt := time.Date(2026, 7, 5, 4, 30, 0, 0, time.UTC)
+	episode := &entity.Episode{
+		FeedKind: entity.FeedKindPublic, Title: "pulse 2026-07-05", ShowNotes: "n",
+		AudioPath: "/data/episodes/2026-07-05.mp3", AudioBytes: 1, DurationSec: 1,
+		PublishedAt: selectedAt,
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO episodes")).
+		WithArgs(episode.FeedKind, episode.Title, episode.ShowNotes,
+			episode.AudioPath, episode.AudioBytes, episode.DurationSec, selectedAt).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "published_at"}).AddRow(int64(13), selectedAt))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.Create(context.Background(), episode, nil))
+	assert.Equal(t, int64(13), episode.ID)
+	assert.Equal(t, selectedAt, episode.PublishedAt)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -153,6 +183,21 @@ func TestEpisodeRepo_ListRecent_AllKinds(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, entity.FeedKindPrivate, got[0].FeedKind)
 	assert.Equal(t, entity.FeedKindPublic, got[1].FeedKind)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestEpisodeRepo_CountByKindSince(t *testing.T) {
+	repo, mock, closeFn := newEpisodeRepo(t)
+	defer closeFn()
+
+	startOfDay := time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(regexp.QuoteMeta("WHERE feed_kind = $1 AND published_at >= $2")).
+		WithArgs(entity.FeedKindPublic, startOfDay).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	count, err := repo.CountByKindSince(context.Background(), entity.FeedKindPublic, startOfDay)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
