@@ -430,17 +430,18 @@ HTTP headers that allow web applications from different origins to access API re
 Configuration for extracting real client IP addresses when behind reverse proxies.
 
 **Configuration:**
-- `TRUSTED_PROXY_ENABLED`: Enable trusted proxy mode (default: false)
-- `TRUSTED_PROXY_ALLOWED_CIDRS`: Comma-separated CIDR ranges of trusted proxies
+- `RATE_LIMIT_TRUST_PROXY`: Enable trusted proxy mode (default: false)
+- `RATE_LIMIT_TRUSTED_PROXIES`: Comma-separated IPs/CIDR ranges of trusted proxies
 
 **Headers Checked (Priority Order):**
-1. `X-Real-IP`: Single IP address
-2. `X-Forwarded-For`: Comma-separated IP chain (rightmost trusted IP used)
-3. `RemoteAddr`: Direct connection IP (fallback)
+1. `X-Forwarded-For`: Comma-separated IP chain (rightmost-untrusted entry used)
+2. `RemoteAddr`: Direct connection IP (fallback)
 
 **Security:**
-- Only enabled proxies can set client IP via headers
+- Only trusted proxies can set the client IP via `X-Forwarded-For`
 - Untrusted proxies ignored (uses RemoteAddr instead)
+- `X-Real-IP` is never consulted: nothing in this stack sets it, and honoring
+  it would reopen a client-controlled spoofing path
 - Prevents IP spoofing attacks
 
 ---

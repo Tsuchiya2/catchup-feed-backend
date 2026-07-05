@@ -157,9 +157,11 @@ func TestTrustedProxyExtractor_IgnoresXFF_WhenUntrusted(t *testing.T) {
 	}
 }
 
-// TestTrustedProxyExtractor_UsesXRealIP_AsFallback tests that
-// TrustedProxyExtractor uses X-Real-IP when X-Forwarded-For is not present
-func TestTrustedProxyExtractor_UsesXRealIP_AsFallback(t *testing.T) {
+// TestTrustedProxyExtractor_IgnoresXRealIP pins the removal of the
+// X-Real-IP fallback: nothing in this stack sets that header, so even from
+// a trusted proxy it must be ignored — otherwise trusting a proxy that does
+// not append X-Forwarded-For would hand clients a spoofable IP header.
+func TestTrustedProxyExtractor_IgnoresXRealIP(t *testing.T) {
 	config := TrustedProxyConfig{
 		Enabled: true,
 		AllowedCIDRs: []netip.Prefix{
@@ -179,8 +181,8 @@ func TestTrustedProxyExtractor_UsesXRealIP_AsFallback(t *testing.T) {
 		t.Fatalf("ExtractIP() returned unexpected error: %v", err)
 	}
 
-	if ip != "203.0.113.2" {
-		t.Errorf("ExtractIP() = %q, expected %q (from X-Real-IP)", ip, "203.0.113.2")
+	if ip != "10.0.0.5" {
+		t.Errorf("ExtractIP() = %q, expected RemoteAddr %q (X-Real-IP must be ignored)", ip, "10.0.0.5")
 	}
 }
 
@@ -390,33 +392,6 @@ func TestTrustedProxyExtractor_DisabledConfig(t *testing.T) {
 	}
 }
 
-// TestTrustedProxyExtractor_XFFPriority tests X-Forwarded-For
-// takes priority over X-Real-IP
-func TestTrustedProxyExtractor_XFFPriority(t *testing.T) {
-	config := TrustedProxyConfig{
-		Enabled: true,
-		AllowedCIDRs: []netip.Prefix{
-			netip.MustParsePrefix("10.0.0.0/8"),
-		},
-	}
-	extractor := NewTrustedProxyExtractor(config)
-
-	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "10.0.0.5:54321" // Trusted proxy
-	req.Header.Set("X-Forwarded-For", "203.0.113.1")
-	req.Header.Set("X-Real-IP", "203.0.113.2")
-
-	ip, err := extractor.ExtractIP(req)
-
-	if err != nil {
-		t.Fatalf("ExtractIP() returned unexpected error: %v", err)
-	}
-
-	if ip != "203.0.113.1" {
-		t.Errorf("ExtractIP() = %q, expected %q (XFF has priority over X-Real-IP)", ip, "203.0.113.1")
-	}
-}
-
 // TestExtractIPFromAddr_EdgeCases tests edge cases for extractIPFromAddr helper
 func TestExtractIPFromAddr_EdgeCases(t *testing.T) {
 	testCases := []struct {
@@ -516,32 +491,5 @@ func TestTrustedProxyExtractor_IPv6Headers(t *testing.T) {
 
 	if ip != "2606:4700:4700::1111" {
 		t.Errorf("ExtractIP() = %q, expected %q (from XFF)", ip, "2606:4700:4700::1111")
-	}
-}
-
-// TestTrustedProxyExtractor_InvalidXRealIP tests fallback when X-Real-IP is invalid
-func TestTrustedProxyExtractor_InvalidXRealIP(t *testing.T) {
-	config := TrustedProxyConfig{
-		Enabled: true,
-		AllowedCIDRs: []netip.Prefix{
-			netip.MustParsePrefix("10.0.0.0/8"),
-		},
-	}
-	extractor := NewTrustedProxyExtractor(config)
-
-	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "10.0.0.5:54321" // Trusted proxy
-	// No X-Forwarded-For
-	req.Header.Set("X-Real-IP", "invalid-ip")
-
-	ip, err := extractor.ExtractIP(req)
-
-	if err != nil {
-		t.Fatalf("ExtractIP() returned unexpected error: %v", err)
-	}
-
-	// Should fallback to RemoteAddr
-	if ip != "10.0.0.5" {
-		t.Errorf("ExtractIP() = %q, expected fallback to RemoteAddr", ip)
 	}
 }

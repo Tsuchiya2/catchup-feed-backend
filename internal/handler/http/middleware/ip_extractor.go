@@ -40,7 +40,7 @@ func (e *RemoteAddrExtractor) ExtractIP(r *http.Request) (string, error) {
 
 // TrustedProxyConfig holds configuration for validating trusted reverse proxies.
 // When enabled, the extractor will check if the request comes from a trusted proxy
-// before extracting the client IP from X-Forwarded-For or X-Real-IP headers.
+// before extracting the client IP from the X-Forwarded-For header.
 type TrustedProxyConfig struct {
 	// Enabled indicates whether proxy trust is enabled.
 	// When false, all header-based extraction is disabled.
@@ -162,15 +162,19 @@ func LoadTrustedProxyConfig() (*TrustedProxyConfig, error) {
 	return config, nil
 }
 
-// TrustedProxyExtractor extracts the client IP from X-Forwarded-For or X-Real-IP headers
+// TrustedProxyExtractor extracts the client IP from the X-Forwarded-For header
 // when the request comes from a trusted proxy. If the proxy is not trusted, it falls back
 // to RemoteAddr extraction to prevent IP spoofing attacks.
 //
+// X-Forwarded-For is the ONLY header consulted (rightmost-untrusted: scan
+// right-to-left, strip trusted proxies, take the first non-trusted IP — see
+// ExtractIP). X-Real-IP is deliberately ignored: no component in this stack
+// sets it, and honoring it would hand IP control back to clients the moment
+// a proxy that does not append X-Forwarded-For is added to the trusted list.
+//
 // Header extraction priority:
-//  1. X-Forwarded-For (rightmost-untrusted: scan right-to-left, strip trusted proxies,
-//     take the first non-trusted IP — see ExtractIP)
-//  2. X-Real-IP (fallback)
-//  3. RemoteAddr (if proxy is not trusted or headers are missing)
+//  1. X-Forwarded-For
+//  2. RemoteAddr (if proxy is not trusted, or the header is missing/unusable)
 type TrustedProxyExtractor struct {
 	config TrustedProxyConfig
 }
@@ -198,9 +202,7 @@ func NewTrustedProxyExtractor(config TrustedProxyConfig) *TrustedProxyExtractor 
 //     cloudflared APPEND the real peer IP to whatever X-Forwarded-For the
 //     client sent, so the leftmost entry is attacker-controlled.
 //
-//   - If X-Forwarded-For yields nothing, check X-Real-IP header
-//
-//   - If both yield nothing, fallback to RemoteAddr
+//   - If X-Forwarded-For yields nothing, fallback to RemoteAddr
 //     c. If NOT trusted:
 //
 //   - Log warning about potential spoofing attempt
@@ -224,13 +226,6 @@ func (e *TrustedProxyExtractor) ExtractIP(r *http.Request) (string, error) {
 				slog.String("x_forwarded_for", xff),
 			)
 		}
-		if xri := r.Header.Get("X-Real-IP"); xri != "" {
-			slog.Warn("untrusted proxy attempting to set X-Real-IP",
-				slog.String("remote_addr", r.RemoteAddr),
-				slog.String("x_real_ip", xri),
-			)
-		}
-
 		// Use RemoteAddr for untrusted sources
 		return extractIPFromAddr(r.RemoteAddr)
 	}
@@ -242,14 +237,9 @@ func (e *TrustedProxyExtractor) ExtractIP(r *http.Request) (string, error) {
 		}
 	}
 
-	// Fallback to X-Real-IP
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		if ip := net.ParseIP(xri); ip != nil {
-			return ip.String(), nil
-		}
-	}
-
-	// Final fallback to RemoteAddr
+	// Final fallback to RemoteAddr. There is deliberately no X-Real-IP
+	// fallback here: nothing in this stack sets that header, so honoring it
+	// would only reopen a client-controlled spoofing path.
 	return extractIPFromAddr(r.RemoteAddr)
 }
 
