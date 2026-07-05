@@ -4,58 +4,24 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/repository"
 	fetchUC "catchup-feed/internal/usecase/fetch"
-	"catchup-feed/internal/usecase/notify"
 )
 
 /* ───────── モック実装 ───────── */
-
-// mockNotifyService はnotify.Serviceのモック実装
-type mockNotifyService struct {
-	notifyCalled int32
-	notifyError  error
-}
-
-func (m *mockNotifyService) NotifyNewArticle(ctx context.Context, article *entity.Article, source *entity.Source) error {
-	atomic.AddInt32(&m.notifyCalled, 1)
-	return m.notifyError
-}
-
-func (m *mockNotifyService) Shutdown(ctx context.Context) error {
-	return nil
-}
-
-func (m *mockNotifyService) GetChannelHealth() []notify.ChannelHealthStatus {
-	return nil
-}
 
 // stubSourceRepo はSourceRepositoryのモック実装
 type stubSourceRepo struct {
 	sources       []*entity.Source
 	listActiveErr error
-	touchErr      error
-	touched       map[int64]time.Time
 }
 
 func (s *stubSourceRepo) ListActive(_ context.Context) ([]*entity.Source, error) {
 	return s.sources, s.listActiveErr
-}
-
-func (s *stubSourceRepo) TouchCrawledAt(_ context.Context, id int64, t time.Time) error {
-	if s.touchErr != nil {
-		return s.touchErr
-	}
-	if s.touched == nil {
-		s.touched = make(map[int64]time.Time)
-	}
-	s.touched[id] = t
-	return nil
 }
 
 // 以下は未使用だが、インターフェース満たすために実装
@@ -81,10 +47,13 @@ func (s *stubSourceRepo) SearchWithFilters(_ context.Context, _ []string, _ repo
 	return nil, nil
 }
 
-// stubArticleRepo はArticleRepositoryのモック実装
+// stubArticleRepo はArticleRepositoryのモック実装。
+// summaries は CreateWithSummary で記事と同時に永続化された要約を
+// article_id ごとに記録する（summaries.provider の検証用）。
 type stubArticleRepo struct {
 	mu        sync.Mutex
 	articles  []*entity.Article
+	summaries map[int64]*entity.Summary
 	existsMap map[string]bool
 	existsErr error
 	createErr error
@@ -113,6 +82,23 @@ func (s *stubArticleRepo) Create(_ context.Context, a *entity.Article) error {
 	s.nextID++
 	a.ID = s.nextID
 	s.articles = append(s.articles, a)
+	return nil
+}
+
+func (s *stubArticleRepo) CreateWithSummary(_ context.Context, a *entity.Article, sum *entity.Summary) error {
+	if s.createErr != nil {
+		return s.createErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	a.ID = s.nextID
+	s.articles = append(s.articles, a)
+	sum.ArticleID = a.ID
+	if s.summaries == nil {
+		s.summaries = make(map[int64]*entity.Summary)
+	}
+	s.summaries[a.ID] = sum
 	return nil
 }
 
@@ -207,10 +193,16 @@ func (s *selectiveSummarizer) Summarize(_ context.Context, text string) (string,
 	return "Summary: " + text, nil
 }
 
-// cancelingSummarizer はcontext.Canceledエラーを返すSummarizerモック
-type cancelingSummarizer struct{}
+// cancelingSummarizer は呼び出し時に親コンテキストを取消して
+// context.Canceled を返す Summarizer モック（要約中のシャットダウンを再現）。
+// 親 ctx が生きたままセンチネルエラーだけ返すのは「プロバイダ内部タイムアウト」
+// と区別できないため、実際に cancel する。
+type cancelingSummarizer struct {
+	cancel context.CancelFunc
+}
 
 func (s *cancelingSummarizer) Summarize(_ context.Context, _ string) (string, error) {
+	s.cancel()
 	return "", context.Canceled
 }
 
@@ -255,10 +247,7 @@ func TestService_CrawlAllSources_HappyPath(t *testing.T) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -291,9 +280,23 @@ func TestService_CrawlAllSources_HappyPath(t *testing.T) {
 		t.Errorf("created articles = %d, want 2", len(artRepo.articles))
 	}
 
-	// TouchCrawledAtが呼ばれたことを確認
-	if _, ok := srcRepo.touched[1]; !ok {
-		t.Errorf("TouchCrawledAt was not called for source 1")
+	// 要約が記事と同一トランザクションで永続化されたことを確認。
+	// plain Summarizer はプロバイダ名を報告できないため "unknown" になる。
+	if len(artRepo.summaries) != 2 {
+		t.Errorf("persisted summaries = %d, want 2", len(artRepo.summaries))
+	}
+	for _, art := range artRepo.articles {
+		sum := artRepo.summaries[art.ID]
+		if sum == nil {
+			t.Errorf("summary for article %d not persisted", art.ID)
+			continue
+		}
+		if sum.Body != "Test summary" {
+			t.Errorf("summary body = %q, want %q", sum.Body, "Test summary")
+		}
+		if sum.Provider != entity.SummaryProviderUnknown {
+			t.Errorf("summary provider = %q, want %q", sum.Provider, entity.SummaryProviderUnknown)
+		}
 	}
 }
 
@@ -339,10 +342,7 @@ func TestService_CrawlAllSources_DuplicateHandling(t *testing.T) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -396,10 +396,7 @@ func TestService_CrawlAllSources_EmptyFeed(t *testing.T) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -421,10 +418,6 @@ func TestService_CrawlAllSources_EmptyFeed(t *testing.T) {
 		t.Errorf("Inserted = %d, want 0", stats.Inserted)
 	}
 
-	// 空のフィードでもTouchCrawledAtは呼ばれない（continueで処理をスキップするため）
-	if _, ok := srcRepo.touched[1]; ok {
-		t.Errorf("TouchCrawledAt should not be called for empty feed")
-	}
 }
 
 func TestService_CrawlAllSources_FetchError(t *testing.T) {
@@ -450,10 +443,7 @@ func TestService_CrawlAllSources_FetchError(t *testing.T) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -473,10 +463,6 @@ func TestService_CrawlAllSources_FetchError(t *testing.T) {
 		t.Errorf("FeedItems = %d, want 0", stats.FeedItems)
 	}
 
-	// フェッチエラーでもTouchCrawledAtは呼ばれない
-	if _, ok := srcRepo.touched[1]; ok {
-		t.Errorf("TouchCrawledAt should not be called when fetch fails")
-	}
 }
 
 func TestService_CrawlAllSources_SummarizerError(t *testing.T) {
@@ -513,10 +499,7 @@ func TestService_CrawlAllSources_SummarizerError(t *testing.T) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -577,10 +560,7 @@ func TestService_CrawlAllSources_ExistsByURLBatchError(t *testing.T) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -616,10 +596,7 @@ func TestService_CrawlAllSources_NoActiveSources(t *testing.T) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -656,10 +633,7 @@ func TestService_CrawlAllSources_ListActiveError(t *testing.T) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -720,10 +694,7 @@ func TestService_CrawlAllSources_PartialSummarizationFailure(t *testing.T) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -756,11 +727,6 @@ func TestService_CrawlAllSources_PartialSummarizationFailure(t *testing.T) {
 	// Verify: 4 articles actually created
 	if len(artRepo.articles) != 4 {
 		t.Errorf("created articles = %d, want 4", len(artRepo.articles))
-	}
-
-	// Verify: Both sources fully processed
-	if len(srcRepo.touched) != 2 {
-		t.Errorf("touched sources = %d, want 2 (both sources should be marked as crawled)", len(srcRepo.touched))
 	}
 }
 
@@ -801,10 +767,7 @@ func TestService_CrawlAllSources_DatabaseError(t *testing.T) {
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -818,7 +781,7 @@ func TestService_CrawlAllSources_DatabaseError(t *testing.T) {
 	}
 
 	// Verify error message indicates database issue
-	if !errors.Is(err, artRepo.createErr) && err.Error() != "process feed items: create article in repository: database connection failed" {
+	if !errors.Is(err, artRepo.createErr) && err.Error() != "process feed items: create article with summary in repository: database connection failed" {
 		t.Errorf("unexpected error message: %v", err)
 	}
 
@@ -864,18 +827,18 @@ func TestService_CrawlAllSources_ContextCancellation(t *testing.T) {
 		},
 	}
 
-	// Create a summarizer that returns context.Canceled error
-	summarizer := &cancelingSummarizer{}
+	// Cancel the parent context from inside the summarizer, then return
+	// context.Canceled (a real shutdown while summarization is in flight).
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	summarizer := &cancelingSummarizer{cancel: cancel}
 
 	svc := fetchUC.NewService(
 		srcRepo,
 		artRepo,
 		summarizer,
 		fetcher,
-		nil, // webScrapers
 		nil, // ContentFetcher
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -883,7 +846,6 @@ func TestService_CrawlAllSources_ContextCancellation(t *testing.T) {
 	)
 
 	// Context cancellation should stop processing immediately
-	ctx := context.Background()
 	stats, err := svc.CrawlAllSources(ctx)
 
 	if err == nil {

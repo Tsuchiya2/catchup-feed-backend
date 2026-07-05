@@ -5,85 +5,72 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"os"
-	"strings"
 
 	authservice "catchup-feed/internal/service/auth"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
-// BasicAuthProvider implements environment-based authentication.
-type BasicAuthProvider struct {
-	minPasswordLength int
-	weakPasswords     []string
+// Environment variable names for the administrator credentials (C-7:
+// 単一管理者、users テーブルなし。環境変数+bcrypt ハッシュ)。
+const (
+	// EnvAdminUser holds the administrator's login name.
+	EnvAdminUser = "ADMIN_USER"
+	// EnvAdminPasswordHash holds the bcrypt hash of the administrator's
+	// password. Generate it with `make admin-hash`.
+	EnvAdminPasswordHash = "ADMIN_PASSWORD_HASH"
+)
+
+// dummyBcryptHash is compared when ADMIN_PASSWORD_HASH is missing so that a
+// misconfigured server still spends the same bcrypt work per login attempt
+// and the response time does not reveal configuration state. The plaintext
+// is not used anywhere; validation against this hash always fails together
+// with the username check.
+const dummyBcryptHash = "$2a$12$CE054DMaQb/t43I4TxbNDurgUs70FL0XUpSqkOJ7VYpnMtVDPxuFu"
+
+// AdminAuthProvider validates the single administrator's credentials against
+// environment variables. The password is verified with bcrypt (C-20); the
+// plaintext password is never stored on the server.
+type AdminAuthProvider struct{}
+
+// NewAdminAuthProvider creates a new administrator credential provider.
+func NewAdminAuthProvider() *AdminAuthProvider {
+	return &AdminAuthProvider{}
 }
 
-// NewBasicAuthProvider creates a new basic auth provider.
-func NewBasicAuthProvider(minPasswordLength int, weakPasswords []string) *BasicAuthProvider {
-	return &BasicAuthProvider{
-		minPasswordLength: minPasswordLength,
-		weakPasswords:     weakPasswords,
-	}
-}
-
-// ValidateCredentials validates credentials against environment variables.
-func (p *BasicAuthProvider) ValidateCredentials(ctx context.Context, creds authservice.Credentials) error {
-	// Check if credentials are empty
+// ValidateCredentials validates credentials against ADMIN_USER and
+// ADMIN_PASSWORD_HASH.
+//
+// Security notes:
+//   - The username comparison is constant time.
+//   - bcrypt comparison runs regardless of the username result, so timing
+//     does not reveal whether the username was correct.
+//   - The returned error is generic; it does not reveal which part failed.
+func (p *AdminAuthProvider) ValidateCredentials(_ context.Context, creds authservice.Credentials) error {
 	if creds.Username == "" || creds.Password == "" {
 		return fmt.Errorf("credentials must not be empty")
 	}
 
-	// Check password length
-	if len(creds.Password) < p.minPasswordLength {
-		return fmt.Errorf("password must be at least %d characters", p.minPasswordLength)
+	adminUser := os.Getenv(EnvAdminUser)
+	hash := os.Getenv(EnvAdminPasswordHash)
+
+	userMatch := adminUser != "" &&
+		subtle.ConstantTimeCompare([]byte(creds.Username), []byte(adminUser)) == 1
+
+	// Keep the bcrypt work uniform even when the hash is not configured.
+	configured := hash != ""
+	if !configured {
+		hash = dummyBcryptHash
 	}
+	passErr := bcrypt.CompareHashAndPassword([]byte(hash), []byte(creds.Password))
 
-	// Check for weak passwords
-	for _, weak := range p.weakPasswords {
-		if creds.Password == weak || strings.HasPrefix(creds.Password, weak) {
-			return fmt.Errorf("weak password detected")
-		}
-	}
-
-	adminUser := os.Getenv("ADMIN_USER")
-	adminPass := os.Getenv("ADMIN_USER_PASSWORD")
-
-	// Use constant-time comparison to prevent timing attacks
-	userMatch := subtle.ConstantTimeCompare([]byte(creds.Username), []byte(adminUser)) == 1
-	passMatch := subtle.ConstantTimeCompare([]byte(creds.Password), []byte(adminPass)) == 1
-
-	if !userMatch || !passMatch {
+	if !userMatch || passErr != nil || !configured {
 		return fmt.Errorf("invalid credentials")
 	}
-
 	return nil
 }
 
-// GetRequirements returns the password requirements.
-func (p *BasicAuthProvider) GetRequirements() authservice.CredentialRequirements {
-	return authservice.CredentialRequirements{
-		MinPasswordLength: p.minPasswordLength,
-		WeakPasswords:     p.weakPasswords,
-	}
-}
-
 // Name returns the provider name.
-func (p *BasicAuthProvider) Name() string {
-	return "basic"
-}
-
-// IdentifyUser returns the role for a given email address.
-// For BasicAuthProvider, only admin role is supported.
-// Returns "admin" if email matches ADMIN_USER, otherwise returns error.
-func (p *BasicAuthProvider) IdentifyUser(ctx context.Context, email string) (string, error) {
-	if email == "" {
-		return "", fmt.Errorf("email must not be empty")
-	}
-
-	adminUser := os.Getenv("ADMIN_USER")
-
-	// Use constant-time comparison to prevent timing attacks
-	if subtle.ConstantTimeCompare([]byte(email), []byte(adminUser)) == 1 {
-		return RoleAdmin, nil
-	}
-
-	return "", fmt.Errorf("user not found")
+func (p *AdminAuthProvider) Name() string {
+	return "env-bcrypt"
 }

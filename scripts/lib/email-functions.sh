@@ -13,7 +13,6 @@
 #   - validate_email: RFC 5322 basic email validation
 #   - alert_fallback: Fallback alerting via syslog
 #   - check_consecutive_failures: Monitor email failures
-#   - update_prometheus_metrics: Update Prometheus metrics
 #
 # Environment Variables:
 #   EMAIL_FROM: Sender email address
@@ -58,8 +57,6 @@ EMAIL_LOG_DIR="${EMAIL_LOG_DIR:-/var/log/catchup}"
 readonly EMAIL_MAX_LENGTH=10000
 readonly EMAIL_MAX_RETRIES=3
 readonly EMAIL_RETRY_BASE_DELAY=2
-readonly PROMETHEUS_METRICS_DIR="${PROMETHEUS_METRICS_DIR:-/var/lib/node_exporter/textfile_collector}"
-readonly PROMETHEUS_METRICS_FILE="${PROMETHEUS_METRICS_DIR}/email_metrics.prom"
 
 # Rate limit tracking files
 readonly RATE_LIMIT_LOG="${EMAIL_LOG_DIR}/email-rate-limit.log"
@@ -339,68 +336,6 @@ check_consecutive_failures() {
 }
 
 # ============================================================
-# Function: update_prometheus_metrics
-# ============================================================
-# Update Prometheus textfile collector metrics
-# Uses atomic write (temp file + mv) for safety
-#
-# Arguments:
-#   $1: metric_name - Prometheus metric name
-#   $2: value - Metric value
-#   $3: labels - Metric labels (optional, e.g., 'status="success"')
-#
-# Returns:
-#   0: success
-#   1: failure
-# ============================================================
-update_prometheus_metrics() {
-    local metric_name="${1:-}"
-    local value="${2:-0}"
-    local labels="${3:-}"
-    local timestamp_ms
-
-    timestamp_ms=$(date +%s)000
-
-    # Validate metric name
-    if [ -z "$metric_name" ]; then
-        return 1
-    fi
-
-    # Create metrics directory if it doesn't exist
-    if [ ! -d "$PROMETHEUS_METRICS_DIR" ]; then
-        if ! mkdir -p "$PROMETHEUS_METRICS_DIR" 2>/dev/null; then
-            return 1
-        fi
-    fi
-
-    # Atomic write using temp file
-    local temp_file="${PROMETHEUS_METRICS_FILE}.tmp.$$"
-
-    # If metrics file exists, preserve existing metrics (excluding the one we're updating)
-    if [ -f "$PROMETHEUS_METRICS_FILE" ]; then
-        grep -v "^${metric_name}{" "$PROMETHEUS_METRICS_FILE" 2>/dev/null > "$temp_file" || true
-    else
-        : > "$temp_file"
-    fi
-
-    # Add new/updated metric with timestamp
-    if [ -n "$labels" ]; then
-        echo "${metric_name}{${labels}} ${value} ${timestamp_ms}" >> "$temp_file"
-    else
-        echo "${metric_name} ${value} ${timestamp_ms}" >> "$temp_file"
-    fi
-
-    # Atomic move
-    if mv "$temp_file" "$PROMETHEUS_METRICS_FILE" 2>/dev/null; then
-        chmod 644 "$PROMETHEUS_METRICS_FILE" 2>/dev/null || true
-        return 0
-    else
-        rm -f "$temp_file" 2>/dev/null || true
-        return 1
-    fi
-}
-
-# ============================================================
 # Function: send_email
 # ============================================================
 # Send email via msmtp with rate limiting, retry logic,
@@ -453,7 +388,6 @@ send_email() {
     # Check rate limit
     if ! check_rate_limit "$priority"; then
         echo "{\"timestamp\":\"$(date -Iseconds)\",\"correlation_id\":\"$correlation_id\",\"event\":\"send_failed\",\"status\":\"rate_limited\",\"priority\":\"$priority\"}" >> "$EMAIL_LOG"
-        update_prometheus_metrics "catchup_email_rate_limited_total" "1" "priority=\"$priority\""
         return 2
     fi
 
@@ -498,10 +432,6 @@ EOF
             # Update rate limit tracker
             echo "$(date +%s) $correlation_id $priority" >> "$RATE_LIMIT_LOG"
 
-            # Update Prometheus metrics
-            update_prometheus_metrics "catchup_email_sent_total" "1" "status=\"success\",priority=\"$priority\""
-            update_prometheus_metrics "catchup_email_latency_ms" "$latency_ms" "priority=\"$priority\""
-
             return 0
         else
             send_result=$?
@@ -520,7 +450,6 @@ EOF
     done
 
     # All attempts failed
-    update_prometheus_metrics "catchup_email_sent_total" "1" "status=\"failure\",priority=\"$priority\""
     alert_fallback "error" "Failed to send email after $max_attempts attempts: $sanitized_subject ($correlation_id)"
     check_consecutive_failures
 

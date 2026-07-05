@@ -48,7 +48,7 @@ func benchmarkPaginationHandler(b *testing.B, page, limit int, totalArticles int
 				URL:         "https://example.com/article",
 				Summary:     "Test Summary",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Test Source",
 		}
@@ -90,7 +90,7 @@ func BenchmarkService_ListWithSourcePaginated(b *testing.B) {
 				URL:         "https://example.com/article",
 				Summary:     "Test Summary",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Test Source",
 		}

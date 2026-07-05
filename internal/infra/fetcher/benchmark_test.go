@@ -205,7 +205,7 @@ func generateArticleHTML(contentSize int) string {
 
 	var paragraphs strings.Builder
 	for i := 0; i < numParagraphs; i++ {
-		paragraphs.WriteString(fmt.Sprintf("		<p>%s</p>\n", paragraphText))
+		fmt.Fprintf(&paragraphs, "		<p>%s</p>\n", paragraphText)
 	}
 
 	return fmt.Sprintf(`<!DOCTYPE html>

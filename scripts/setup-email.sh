@@ -252,7 +252,7 @@ setup_log_directories() {
     fi
 
     # Create subdirectories if needed
-    for subdir in "metrics" "backups"; do
+    for subdir in "backups"; do
         local dir="${EMAIL_LOG_DIR}/${subdir}"
         if [ ! -d "$dir" ]; then
             mkdir -p "$dir" 2>/dev/null || true

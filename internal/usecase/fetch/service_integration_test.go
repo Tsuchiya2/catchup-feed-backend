@@ -111,10 +111,7 @@ func TestServiceIntegration_ContentEnhancement(t *testing.T) {
 		articleRepo,
 		mockSummarizer,
 		mockFeedFetcher,
-		nil, // webScrapers
 		contentFetcher,
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -239,7 +236,6 @@ func TestServiceIntegration_Parallelism(t *testing.T) {
 		FeedFetcher: &stubFeedFetcher{
 			items: feedItems,
 		},
-		NotifyService: &mockNotifyService{},
 	}
 
 	// Run processing

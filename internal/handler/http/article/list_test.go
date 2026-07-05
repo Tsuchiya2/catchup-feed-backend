@@ -20,11 +20,11 @@ import (
 /* ───────── モック実装 ───────── */
 
 type stubArticleRepo struct {
-	articles       []*entity.Article
+	articles        []*entity.Article
 	articlesWithSrc []repository.ArticleWithSource
-	totalCount     int64
-	listErr        error
-	countErr       error
+	totalCount      int64
+	listErr         error
+	countErr        error
 }
 
 func (s *stubArticleRepo) List(_ context.Context) ([]*entity.Article, error) {
@@ -112,7 +112,7 @@ func TestListHandler_Success(t *testing.T) {
 				URL:         "https://example.com/article1",
 				Summary:     "Summary 1",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Test Source",
 		},
@@ -124,7 +124,7 @@ func TestListHandler_Success(t *testing.T) {
 				URL:         "https://example.com/article2",
 				Summary:     "Summary 2",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Test Source",
 		},
@@ -243,7 +243,7 @@ func TestListHandler_Pagination_ValidParams(t *testing.T) {
 				URL:         "https://example.com/",
 				Summary:     "Summary",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Test Source",
 		}
@@ -481,4 +481,8 @@ func TestListHandler_Pagination_ServiceError(t *testing.T) {
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("status code = %d, want %d", rr.Code, http.StatusInternalServerError)
 	}
+}
+
+func (s *stubArticleRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
 }

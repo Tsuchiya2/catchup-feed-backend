@@ -90,7 +90,7 @@ func TestGetHandler_Success(t *testing.T) {
 			URL:         "https://example.com/article1",
 			Summary:     "Test Summary",
 			PublishedAt: now,
-			CreatedAt:   now,
+			CrawledAt:   now,
 		},
 		sourceName: "Test Source",
 	}
@@ -215,7 +215,7 @@ func TestGetHandler_SourceNameIncluded(t *testing.T) {
 			URL:         "https://example.com/article1",
 			Summary:     "Test Summary",
 			PublishedAt: now,
-			CreatedAt:   now,
+			CrawledAt:   now,
 		},
 		sourceName: "Tech News Source",
 	}
@@ -284,7 +284,7 @@ func TestGetHandler_MultipleArticles(t *testing.T) {
 						URL:         "https://example.com/article",
 						Summary:     "Test Summary",
 						PublishedAt: now,
-						CreatedAt:   now,
+						CrawledAt:   now,
 					},
 					sourceName: "Test Source",
 				}
@@ -335,4 +335,8 @@ func TestGetHandler_SQLNoRowsError(t *testing.T) {
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusInternalServerError)
 	}
+}
+
+func (s *stubGetRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
 }

@@ -1,402 +1,131 @@
 package auth
 
 import (
-	authservice "catchup-feed/internal/service/auth"
 	"context"
-	"os"
 	"testing"
+
+	authservice "catchup-feed/internal/service/auth"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
-func TestNewBasicAuthProvider(t *testing.T) {
-	weakPasswords := []string{"admin", "password", "123456"}
-	provider := NewBasicAuthProvider(12, weakPasswords)
+// testAdminUser / testPassword are the credentials used across the auth
+// package tests. Hashes are generated with bcrypt.MinCost to keep the test
+// suite fast; the production cost floor is enforced by
+// ValidateAdminCredentials and cmd/hash-password, not by the provider.
+const (
+	testAdminUser = "admin@example.com"
+	testPassword  = "correct-horse-battery"
+)
 
-	if provider == nil {
-		t.Fatal("expected provider to be non-nil")
-	}
-
-	if provider.minPasswordLength != 12 {
-		t.Errorf("expected minPasswordLength to be 12, got %d", provider.minPasswordLength)
-	}
-
-	if len(provider.weakPasswords) != 3 {
-		t.Errorf("expected 3 weak passwords, got %d", len(provider.weakPasswords))
-	}
+// testHash generates a bcrypt hash for password at MinCost.
+func testHash(t *testing.T, password string) string {
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+	require.NoError(t, err)
+	return string(hash)
 }
 
-func TestBasicAuthProvider_Name(t *testing.T) {
-	provider := NewBasicAuthProvider(12, nil)
-
-	if provider.Name() != "basic" {
-		t.Errorf("expected name to be 'basic', got '%s'", provider.Name())
-	}
+// setAdminEnv configures the admin credential environment for a test.
+func setAdminEnv(t *testing.T, user, passwordHash string) {
+	t.Helper()
+	t.Setenv(EnvAdminUser, user)
+	t.Setenv(EnvAdminPasswordHash, passwordHash)
 }
 
-func TestBasicAuthProvider_GetRequirements(t *testing.T) {
-	weakPasswords := []string{"admin", "password"}
-	provider := NewBasicAuthProvider(10, weakPasswords)
-
-	reqs := provider.GetRequirements()
-
-	if reqs.MinPasswordLength != 10 {
-		t.Errorf("expected MinPasswordLength to be 10, got %d", reqs.MinPasswordLength)
-	}
-
-	if len(reqs.WeakPasswords) != 2 {
-		t.Errorf("expected 2 weak passwords, got %d", len(reqs.WeakPasswords))
-	}
+func TestAdminAuthProvider_Name(t *testing.T) {
+	assert.Equal(t, "env-bcrypt", NewAdminAuthProvider().Name())
 }
 
-func TestBasicAuthProvider_ValidateCredentials(t *testing.T) {
-	// Set up test environment variables
-	originalUser := os.Getenv("ADMIN_USER")
-	originalPass := os.Getenv("ADMIN_USER_PASSWORD")
-	defer func() {
-		_ = os.Setenv("ADMIN_USER", originalUser)
-		_ = os.Setenv("ADMIN_USER_PASSWORD", originalPass)
-	}()
-
-	_ = os.Setenv("ADMIN_USER", "testadmin")
-	_ = os.Setenv("ADMIN_USER_PASSWORD", "ValidPassword123")
-
-	weakPasswords := []string{"admin", "password", "123456"}
-	provider := NewBasicAuthProvider(12, weakPasswords)
+func TestAdminAuthProvider_ValidateCredentials(t *testing.T) {
+	validHash := testHash(t, testPassword)
 
 	tests := []struct {
-		name        string
-		creds       authservice.Credentials
-		expectError bool
-		errorMsg    string
+		name      string
+		envUser   string
+		envHash   string
+		creds     authservice.Credentials
+		wantError bool
 	}{
 		{
-			name: "valid credentials",
-			creds: authservice.Credentials{
-				Username: "testadmin",
-				Password: "ValidPassword123",
-			},
-			expectError: false,
+			name:    "valid credentials",
+			envUser: testAdminUser,
+			envHash: validHash,
+			creds:   authservice.Credentials{Username: testAdminUser, Password: testPassword},
 		},
 		{
-			name: "empty username",
-			creds: authservice.Credentials{
-				Username: "",
-				Password: "ValidPassword123",
-			},
-			expectError: true,
-			errorMsg:    "credentials must not be empty",
+			name:      "wrong password",
+			envUser:   testAdminUser,
+			envHash:   validHash,
+			creds:     authservice.Credentials{Username: testAdminUser, Password: "wrong-password-123"},
+			wantError: true,
 		},
 		{
-			name: "empty password",
-			creds: authservice.Credentials{
-				Username: "testadmin",
-				Password: "",
-			},
-			expectError: true,
-			errorMsg:    "credentials must not be empty",
+			name:      "wrong username",
+			envUser:   testAdminUser,
+			envHash:   validHash,
+			creds:     authservice.Credentials{Username: "someone@example.com", Password: testPassword},
+			wantError: true,
 		},
 		{
-			name: "password too short",
-			creds: authservice.Credentials{
-				Username: "testadmin",
-				Password: "short",
-			},
-			expectError: true,
-			errorMsg:    "password must be at least 12 characters",
+			name:      "empty username",
+			envUser:   testAdminUser,
+			envHash:   validHash,
+			creds:     authservice.Credentials{Username: "", Password: testPassword},
+			wantError: true,
 		},
 		{
-			name: "weak password - exact match",
-			creds: authservice.Credentials{
-				Username: "testadmin",
-				Password: "admin12345678", // Long enough to pass length check
-			},
-			expectError: true,
-			errorMsg:    "weak password detected",
+			name:      "empty password",
+			envUser:   testAdminUser,
+			envHash:   validHash,
+			creds:     authservice.Credentials{Username: testAdminUser, Password: ""},
+			wantError: true,
 		},
 		{
-			name: "weak password - prefix match",
-			creds: authservice.Credentials{
-				Username: "testadmin",
-				Password: "admin1234567890",
-			},
-			expectError: true,
-			errorMsg:    "weak password detected",
+			name:      "plaintext password stored instead of hash is rejected",
+			envUser:   testAdminUser,
+			envHash:   testPassword, // C-20: 平文比較は廃止。平文が入っていても絶対に通らない
+			creds:     authservice.Credentials{Username: testAdminUser, Password: testPassword},
+			wantError: true,
 		},
 		{
-			name: "weak password - another weak",
-			creds: authservice.Credentials{
-				Username: "testadmin",
-				Password: "password12345",
-			},
-			expectError: true,
-			errorMsg:    "weak password detected",
+			name:      "hash not configured",
+			envUser:   testAdminUser,
+			envHash:   "",
+			creds:     authservice.Credentials{Username: testAdminUser, Password: testPassword},
+			wantError: true,
 		},
 		{
-			name: "invalid username",
-			creds: authservice.Credentials{
-				Username: "wronguser",
-				Password: "ValidPassword123",
-			},
-			expectError: true,
-			errorMsg:    "invalid credentials",
+			name:      "admin user not configured rejects empty username",
+			envUser:   "",
+			envHash:   validHash,
+			creds:     authservice.Credentials{Username: "", Password: testPassword},
+			wantError: true,
 		},
 		{
-			name: "invalid password",
-			creds: authservice.Credentials{
-				Username: "testadmin",
-				Password: "WrongPassword123",
-			},
-			expectError: true,
-			errorMsg:    "invalid credentials",
-		},
-		{
-			name: "both invalid",
-			creds: authservice.Credentials{
-				Username: "wronguser",
-				Password: "WrongPassword123",
-			},
-			expectError: true,
-			errorMsg:    "invalid credentials",
-		},
-	}
-
-	ctx := context.Background()
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := provider.ValidateCredentials(ctx, tt.creds)
-
-			if tt.expectError {
-				if err == nil {
-					t.Errorf("expected error but got nil")
-					return
-				}
-				if err.Error() != tt.errorMsg {
-					t.Errorf("expected error message '%s', got '%s'", tt.errorMsg, err.Error())
-				}
-			} else {
-				if err != nil {
-					t.Errorf("expected no error but got: %v", err)
-				}
-			}
-		})
-	}
-}
-
-// TestBasicAuthProvider_TimingAttackResistance verifies constant-time comparison
-func TestBasicAuthProvider_TimingAttackResistance(t *testing.T) {
-	originalUser := os.Getenv("ADMIN_USER")
-	originalPass := os.Getenv("ADMIN_USER_PASSWORD")
-	defer func() {
-		_ = os.Setenv("ADMIN_USER", originalUser)
-		_ = os.Setenv("ADMIN_USER_PASSWORD", originalPass)
-	}()
-
-	_ = os.Setenv("ADMIN_USER", "adminuser")
-	_ = os.Setenv("ADMIN_USER_PASSWORD", "SecurePassword123")
-
-	provider := NewBasicAuthProvider(12, nil)
-	ctx := context.Background()
-
-	// Test that the function uses constant-time comparison
-	// by verifying it rejects both partially matching and completely wrong credentials
-	testCases := []struct {
-		name string
-		user string
-		pass string
-	}{
-		{"wrong username same length", "wronguser", "SecurePassword123"},
-		{"wrong username diff length", "wrong", "SecurePassword123"},
-		{"wrong password same length", "adminuser", "WrongPassword123"},
-		{"wrong password diff length", "adminuser", "Wrong"},
-		{"both wrong", "wrong", "Wrong"},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			creds := authservice.Credentials{
-				Username: tc.user,
-				Password: tc.pass,
-			}
-
-			err := provider.ValidateCredentials(ctx, creds)
-			if err == nil {
-				t.Error("expected error for invalid credentials")
-			}
-
-			// All invalid credential errors should have the same message
-			// This ensures constant-time behavior
-			if err.Error() != "invalid credentials" {
-				// Allow early checks (empty, length, weak password) to have different messages
-				// Only the final comparison should use constant-time
-				allowedEarlyErrors := []string{
-					"credentials must not be empty",
-					"password must be at least 12 characters",
-					"weak password detected",
-				}
-
-				isEarlyError := false
-				for _, allowed := range allowedEarlyErrors {
-					if err.Error() == allowed {
-						isEarlyError = true
-						break
-					}
-				}
-
-				if !isEarlyError {
-					t.Errorf("expected 'invalid credentials' error, got '%s'", err.Error())
-				}
-			}
-		})
-	}
-}
-
-// TestBasicAuthProvider_ContextCancellation tests context handling
-func TestBasicAuthProvider_ContextCancellation(t *testing.T) {
-	originalUser := os.Getenv("ADMIN_USER")
-	originalPass := os.Getenv("ADMIN_USER_PASSWORD")
-	defer func() {
-		_ = os.Setenv("ADMIN_USER", originalUser)
-		_ = os.Setenv("ADMIN_USER_PASSWORD", originalPass)
-	}()
-
-	_ = os.Setenv("ADMIN_USER", "testadmin")
-	_ = os.Setenv("ADMIN_USER_PASSWORD", "ValidPassword123")
-
-	provider := NewBasicAuthProvider(12, nil)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
-
-	creds := authservice.Credentials{
-		Username: "testadmin",
-		Password: "ValidPassword123",
-	}
-
-	// Note: Current implementation doesn't check ctx.Done()
-	// This test documents the current behavior
-	// Future enhancement could add context checking
-	_ = provider.ValidateCredentials(ctx, creds)
-}
-
-// TestBasicAuthProvider_NoWeakPasswords tests provider with no weak passwords configured
-func TestBasicAuthProvider_NoWeakPasswords(t *testing.T) {
-	originalUser := os.Getenv("ADMIN_USER")
-	originalPass := os.Getenv("ADMIN_USER_PASSWORD")
-	defer func() {
-		_ = os.Setenv("ADMIN_USER", originalUser)
-		_ = os.Setenv("ADMIN_USER_PASSWORD", originalPass)
-	}()
-
-	_ = os.Setenv("ADMIN_USER", "testadmin")
-	_ = os.Setenv("ADMIN_USER_PASSWORD", "ValidPassword123")
-
-	provider := NewBasicAuthProvider(12, nil) // No weak passwords
-	ctx := context.Background()
-
-	creds := authservice.Credentials{
-		Username: "testadmin",
-		Password: "ValidPassword123",
-	}
-
-	err := provider.ValidateCredentials(ctx, creds)
-	if err != nil {
-		t.Errorf("expected no error with nil weak passwords, got: %v", err)
-	}
-}
-
-// TestBasicAuthProvider_EmptyWeakPasswords tests provider with empty weak passwords slice
-func TestBasicAuthProvider_EmptyWeakPasswords(t *testing.T) {
-	originalUser := os.Getenv("ADMIN_USER")
-	originalPass := os.Getenv("ADMIN_USER_PASSWORD")
-	defer func() {
-		_ = os.Setenv("ADMIN_USER", originalUser)
-		_ = os.Setenv("ADMIN_USER_PASSWORD", originalPass)
-	}()
-
-	_ = os.Setenv("ADMIN_USER", "testadmin")
-	_ = os.Setenv("ADMIN_USER_PASSWORD", "ValidPassword123")
-
-	provider := NewBasicAuthProvider(12, []string{}) // Empty slice
-	ctx := context.Background()
-
-	creds := authservice.Credentials{
-		Username: "testadmin",
-		Password: "ValidPassword123",
-	}
-
-	err := provider.ValidateCredentials(ctx, creds)
-	if err != nil {
-		t.Errorf("expected no error with empty weak passwords, got: %v", err)
-	}
-}
-
-func TestBasicAuthProvider_IdentifyUser(t *testing.T) {
-	originalUser := os.Getenv("ADMIN_USER")
-	defer func() {
-		_ = os.Setenv("ADMIN_USER", originalUser)
-	}()
-
-	_ = os.Setenv("ADMIN_USER", "admin@example.com")
-
-	provider := NewBasicAuthProvider(12, nil)
-	ctx := context.Background()
-
-	tests := []struct {
-		name         string
-		email        string
-		expectedRole string
-		expectError  bool
-		errorMsg     string
-	}{
-		{
-			name:         "admin email returns admin role",
-			email:        "admin@example.com",
-			expectedRole: RoleAdmin,
-			expectError:  false,
-		},
-		{
-			name:        "unknown email returns error",
-			email:       "unknown@example.com",
-			expectError: true,
-			errorMsg:    "user not found",
-		},
-		{
-			name:        "empty email returns error",
-			email:       "",
-			expectError: true,
-			errorMsg:    "email must not be empty",
-		},
-		{
-			name:        "case sensitive - wrong case",
-			email:       "ADMIN@example.com",
-			expectError: true,
-			errorMsg:    "user not found",
+			name:      "hash value supplied as password is rejected",
+			envUser:   testAdminUser,
+			envHash:   validHash,
+			creds:     authservice.Credentials{Username: testAdminUser, Password: validHash},
+			wantError: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			role, err := provider.IdentifyUser(ctx, tt.email)
+			setAdminEnv(t, tt.envUser, tt.envHash)
 
-			if tt.expectError {
-				if err == nil {
-					t.Errorf("expected error but got nil")
-					return
-				}
-				if err.Error() != tt.errorMsg {
-					t.Errorf("expected error message '%s', got '%s'", tt.errorMsg, err.Error())
-				}
-				if role != "" {
-					t.Errorf("expected empty role on error, got '%s'", role)
-				}
+			err := NewAdminAuthProvider().ValidateCredentials(context.Background(), tt.creds)
+
+			if tt.wantError {
+				require.Error(t, err)
+				// 失敗理由(ユーザー名かパスワードのどちらが誤りか)を漏らさない
+				assert.Contains(t, []string{"invalid credentials", "credentials must not be empty"}, err.Error())
 			} else {
-				if err != nil {
-					t.Errorf("expected no error but got: %v", err)
-					return
-				}
-				if role != tt.expectedRole {
-					t.Errorf("expected role '%s', got '%s'", tt.expectedRole, role)
-				}
+				assert.NoError(t, err)
 			}
 		})
 	}

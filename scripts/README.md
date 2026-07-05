@@ -29,7 +29,6 @@ scripts/
 ├── restore-db.sh                    # Database restore utility
 ├── health-check.sh                  # Service health monitoring
 ├── disk-usage-check.sh              # Disk space monitoring
-├── cleanup-prometheus.sh            # Prometheus data cleanup
 ├── docker-cleanup.sh                # Docker resource cleanup
 ├── setup-email.sh                   # Email system setup and verification
 └── build-multiarch.sh               # Multi-architecture Docker image builder
@@ -41,7 +40,7 @@ scripts/
 |----------|---------|---------|
 | **Email System** | `setup-email.sh`, `lib/email-functions.sh` | Email notification infrastructure |
 | **Database** | `backup.sh`, `backup-db.sh`, `restore-db.sh` | Database backup and restore |
-| **Monitoring** | `health-check.sh`, `disk-usage-check.sh`, `cleanup-prometheus.sh` | System monitoring and alerts |
+| **Monitoring** | `health-check.sh`, `disk-usage-check.sh` | System monitoring and alerts |
 | **Maintenance** | `docker-cleanup.sh` | Periodic cleanup and maintenance |
 | **Deployment** | `build-multiarch.sh` | Docker image building |
 
@@ -60,7 +59,6 @@ scripts/
 - Input validation and sanitization
 - Correlation ID generation for request tracing
 - JSON structured logging
-- Prometheus metrics integration
 - Fallback alerting via syslog and ALERT file
 
 **Functions**:
@@ -88,9 +86,6 @@ send_email "Subject" "Body" "correlation-id" "priority"
 
 # Fallback alert when email fails
 alert_fallback "error" "Critical alert message"
-
-# Update Prometheus metrics
-update_prometheus_metrics "metric_name" "value" "labels"
 ```
 
 **Environment Variables**:
@@ -126,11 +121,6 @@ fi
 - `/var/log/catchup/email.log` - JSON-formatted email activity log
 - `/var/log/catchup/email-rate-limit.log` - Rate limit tracking
 - `/var/log/catchup/ALERT` - Fallback alerts when email fails
-
-**Prometheus Metrics**:
-- `catchup_email_sent_total{status="success|failure",priority="high|normal|low"}`
-- `catchup_email_rate_limited_total{priority="high|normal|low"}`
-- `catchup_email_latency_ms{priority="high|normal|low"}`
 
 ---
 
@@ -359,7 +349,7 @@ docker compose exec -T postgres psql -U catchup < ~/backups/db_20240115_020005.s
 
 **Monitored Services**:
 1. Docker daemon status
-2. Container health (app, worker, postgres, prometheus, grafana)
+2. Container health (app, worker, postgres)
 3. PostgreSQL connectivity (`pg_isready`)
 4. API endpoint availability (HTTP health check)
 5. Worker process status
@@ -501,81 +491,6 @@ CRITICAL_THRESHOLD=85  # Critical at 85%
 
 ---
 
-### cleanup-prometheus.sh
-
-**Purpose**: Monitor Prometheus data size and send warnings when thresholds are exceeded.
-
-**Thresholds**:
-- **Warning**: 2GB → Normal priority email
-- **Critical**: 5GB → High priority email
-- **Silent**: < 2GB → No email
-
-**Features**:
-- Calculates Prometheus data directory size
-- Identifies oldest TSDB block timestamp
-- Provides current retention policy from compose.yml
-- Shows available disk space
-- Recommends retention policy adjustments
-
-**Usage**:
-
-```bash
-./scripts/cleanup-prometheus.sh
-```
-
-**Environment Variables**:
-
-```bash
-COMPOSE_FILE=./compose.yml                    # Path to compose.yml
-PROJECT_ROOT=/home/ubuntu/catchup-feed        # Project root
-EMAIL_FROM=...                                # Sender email
-EMAIL_TO=...                                  # Recipient email
-EMAIL_ENABLED=true                            # Enable/disable email
-```
-
-**Email Alert Format**:
-
-```
-Subject: ⚠️ Prometheus Data Size Warning - 3.45 GB
-
-Current Status:
-- Prometheus data size: 3.45 GB
-- Warning threshold: 2.0 GB
-- Critical threshold: 5.0 GB
-- Oldest data: 2024-01-01 00:00:00 (14 days old)
-- Available disk space: 25.3 GB (67% free)
-
-Current Configuration:
-- Retention policy: 30d
-- Volume name: catchup-feed_prometheus-data
-
-Recommended Actions:
-1. Reduce retention period in compose.yml:
-   prometheus:
-     command:
-       - '--storage.tsdb.retention.time=15d'
-
-2. Restart Prometheus to apply changes:
-   docker compose restart prometheus
-
-3. Manually delete old data (if urgent):
-   docker compose exec prometheus \
-     promtool tsdb delete-blocks --retention.time=15d /prometheus
-```
-
-**Cron Example**:
-
-```cron
-# Every 6 hours
-0 */6 * * * /home/ubuntu/catchup-feed/scripts/cleanup-prometheus.sh >> /var/log/catchup/prometheus-cleanup-cron.log 2>&1
-```
-
-**Prometheus Metrics**:
-- `catchup_prometheus_data_size_bytes` - Data size in bytes
-- `catchup_prometheus_data_size_gb` - Data size in GB
-
----
-
 ## Maintenance Scripts
 
 ### docker-cleanup.sh
@@ -711,12 +626,6 @@ API_ENDPOINT=http://localhost:8080/health      # Health check endpoint
 API_TIMEOUT=5                                  # API timeout (seconds)
 ```
 
-### Prometheus Configuration
-
-```bash
-PROMETHEUS_METRICS_DIR=/var/lib/node_exporter/textfile_collector
-```
-
 ---
 
 ## Cron Schedule Recommendations
@@ -735,9 +644,6 @@ PROMETHEUS_METRICS_DIR=/var/lib/node_exporter/textfile_collector
 
 # Disk usage check - Every 6 hours
 0 */6 * * * /home/ubuntu/catchup-feed/scripts/disk-usage-check.sh >> /var/log/catchup/disk-usage-cron.log 2>&1
-
-# Prometheus cleanup - Every 6 hours
-0 */6 * * * /home/ubuntu/catchup-feed/scripts/cleanup-prometheus.sh >> /var/log/catchup/prometheus-cleanup-cron.log 2>&1
 
 # Docker cleanup - Weekly on Sunday at 3 AM
 0 3 * * 0 /home/ubuntu/catchup-feed/scripts/docker-cleanup.sh >> /var/log/catchup/docker-cleanup-cron.log 2>&1
@@ -791,7 +697,7 @@ A Correlation ID is a unique identifier that traces a request across multiple sy
 ### Why Use Correlation IDs?
 
 1. **Trace requests**: Follow a single operation across multiple log files
-2. **Debug issues**: Link email logs, script logs, and Prometheus metrics
+2. **Debug issues**: Link email logs and script logs
 3. **Audit trail**: Track who did what and when
 4. **Support cases**: Provide correlation ID for faster troubleshooting
 

@@ -9,18 +9,24 @@ import (
 )
 
 // CreateInput represents the input parameters for creating a new source.
+// Category drives the radio script corner assignment (§4) and is required;
+// Lang defaults to 'en' when empty.
 type CreateInput struct {
-	Name    string
-	FeedURL string
+	Name     string
+	FeedURL  string
+	Category string
+	Lang     string
 }
 
 // UpdateInput represents the input parameters for updating an existing source.
 // Empty string fields and nil Active field will not be updated.
 type UpdateInput struct {
-	ID      int64
-	Name    string
-	FeedURL string
-	Active  *bool
+	ID       int64
+	Name     string
+	FeedURL  string
+	Category string
+	Lang     string
+	Active   *bool
 }
 
 // Service provides source management use cases.
@@ -66,23 +72,20 @@ func (s *Service) SearchWithFilters(ctx context.Context, keywords []string, filt
 // It validates the input data including feed URL format before creating the source.
 // Returns a ValidationError if any input field is invalid.
 func (s *Service) Create(ctx context.Context, in CreateInput) error {
-	if in.Name == "" {
-		return &entity.ValidationError{Field: "name", Message: "is required"}
+	src := &entity.Source{
+		Name:     in.Name,
+		FeedURL:  in.FeedURL,
+		Category: in.Category,
+		Lang:     in.Lang,
+		Active:   true,
 	}
-	if in.FeedURL == "" {
-		return &entity.ValidationError{Field: "feedURL", Message: "is required"}
+	if err := src.Validate(); err != nil {
+		return err
 	}
 
 	// URL形式検証
 	if err := entity.ValidateURL(in.FeedURL); err != nil {
 		return fmt.Errorf("validate feed URL: %w", err)
-	}
-
-	src := &entity.Source{
-		Name:          in.Name,
-		FeedURL:       in.FeedURL,
-		LastCrawledAt: nil,
-		Active:        true,
 	}
 
 	if err := s.Repo.Create(ctx, src); err != nil {
@@ -117,6 +120,12 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) error {
 			return fmt.Errorf("validate feed URL: %w", err)
 		}
 		src.FeedURL = in.FeedURL
+	}
+	if in.Category != "" {
+		src.Category = in.Category
+	}
+	if in.Lang != "" {
+		src.Lang = in.Lang
 	}
 	if in.Active != nil {
 		src.Active = *in.Active

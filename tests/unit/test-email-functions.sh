@@ -10,8 +10,7 @@
 #   5. send_email() - Mock msmtp, test retry logic
 #   6. alert_fallback() - Syslog and alert file creation
 #   7. check_consecutive_failures() - Failure detection logic
-#   8. update_prometheus_metrics() - Atomic metric updates
-#   9. Integration - Complete email flow
+#   8. Integration - Complete email flow
 #
 # Usage:
 #   ./tests/unit/test-email-functions.sh
@@ -58,10 +57,6 @@ export EMAIL_ENABLED="true"
 export SMTP_TIMEOUT="5"
 export EMAIL_RATE_LIMIT_HOURLY="10"
 export EMAIL_RATE_LIMIT_DAILY="100"
-export PROMETHEUS_METRICS_DIR="$TEST_TMP_DIR/metrics"
-
-# Create metrics directory
-mkdir -p "$PROMETHEUS_METRICS_DIR"
 
 # Source the email functions library
 source "$EMAIL_FUNCTIONS_LIB"
@@ -174,9 +169,7 @@ run_test() {
 
     # Clean up test environment before each test
     rm -f "$TEST_TMP_DIR"/*.log
-    rm -f "$TEST_TMP_DIR"/*.prom
     rm -f "$TEST_TMP_DIR"/ALERT
-    rm -f "$PROMETHEUS_METRICS_DIR"/*.prom
 
     if $test_function; then
         ((TESTS_PASSED++))
@@ -567,54 +560,7 @@ EOF
 }
 
 # ============================================================
-# Test 8: update_prometheus_metrics()
-# ============================================================
-test_update_prometheus_metrics() {
-    local metrics_file="$PROMETHEUS_METRICS_DIR/email_metrics.prom"
-
-    # Test 1: Create new metric
-    assert_exit_code 0 "update_prometheus_metrics 'test_metric' '100' 'status=\"success\"'" "Should create new metric" || return 1
-    assert_file_exists "$metrics_file" "Metrics file should be created" || return 1
-
-    local metric_content
-    metric_content=$(cat "$metrics_file")
-    assert_contains "$metric_content" 'test_metric{status="success"} 100' "Metric should be in file with correct format" || return 1
-
-    # Test 2: Update existing metric
-    assert_exit_code 0 "update_prometheus_metrics 'test_metric' '200' 'status=\"success\"'" "Should update metric" || return 1
-
-    metric_content=$(cat "$metrics_file")
-    assert_contains "$metric_content" 'test_metric{status="success"} 200' "Metric should be updated" || return 1
-
-    # Verify old value is not present
-    if [[ "$metric_content" == *'test_metric{status="success"} 100'* ]]; then
-        echo -e "${RED}✗ FAIL${NC}: Old metric value should be removed"
-        return 1
-    fi
-    echo -e "${GREEN}✓ PASS${NC}: Old metric value removed"
-
-    # Test 3: Multiple metrics
-    assert_exit_code 0 "update_prometheus_metrics 'metric_a' '10' ''" "Should create metric A" || return 1
-    assert_exit_code 0 "update_prometheus_metrics 'metric_b' '20' 'type=\"test\"'" "Should create metric B" || return 1
-
-    metric_content=$(cat "$metrics_file")
-    assert_contains "$metric_content" 'metric_a 10' "Metric A should exist" || return 1
-    assert_contains "$metric_content" 'metric_b{type="test"} 20' "Metric B should exist" || return 1
-
-    # Test 4: Atomic write (file should always be valid)
-    # Check file permissions
-    local file_perms
-    file_perms=$(stat -f "%Lp" "$metrics_file" 2>/dev/null || stat -c "%a" "$metrics_file" 2>/dev/null)
-    assert_equal "644" "$file_perms" "Metrics file should have 644 permissions" || return 1
-
-    # Test 5: Invalid metric name should fail
-    assert_exit_code 1 "update_prometheus_metrics '' '100' ''" "Empty metric name should fail" || return 1
-
-    return 0
-}
-
-# ============================================================
-# Test 9: Integration - Complete email flow
+# Test 8: Integration - Complete email flow
 # ============================================================
 test_integration_complete_flow() {
     # Check if macOS date command supports %N (nanoseconds)
@@ -672,14 +618,6 @@ EOF
     log_content=$(cat "$email_log")
     assert_contains "$log_content" "$correlation_id" "Log contains correlation ID" || return 1
     assert_contains "$log_content" '"status":"success"' "Log contains success status" || return 1
-
-    # Verify Prometheus metrics
-    local metrics_file="$PROMETHEUS_METRICS_DIR/email_metrics.prom"
-    assert_file_exists "$metrics_file" "Metrics file exists" || return 1
-
-    local metric_content
-    metric_content=$(cat "$metrics_file")
-    assert_contains "$metric_content" 'catchup_email_sent_total' "Metrics contain email counter" || return 1
 
     # Test failure scenario with fallback
     rm -f "$mock_msmtp"  # Remove mock to simulate failure
@@ -739,8 +677,7 @@ main() {
     run_test "TEST 5: send_email()" test_send_email
     run_test "TEST 6: alert_fallback()" test_alert_fallback
     run_test "TEST 7: check_consecutive_failures()" test_check_consecutive_failures
-    run_test "TEST 8: update_prometheus_metrics()" test_update_prometheus_metrics
-    run_test "TEST 9: Integration - Complete Flow" test_integration_complete_flow
+    run_test "TEST 8: Integration - Complete Flow" test_integration_complete_flow
 
     # Clean up test directory
     rm -rf "$TEST_TMP_DIR"

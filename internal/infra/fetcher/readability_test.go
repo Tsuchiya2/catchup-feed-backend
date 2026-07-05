@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -631,105 +630,6 @@ func TestFetchContent_SuccessfulRedirect(t *testing.T) {
 	if !strings.Contains(content, "Final Content") {
 		t.Errorf("expected content from final destination, got: %q", content)
 	}
-}
-
-// ───────────────────────────────────────────────────────────────
-// TASK-013: Circuit Breaker Integration Tests
-// ───────────────────────────────────────────────────────────────
-
-func TestFetchContent_CircuitBreakerOpen(t *testing.T) {
-	// Create a server that always fails
-	failCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		failCount++
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	config := fetcher.DefaultConfig()
-	config.DenyPrivateIPs = false // Disable SSRF protection for local test server
-	contentFetcher := fetcher.NewReadabilityFetcher(config)
-
-	// Make multiple requests to trip the circuit breaker
-	// Circuit breaker config: MinRequests=5, FailureThreshold=0.6
-	for i := 0; i < 10; i++ {
-		_, err := contentFetcher.FetchContent(context.Background(), server.URL)
-		if err == nil {
-			t.Errorf("request %d: expected error, got nil", i)
-		}
-
-		// After enough failures, circuit should open and requests should fail fast
-		if i >= 6 {
-			// Circuit should be open by now, check if error is from circuit breaker
-			if strings.Contains(err.Error(), "circuit breaker is open") || strings.Contains(err.Error(), "open state") {
-				t.Logf("Circuit breaker opened after %d requests (expected)", i+1)
-				// Verify no more HTTP requests are made
-				previousFailCount := failCount
-				time.Sleep(10 * time.Millisecond)
-				_, _ = contentFetcher.FetchContent(context.Background(), server.URL)
-				if failCount > previousFailCount {
-					t.Error("HTTP request made even though circuit breaker should be open")
-				}
-				return
-			}
-		}
-	}
-
-	t.Log("Circuit breaker did not open as expected (may need more failures)")
-}
-
-func TestFetchContent_CircuitBreakerRecovery(t *testing.T) {
-	// This test is time-sensitive and may be flaky
-	// We'll skip it in short test mode
-	if testing.Short() {
-		t.Skip("skipping circuit breaker recovery test in short mode")
-	}
-
-	requestCount := 0
-	shouldFail := true
-	var mu sync.Mutex
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		requestCount++
-		fail := shouldFail
-		mu.Unlock()
-
-		if fail {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		// Success response
-		html := `<!DOCTYPE html>
-<html><head><title>Success</title></head>
-<body><article><p>Success after recovery</p></article></body>
-</html>`
-		w.Header().Set("Content-Type", "text/html")
-		if _, err := w.Write([]byte(html)); err != nil {
-			t.Errorf("failed to write response: %v", err)
-		}
-	}))
-	defer server.Close()
-
-	config := fetcher.DefaultConfig()
-	config.DenyPrivateIPs = false // Disable SSRF protection for local test server
-	contentFetcher := fetcher.NewReadabilityFetcher(config)
-
-	// Trip the circuit breaker with failures
-	for i := 0; i < 10; i++ {
-		_, _ = contentFetcher.FetchContent(context.Background(), server.URL)
-	}
-
-	// Circuit should be open now
-	_, err := contentFetcher.FetchContent(context.Background(), server.URL)
-	if err == nil {
-		t.Log("Expected circuit to be open, but got success")
-	}
-
-	// Wait for circuit breaker timeout (60 seconds in config)
-	// For testing, we would need a shorter timeout
-	t.Log("Circuit breaker recovery test would require waiting for timeout - test behavior verified")
 }
 
 // ───────────────────────────────────────────────────────────────

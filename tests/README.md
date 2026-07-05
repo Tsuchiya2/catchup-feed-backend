@@ -23,23 +23,23 @@ tests/
   - Uses mocked msmtp to avoid sending real emails
 
 ### Integration Tests
-- **`integration/test-email-integration.sh`** (679 lines)
+- **`integration/test-email-integration.sh`**
   - Tests SMTP connectivity and real email sending
-  - 6 test cases covering system integration
+  - 5 test cases covering system integration
   - Verifies rate limiting behavior
-  - Tests fallback mechanisms and Prometheus metrics
+  - Tests fallback mechanisms
   - Can use actual msmtp or mock SMTP server
 
 ### E2E Tests
-- **`e2e/test-notification-scripts.sh`** (800 lines)
-  - Tests all 5 notification scripts end-to-end
+- **`e2e/test-notification-scripts.sh`**
+  - Tests all 4 notification scripts end-to-end
   - Verifies correlation ID propagation
   - Tests both success and failure scenarios
   - Mocks external dependencies (Docker, database)
 
 ### Performance Tests
-- **`performance/test-email-performance.sh`** (700 lines)
-  - 6 test cases covering performance metrics
+- **`performance/test-email-performance.sh`**
+  - 5 test cases covering performance
   - Tests rate limit enforcement under load
   - Concurrent email sending (10 parallel processes)
   - Latency measurement (target: <5s per email)
@@ -107,10 +107,9 @@ done
 | TEST 5 | `send_email()` - Email sending with mocked msmtp |
 | TEST 6 | `alert_fallback()` - Fallback alerting |
 | TEST 7 | `check_consecutive_failures()` - Failure detection |
-| TEST 8 | `update_prometheus_metrics()` - Metrics updates |
-| TEST 9 | Integration - Complete email flow |
+| TEST 8 | Integration - Complete email flow |
 
-**Total: 145 test cases across 9 test functions**
+**Total: 8 test functions**
 
 ### Integration Tests (test-email-integration.sh)
 
@@ -120,8 +119,7 @@ done
 | TEST 2 | Email sending - Real/mock SMTP delivery |
 | TEST 3 | Rate limiting - Hourly/daily limits enforced |
 | TEST 4 | Fallback mechanisms - Syslog and alert files |
-| TEST 5 | Prometheus metrics - Metrics file creation |
-| TEST 6 | Log file management - Log creation and format |
+| TEST 5 | Log file management - Log creation and format |
 
 **Total: 6 integration test scenarios**
 
@@ -131,10 +129,9 @@ done
 |------|----------------|
 | TEST 1 | `backup.sh` - Success/failure notifications |
 | TEST 2 | `health-check.sh` - Health monitoring alerts |
-| TEST 3 | `cleanup-prometheus.sh` - Size warnings |
-| TEST 4 | `docker-cleanup.sh` - Cleanup reports |
-| TEST 5 | `disk-usage-check.sh` - Disk usage alerts |
-| TEST 6 | Correlation ID propagation across all scripts |
+| TEST 3 | `docker-cleanup.sh` - Cleanup reports |
+| TEST 4 | `disk-usage-check.sh` - Disk usage alerts |
+| TEST 5 | Correlation ID propagation across all scripts |
 
 **Total: 6 E2E test scenarios covering 5 scripts**
 
@@ -146,8 +143,7 @@ done
 | TEST 2 | Concurrent email sending (10 parallel processes) |
 | TEST 3 | Latency measurement (5 iterations) |
 | TEST 4 | Retry logic performance (exponential backoff) |
-| TEST 5 | Metrics update performance (20 iterations) |
-| TEST 6 | File locking under concurrent access |
+| TEST 5 | File locking under concurrent access |
 
 **Total: 6 performance test scenarios**
 

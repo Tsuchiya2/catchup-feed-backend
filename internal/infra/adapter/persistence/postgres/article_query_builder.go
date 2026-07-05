@@ -28,20 +28,19 @@ func (qb *ArticleQueryBuilder) BuildWhereClause(keywords []string, filters repos
 	paramIndex := 1
 
 	// Add keyword conditions (multi-keyword AND logic)
-	// Each keyword searches in both title and summary using ILIKE (case-insensitive)
+	// Each keyword searches in both title and summary using ILIKE (case-insensitive).
+	// The summary body lives in the summaries table (§4), so keyword queries
+	// require "LEFT JOIN summaries sm ON sm.article_id = a.id" (articleFrom).
 	for _, keyword := range keywords {
 		// Escape special characters for ILIKE
 		escapedKeyword := search.EscapeILIKE(keyword)
 
 		// Build condition with table alias if provided
-		var titleCol, summaryCol string
+		titleCol := "title"
 		if tableAlias != "" {
 			titleCol = tableAlias + ".title"
-			summaryCol = tableAlias + ".summary"
-		} else {
-			titleCol = "title"
-			summaryCol = "summary"
 		}
+		summaryCol := "sm.body"
 
 		conditions = append(conditions, fmt.Sprintf("(%s ILIKE $%d OR %s ILIKE $%d)", titleCol, paramIndex, summaryCol, paramIndex))
 		args = append(args, escapedKeyword)

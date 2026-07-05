@@ -148,3 +148,7 @@ func TestDeleteHandler_DeleteError(t *testing.T) {
 		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusInternalServerError)
 	}
 }
+
+func (s *stubDeleteRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
+}

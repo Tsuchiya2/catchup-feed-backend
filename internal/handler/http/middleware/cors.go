@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"catchup-feed/internal/handler/http/pathutil"
 )
 
 // CORSConfig holds the configuration for CORS middleware.
@@ -86,7 +88,7 @@ func CORS(config CORSConfig) func(http.Handler) http.Handler {
 				if config.Logger != nil {
 					config.Logger.Warn("CORS: origin not allowed", map[string]interface{}{
 						"origin":      origin,
-						"path":        r.URL.Path,
+						"path":        pathutil.RedactPath(r.URL.Path),
 						"method":      r.Method,
 						"remote_addr": r.RemoteAddr,
 					})

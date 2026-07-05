@@ -5,7 +5,7 @@
 # No local Go installation required!
 # ============================================================
 
-.PHONY: help dev-up dev-down dev-shell test lint fmt build clean logs proto k6-load k6-stress k6-quick
+.PHONY: help dev-up dev-down dev-shell test lint fmt swagger admin-hash build clean logs
 
 # Default target
 .DEFAULT_GOAL := help
@@ -60,26 +60,6 @@ test-coverage: ## Generate test coverage report inside Docker
 	@echo "✅ Coverage report generated: coverage.html"
 
 # ────────────────────────────────────────────────────────────
-# Load Testing (k6)
-# ────────────────────────────────────────────────────────────
-k6-load: ## Run k6 load test for embedding service (requires running gRPC server)
-	@echo "🔥 Running k6 load test..."
-	@echo "   Note: Ensure gRPC embedding service is running on localhost:50052"
-	docker run --rm --network host -v "$(shell pwd):/app" -w /app grafana/k6:latest run tests/load/embedding_load_test.ts
-	@echo "✅ Load test completed"
-
-k6-stress: ## Run k6 stress test for embedding service (requires running gRPC server)
-	@echo "💥 Running k6 stress test..."
-	@echo "   Note: Ensure gRPC embedding service is running on localhost:50052"
-	docker run --rm --network host -v "$(shell pwd):/app" -w /app grafana/k6:latest run tests/load/embedding_stress_test.ts
-	@echo "✅ Stress test completed"
-
-k6-quick: ## Run quick k6 test (1 VU, 10 iterations) for validation
-	@echo "⚡ Running quick k6 validation test..."
-	docker run --rm --network host -v "$(shell pwd):/app" -w /app grafana/k6:latest run --vus 1 --iterations 10 tests/load/embedding_load_test.ts
-	@echo "✅ Quick test completed"
-
-# ────────────────────────────────────────────────────────────
 # Code Quality (runs inside Docker)
 # ────────────────────────────────────────────────────────────
 lint: ## Run golangci-lint inside Docker
@@ -97,13 +77,13 @@ fmt: ## Format code with gofmt inside Docker
 	docker compose --profile dev run --rm dev sh -c "gofmt -w ."
 	@echo "✅ Code formatting completed"
 
-# ────────────────────────────────────────────────────────────
-# Code Generation (runs inside Docker)
-# ────────────────────────────────────────────────────────────
-proto: ## Generate Go code from proto files inside Docker
-	@echo "📝 Generating proto files in Docker..."
-	docker compose --profile dev run --rm dev sh ./scripts/generate-proto.sh
-	@echo "✅ Proto generation completed"
+swagger: ## Generate Swagger docs (docs/) inside Docker
+	@echo "📝 Generating Swagger docs in Docker..."
+	docker compose --profile dev run --rm dev sh -c "go run github.com/swaggo/swag/cmd/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal"
+	@echo "✅ Swagger docs generated"
+
+admin-hash: ## Generate bcrypt hash for ADMIN_PASSWORD_HASH (reads password from stdin)
+	@docker compose --profile dev run --rm dev sh -c "go run ./cmd/hash-password"
 
 # ────────────────────────────────────────────────────────────
 # Build (runs inside Docker)
@@ -121,13 +101,11 @@ build-dev: ## Build development container
 # ────────────────────────────────────────────────────────────
 # Application Control
 # ────────────────────────────────────────────────────────────
-up: ## Start all services (app, worker, postgres, monitoring)
+up: ## Start all services (app, worker, postgres)
 	@echo "🚀 Starting all services..."
 	docker compose up -d
 	@echo "✅ All services started"
 	@echo "   API: http://localhost:8080"
-	@echo "   Prometheus: http://localhost:9090"
-	@echo "   Grafana: http://localhost:3000"
 
 down: ## Stop all services
 	@echo "🛑 Stopping all services..."
@@ -158,10 +136,10 @@ db-shell: ## Enter PostgreSQL shell
 	@echo "🗄️ Entering PostgreSQL shell..."
 	docker compose exec postgres psql -U catchup -d catchup
 
-db-migrate: ## Run database migrations inside Docker
-	@echo "🔄 Running database migrations in Docker..."
-	docker compose --profile dev run --rm dev sh -c "go run cmd/migrate/main.go"
-	@echo "✅ Migrations completed"
+# マイグレーション専用ターゲットはない: スキーマは冪等 SQL
+# (internal/infra/db.MigrateUp)として cmd/server の起動時に毎回自動適用
+# される(worker/radio は server が先に適用済みである前提)。単体適用が
+# 必要になったら cmd/migrate の新設を検討する(親判断)。
 
 db-reset: ## Reset database (destructive!)
 	@echo "⚠️  Resetting database..."

@@ -184,3 +184,7 @@ func TestCreateHandler_ServiceError(t *testing.T) {
 		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusBadRequest)
 	}
 }
+
+func (s *stubCreateRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
+}

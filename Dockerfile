@@ -37,14 +37,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # ────────────────────────────────────────────────────────────
 FROM deps AS dev
 
-# protoc (Protocol Buffers コンパイラ) のインストール
-RUN apk add --no-cache protobuf protobuf-dev
-
 # 開発ツールの追加インストール
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go install github.com/swaggo/swag/cmd/swag@latest && \
-    go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
-    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+    go install github.com/swaggo/swag/cmd/swag@latest
 
 # ソースコードのコピー（開発時にマウント可能）
 WORKDIR /app
@@ -64,7 +59,7 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go install github.com/swaggo/swag/cmd/swag@latest && \
-    $(go env GOPATH)/bin/swag init -g cmd/api/main.go --output docs --parseDependency --parseInternal
+    $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
 # ビルド情報の埋め込み（ARG）
 ARG VERSION=dev
@@ -72,7 +67,6 @@ ARG GIT_COMMIT=unknown
 ARG BUILD_DATE
 ARG LDFLAGS="-s -w -X main.Version=${VERSION} -X main.GitCommit=${GIT_COMMIT} -X main.BuildDate=${BUILD_DATE}"
 
-# CGO有効（modernc.org/sqlite のため必須）
 # セキュリティ強化: -buildmode=pie (Position Independent Executable)
 # マルチアーキテクチャ対応: TARGETARCH を使用
 ARG TARGETARCH
@@ -83,19 +77,19 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -trimpath \
       -buildmode=pie \
       -ldflags "$LDFLAGS" \
-      -o api \
-      ./cmd/api && \
+      -o server \
+      ./cmd/server && \
     CGO_ENABLED=1 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
     go build -v \
       -trimpath \
       -buildmode=pie \
       -ldflags "$LDFLAGS" \
-      -o api-worker \
+      -o worker \
       ./cmd/worker
 
 # バイナリの検証
-RUN file api && file api-worker && \
-    ./api --version 2>/dev/null || echo "Binary check OK"
+RUN file server && file worker && \
+    ./server --version 2>/dev/null || echo "Binary check OK"
 
 # ────────────────────────────────────────────────────────────
 # Stage 4: 最終ランタイム（最小イメージ）
@@ -113,7 +107,6 @@ LABEL maintainer="catchup-feed team" \
 RUN apk upgrade --no-cache && \
     apk add --no-cache \
       ca-certificates \
-      sqlite-libs \
       libgcc \
       libstdc++ \
       tzdata \
@@ -138,8 +131,8 @@ USER app
 WORKDIR /data
 
 # ビルドステージからバイナリをコピー
-COPY --from=build --chown=app:app /app/api         /usr/local/bin/api
-COPY --from=build --chown=app:app /app/api-worker  /usr/local/bin/api-worker
+COPY --from=build --chown=app:app /app/server  /usr/local/bin/server
+COPY --from=build --chown=app:app /app/worker  /usr/local/bin/worker
 
 # ヘルスチェック（APIサーバー用）
 # - 15秒間隔でチェック
@@ -152,7 +145,7 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
 EXPOSE 8080
 
 # エントリーポイント（exec形式でシグナル伝播）
-ENTRYPOINT ["/usr/local/bin/api"]
+ENTRYPOINT ["/usr/local/bin/server"]
 
 # デフォルトコマンド（オーバーライド可能）
 CMD []

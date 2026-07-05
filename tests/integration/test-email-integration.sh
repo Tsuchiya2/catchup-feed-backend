@@ -7,8 +7,7 @@
 #   2. Email sending with real SMTP - Test actual email delivery
 #   3. Rate limiting behavior - Verify hourly/daily limits enforced
 #   4. Fallback mechanisms - Test syslog and alert file when email fails
-#   5. Prometheus metrics integration - Verify metrics updated correctly
-#   6. Log file creation and rotation - Verify log management
+#   5. Log file creation and rotation - Verify log management
 #
 # Usage:
 #   ./tests/integration/test-email-integration.sh
@@ -55,11 +54,6 @@ export EMAIL_ENABLED="true"
 export SMTP_TIMEOUT="${EMAIL_SMTP_TIMEOUT:-5}"
 export EMAIL_RATE_LIMIT_HOURLY="${EMAIL_RATE_LIMIT_HOURLY:-10}"
 export EMAIL_RATE_LIMIT_DAILY="${EMAIL_RATE_LIMIT_DAILY:-100}"
-export PROMETHEUS_METRICS_DIR="$TEST_TMP_DIR/metrics"
-
-# Create metrics directory
-mkdir -p "$PROMETHEUS_METRICS_DIR"
-
 # Source the email functions library
 if [ ! -f "$EMAIL_FUNCTIONS_LIB" ]; then
     echo -e "${RED}ERROR: Email functions library not found at $EMAIL_FUNCTIONS_LIB${NC}"
@@ -162,7 +156,6 @@ run_test() {
     rm -f "$TEST_TMP_DIR"/*.log 2>/dev/null || true
     rm -f "$TEST_TMP_DIR"/*.prom 2>/dev/null || true
     rm -f "$TEST_TMP_DIR"/ALERT 2>/dev/null || true
-    rm -f "$PROMETHEUS_METRICS_DIR"/*.prom 2>/dev/null || true
 
     if $test_function; then
         ((TESTS_PASSED++))
@@ -297,17 +290,6 @@ EOF
     log_content=$(tail -1 "$email_log")
     assert_contains "$log_content" "$correlation_id" "Log contains correlation ID" || return 1
     assert_contains "$log_content" '"status":"success"' "Log shows success status" || return 1
-
-    # Verify Prometheus metrics updated
-    local metrics_file="$PROMETHEUS_METRICS_DIR/email_metrics.prom"
-    if [ -f "$metrics_file" ]; then
-        local metric_content
-        metric_content=$(cat "$metrics_file")
-        assert_contains "$metric_content" "catchup_email_sent_total" "Metrics file contains email counter" || return 1
-        echo -e "${GREEN}✓ PASS${NC}: Prometheus metrics updated"
-    else
-        echo -e "${YELLOW}⚠ WARNING${NC}: Metrics file not created"
-    fi
 
     return 0
 }
@@ -479,81 +461,7 @@ EOF
 }
 
 # ============================================================
-# Test 5: Prometheus Metrics Integration
-# ============================================================
-test_prometheus_metrics() {
-    # Set up mock msmtp
-    local mock_msmtp="$TEST_TMP_DIR/msmtp"
-    cat > "$mock_msmtp" << 'EOF'
-#!/usr/bin/env bash
-cat > /dev/null
-exit 0
-EOF
-    chmod +x "$mock_msmtp"
-    export PATH="$TEST_TMP_DIR:$PATH"
-
-    # Clear metrics
-    rm -f "$PROMETHEUS_METRICS_DIR"/*.prom
-
-    # Clear rate limit log
-    rm -f "$EMAIL_LOG_DIR/email-rate-limit.log"
-
-    echo -e "${BLUE}INFO${NC}: Testing Prometheus metrics integration"
-
-    # Send multiple emails
-    for i in {1..3}; do
-        local corr_id
-        corr_id=$(generate_correlation_id)
-        send_email "Test $i" "Body $i" "$corr_id" "normal" >/dev/null 2>&1
-    done
-
-    # Verify metrics file
-    local metrics_file="$PROMETHEUS_METRICS_DIR/email_metrics.prom"
-    assert_file_exists "$metrics_file" "Metrics file created" || return 1
-
-    # Verify metrics content
-    local metric_content
-    metric_content=$(cat "$metrics_file")
-
-    # Check for required metrics
-    assert_contains "$metric_content" "catchup_email_sent_total" "Contains email send counter" || return 1
-    assert_contains "$metric_content" "catchup_email_send_duration_seconds" "Contains duration metric" || return 1
-
-    # Verify metrics format (Prometheus text format)
-    if echo "$metric_content" | grep -q '^catchup_email.*{.*}.*[0-9]'; then
-        echo -e "${GREEN}✓ PASS${NC}: Metrics in valid Prometheus format"
-    else
-        echo -e "${YELLOW}⚠ WARNING${NC}: Metrics format may not be valid"
-    fi
-
-    # Test metric update
-    local initial_content="$metric_content"
-
-    # Send one more email
-    local corr_id
-    corr_id=$(generate_correlation_id)
-    send_email "Test Update" "Body" "$corr_id" "normal" >/dev/null 2>&1
-
-    # Check if metrics updated
-    local updated_content
-    updated_content=$(cat "$metrics_file")
-
-    if [ "$initial_content" != "$updated_content" ]; then
-        echo -e "${GREEN}✓ PASS${NC}: Metrics updated after email send"
-    else
-        echo -e "${YELLOW}⚠ WARNING${NC}: Metrics may not have updated"
-    fi
-
-    # Verify atomic write (file should always be valid)
-    local file_perms
-    file_perms=$(stat -f "%Lp" "$metrics_file" 2>/dev/null || stat -c "%a" "$metrics_file" 2>/dev/null)
-    assert_equal "644" "$file_perms" "Metrics file has correct permissions (644)" || return 1
-
-    return 0
-}
-
-# ============================================================
-# Test 6: Log File Creation and Management
+# Test 5: Log File Creation and Management
 # ============================================================
 test_log_file_management() {
     # Set up mock msmtp
@@ -648,8 +556,7 @@ main() {
     run_test "TEST 2: Email Sending" test_email_sending
     run_test "TEST 3: Rate Limiting" test_rate_limiting
     run_test "TEST 4: Fallback Mechanisms" test_fallback_mechanisms
-    run_test "TEST 5: Prometheus Metrics" test_prometheus_metrics
-    run_test "TEST 6: Log File Management" test_log_file_management
+    run_test "TEST 5: Log File Management" test_log_file_management
 
     # Clean up test directory
     echo ""

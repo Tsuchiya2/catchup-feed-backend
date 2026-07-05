@@ -7,14 +7,12 @@ import "strings"
 //
 // Justification for each public endpoint:
 // - /health, /ready, /live: Required for orchestration health checks (Kubernetes, Docker, monitoring)
-// - /metrics: Required for Prometheus scraping (typically accessed by monitoring systems)
 // - /swagger/: API documentation for developers
 // - /auth/token: Token generation endpoint (can't require token to get token)
 var PublicEndpoints = []string{
 	"/health",
 	"/ready",
 	"/live",
-	"/metrics",
 	"/swagger/",
 	"/auth/token",
 }

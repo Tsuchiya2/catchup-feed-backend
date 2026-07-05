@@ -46,8 +46,8 @@ test_*.db
 bin/
 dist/
 *.exe
-api
-api-worker
+server
+worker
 
 # ログファイル
 *.log

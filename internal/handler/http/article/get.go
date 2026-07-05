@@ -18,12 +18,10 @@ type GetHandler struct{ Svc artUC.Service }
 // @Security     BearerAuth
 // @Produce      json
 // @Param        id path int true "記事ID"
-// @Success      200 {object} DTO "記事詳細" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer)
+// @Success      200 {object} DTO "記事詳細"
 // @Failure      400 {string} string "Bad request - invalid article ID"
 // @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
-// @Failure      403 {string} string "Forbidden - insufficient permissions"
 // @Failure      404 {string} string "Not found - article not found"
-// @Failure      429 {string} string "Too many requests - rate limit exceeded" headers(X-RateLimit-Limit=integer,X-RateLimit-Remaining=integer,X-RateLimit-Reset=integer,Retry-After=integer)
 // @Failure      500 {string} string "サーバーエラー"
 // @Router       /articles/{id} [get]
 func (h GetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -53,8 +51,7 @@ func (h GetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		URL:         article.URL,
 		Summary:     article.Summary,
 		PublishedAt: article.PublishedAt,
-		CreatedAt:   article.CreatedAt,
-		UpdatedAt:   article.CreatedAt, // Database schema doesn't have updated_at column
+		CrawledAt:   article.CrawledAt,
 	}
 
 	respond.JSON(w, http.StatusOK, out)

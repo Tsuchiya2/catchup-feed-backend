@@ -1,8 +1,12 @@
+// Package auth provides framework-agnostic authentication business logic.
+//
+// pulse は単一管理者システム(C-7・C-20)であり、ここにはロールや複数
+// ユーザーの概念を持ち込まない。資格情報の検証方法(環境変数+bcrypt)は
+// AuthProvider の実装側に委ねる。
 package auth
 
 import (
 	"context"
-	"strings"
 )
 
 // Credentials represents authentication credentials.
@@ -11,66 +15,28 @@ type Credentials struct {
 	Password string
 }
 
-// CredentialRequirements defines password policy requirements.
-type CredentialRequirements struct {
-	MinPasswordLength int
-	WeakPasswords     []string
-}
-
-// AuthProvider defines the interface for authentication providers.
-// This interface is framework-agnostic and can be implemented by various authentication mechanisms.
+// AuthProvider defines the interface for credential validation.
 type AuthProvider interface {
 	// ValidateCredentials validates user credentials.
+	// It returns an error when the credentials do not belong to the
+	// administrator.
 	ValidateCredentials(ctx context.Context, creds Credentials) error
-
-	// GetRequirements returns the credential requirements for this provider.
-	GetRequirements() CredentialRequirements
 
 	// Name returns the name of this provider.
 	Name() string
-
-	// IdentifyUser returns the role for a given email address.
-	// Returns "admin", "viewer", or error if email not recognized.
-	IdentifyUser(ctx context.Context, email string) (role string, err error)
 }
 
 // AuthService handles authentication business logic.
-// This service is framework-agnostic and can be used with any HTTP framework or CLI.
 type AuthService struct {
-	provider        AuthProvider
-	publicEndpoints []string
+	provider AuthProvider
 }
 
 // NewAuthService creates a new authentication service.
-func NewAuthService(provider AuthProvider, publicEndpoints []string) *AuthService {
-	return &AuthService{
-		provider:        provider,
-		publicEndpoints: publicEndpoints,
-	}
+func NewAuthService(provider AuthProvider) *AuthService {
+	return &AuthService{provider: provider}
 }
 
 // ValidateCredentials validates user credentials via the configured provider.
 func (s *AuthService) ValidateCredentials(ctx context.Context, creds Credentials) error {
 	return s.provider.ValidateCredentials(ctx, creds)
-}
-
-// IsPublicEndpoint checks if a path is publicly accessible.
-// Returns true if the path matches any configured public endpoint prefix.
-func (s *AuthService) IsPublicEndpoint(path string) bool {
-	for _, endpoint := range s.publicEndpoints {
-		if strings.HasPrefix(path, endpoint) {
-			return true
-		}
-	}
-	return false
-}
-
-// GetProvider returns the current authentication provider.
-func (s *AuthService) GetProvider() AuthProvider {
-	return s.provider
-}
-
-// IdentifyUser identifies the role of a user by their email.
-func (s *AuthService) IdentifyUser(ctx context.Context, email string) (string, error) {
-	return s.provider.IdentifyUser(ctx, email)
 }

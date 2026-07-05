@@ -6,7 +6,7 @@
 #
 # Monitors:
 #   1. Docker daemon status
-#   2. Container health (app, worker, postgres, prometheus, grafana)
+#   2. Container health (app, worker, postgres)
 #   3. PostgreSQL connectivity
 #   4. API endpoint availability
 #   5. Worker process status
@@ -126,7 +126,7 @@ check_containers() {
     log_message "INFO" "Checking container health..."
 
     # List of containers to check
-    local containers=("app" "worker" "postgres" "prometheus" "grafana")
+    local containers=("app" "worker" "postgres")
 
     for container in "${containers[@]}"; do
         local container_name="catchup-${container}"
@@ -135,13 +135,9 @@ check_containers() {
         if [ "$container" = "postgres" ]; then
             container_name="catchup-postgres"
         elif [ "$container" = "app" ]; then
-            container_name="catchup-api"
+            container_name="catchup-server"
         elif [ "$container" = "worker" ]; then
             container_name="catchup-worker"
-        elif [ "$container" = "prometheus" ]; then
-            container_name="catchup-prometheus"
-        elif [ "$container" = "grafana" ]; then
-            container_name="catchup-grafana"
         fi
 
         # Get container status

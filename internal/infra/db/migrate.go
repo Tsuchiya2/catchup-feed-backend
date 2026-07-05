@@ -1,3 +1,11 @@
+// Package db provides database connection management and schema migration.
+//
+// Migration style is inherited from the old system: idempotent SQL
+// (CREATE ... IF NOT EXISTS) executed at process startup. The schema below
+// is the pulse Phase 1 data model, transcribed verbatim from the design
+// document §4 (docs/pulse-phase1-design.md). There is no compatibility
+// path from the old catchup-feed schema: the old DB is not migrated (§9,
+// source definitions are ported via the seed file only).
 package db
 
 import (
@@ -8,173 +16,123 @@ import (
 //go:embed seeds/sources.sql
 var seedSourcesSQL string
 
+// createTableStatements is the §4 schema, one statement per table, in
+// dependency order.
+var createTableStatements = []string{
+	// ===== コンテンツ系(既存概念の継承)=====
+	`CREATE TABLE IF NOT EXISTS sources (
+    id            bigserial PRIMARY KEY,
+    name          text NOT NULL,
+    feed_url      text NOT NULL UNIQUE,
+    category      text NOT NULL,            -- 台本のコーナー分けに使用
+    lang          text NOT NULL DEFAULT 'en',
+    active        boolean NOT NULL DEFAULT true,
+    created_at    timestamptz NOT NULL DEFAULT now()
+)`,
+	`CREATE TABLE IF NOT EXISTS articles (
+    id            bigserial PRIMARY KEY,
+    source_id     bigint NOT NULL REFERENCES sources,
+    url           text NOT NULL UNIQUE,
+    title         text NOT NULL,
+    content       text,                     -- go-readability 抽出全文
+    published_at  timestamptz,
+    crawled_at    timestamptz NOT NULL DEFAULT now()
+)`,
+	`CREATE TABLE IF NOT EXISTS summaries (
+    article_id    bigint PRIMARY KEY REFERENCES articles,
+    body          text NOT NULL,            -- 日本語要約
+    provider      text NOT NULL,            -- gemini / groq / ollama(フォールバック観測用)
+    created_at    timestamptz NOT NULL DEFAULT now()
+)`,
+	// ===== ラジオ系(新規)=====
+	`CREATE TABLE IF NOT EXISTS episodes (
+    id            bigserial PRIMARY KEY,
+    feed_kind     text NOT NULL,            -- 'public' | 'private'
+    title         text NOT NULL,
+    show_notes    text NOT NULL,            -- 記事リンク集。通知にも流用
+    audio_path    text NOT NULL,            -- Pi ローカルパス
+    audio_bytes   bigint NOT NULL,
+    duration_sec  int NOT NULL,
+    published_at  timestamptz NOT NULL DEFAULT now()
+)`,
+	`CREATE TABLE IF NOT EXISTS segments (
+    id            bigserial PRIMARY KEY,
+    episode_id    bigint NOT NULL REFERENCES episodes,
+    position      int NOT NULL,
+    kind          text NOT NULL,            -- 'intro'|'news'|'outro'。Phase 3 で 'quiz'|'review' 追加
+    article_id    bigint REFERENCES articles,  -- news のとき
+    script        text NOT NULL,            -- 読み上げ原稿(検索・振り返り資産)
+    UNIQUE (episode_id, position)
+)`,
+	// ===== 配信・購読系(新規)=====
+	`CREATE TABLE IF NOT EXISTS subscribers (
+    id             bigserial PRIMARY KEY,
+    name           text NOT NULL,
+    note           text,                    -- 期待するフィードバックの種類など
+    email          text,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    deactivated_at timestamptz              -- NULL = アクティブ
+)`,
+	`CREATE TABLE IF NOT EXISTS feed_tokens (
+    id            bigserial PRIMARY KEY,
+    subscriber_id bigint NOT NULL REFERENCES subscribers,
+    token_hash    text NOT NULL UNIQUE,     -- 32byte 乱数(base64url)の SHA-256 hex。平文は発行時のみ表示(D-5)
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    revoked_at    timestamptz               -- NULL = 有効
+)`,
+	`CREATE TABLE IF NOT EXISTS feed_access_logs (
+    id            bigserial PRIMARY KEY,
+    token_id      bigint NOT NULL REFERENCES feed_tokens,
+    episode_id    bigint REFERENCES episodes,  -- NULL = feed.xml 取得
+    user_agent    text,
+    accessed_at   timestamptz NOT NULL DEFAULT now()
+)`,
+	// ===== ジョブ連携(worker/radio 間)=====
+	`CREATE TABLE IF NOT EXISTS jobs (
+    id            bigserial PRIMARY KEY,
+    kind          text NOT NULL,            -- 'regenerate_feed' | 'notify_episode' など
+    payload       jsonb NOT NULL DEFAULT '{}',
+    status        text NOT NULL DEFAULT 'pending',  -- pending|running|done|failed
+    attempts      int NOT NULL DEFAULT 0,
+    last_error    text,
+    run_after     timestamptz NOT NULL DEFAULT now(),
+    created_at    timestamptz NOT NULL DEFAULT now()
+)`,
+}
+
+// createIndexStatements are implementation-need indexes beyond §4 (which
+// only specifies constraints). Kept deliberately small — single-user scale:
+//   - idx_articles_published_at: every article listing / radio article
+//     selection orders by published_at DESC.
+//   - idx_articles_source_id: FK join sources<->articles used by all
+//     "with source" queries.
+//   - idx_jobs_pending: partial index backing the ClaimNext polling query
+//     (WHERE status='pending' AND run_after <= now()).
+//   - idx_feed_access_logs_token_id: per-friend access aggregation on the
+//     only table expected to grow unbounded.
+var createIndexStatements = []string{
+	`CREATE INDEX IF NOT EXISTS idx_articles_published_at ON articles (published_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_articles_source_id ON articles (source_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_jobs_pending ON jobs (run_after) WHERE status = 'pending'`,
+	`CREATE INDEX IF NOT EXISTS idx_feed_access_logs_token_id ON feed_access_logs (token_id)`,
+}
+
+// MigrateUp applies the pulse Phase 1 schema. It is idempotent and safe to
+// run at every process startup.
 func MigrateUp(db *sql.DB) error {
-	if _, err := db.Exec(`
-CREATE TABLE IF NOT EXISTS sources (
-    id              SERIAL PRIMARY KEY,
-    name            TEXT NOT NULL,
-    feed_url        TEXT NOT NULL UNIQUE,
-    last_crawled_at TIMESTAMPTZ,
-    active          BOOLEAN DEFAULT TRUE,
-    source_type     VARCHAR(20) NOT NULL DEFAULT 'RSS',
-    scraper_config  JSONB
-)`); err != nil {
-		return err
-	}
-
-	if _, err := db.Exec(`
-CREATE TABLE IF NOT EXISTS articles (
-    id           SERIAL PRIMARY KEY,
-    source_id    INTEGER REFERENCES sources(id),
-    title        TEXT NOT NULL,
-    url          TEXT UNIQUE,
-    summary      TEXT,
-    published_at TIMESTAMPTZ,
-    created_at   TIMESTAMPTZ DEFAULT now()
-)`); err != nil {
-		return err
-	}
-
-	// パフォーマンス最適化: インデックス追加
-	indexes := []string{
-		// ORDER BY published_at DESC で使用(全クエリで使用)
-		`CREATE INDEX IF NOT EXISTS idx_articles_published_at ON articles(published_at DESC)`,
-		// ソース別記事取得用
-		`CREATE INDEX IF NOT EXISTS idx_articles_source_id ON articles(source_id)`,
-		// アクティブソース絞り込み用(WHERE active = TRUE)
-		`CREATE INDEX IF NOT EXISTS idx_sources_active ON sources(active) WHERE active = TRUE`,
-		// ソースタイプ別フィルタリング用(Web Scraper対応)
-		`CREATE INDEX IF NOT EXISTS idx_sources_source_type ON sources(source_type)`,
-	}
-
-	// pg_trgm拡張を有効化(ILIKE検索高速化用)
-	// エラーを無視(既に存在する場合やスーパーユーザー権限がない場合)
-	_, _ = db.Exec(`CREATE EXTENSION IF NOT EXISTS pg_trgm`)
-
-	// ILIKE検索用GINインデックス追加(マルチキーワード検索高速化)
-	searchIndexes := []string{
-		// 記事タイトル・サマリーのILIKE検索用
-		`CREATE INDEX IF NOT EXISTS idx_articles_title_gin ON articles USING gin(title gin_trgm_ops)`,
-		`CREATE INDEX IF NOT EXISTS idx_articles_summary_gin ON articles USING gin(summary gin_trgm_ops)`,
-		// ソース名・URLのILIKE検索用
-		`CREATE INDEX IF NOT EXISTS idx_sources_name_gin ON sources USING gin(name gin_trgm_ops)`,
-		`CREATE INDEX IF NOT EXISTS idx_sources_feed_url_gin ON sources USING gin(feed_url gin_trgm_ops)`,
-	}
-	for _, idx := range searchIndexes {
-		// pg_trgm拡張がない場合はエラーになるため無視
-		_, _ = db.Exec(idx)
-	}
-
-	for _, idx := range indexes {
-		if _, err := db.Exec(idx); err != nil {
-			return err
-		}
-	}
-
-	// Web Scraper対応: source_type制約追加
-	// PostgreSQL特有の制約構文のため、エラーを無視(既に存在する場合)
-	_, _ = db.Exec(`
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'chk_source_type'
-    ) THEN
-        ALTER TABLE sources ADD CONSTRAINT chk_source_type
-        CHECK (source_type IN ('RSS', 'Webflow', 'NextJS', 'Remix'));
-    END IF;
-END $$;
-`)
-
-	// Embedding Feature: pgvector拡張を有効化
-	// Note: エラーをログ出力するが、処理は継続（既存環境では既にインストール済みの場合がある）
-	if _, err := db.Exec(`CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
-		// pgvector拡張がインストールされていない場合は警告を出力
-		// ベクトル検索機能は使用不可となるが、他の機能は正常に動作する
-		println("WARNING: Failed to create pgvector extension:", err.Error())
-		println("         Vector search functionality will not be available.")
-	}
-
-	// Embedding Feature: article_embeddings テーブル作成
-	// Note: article_id is INTEGER to match articles.id (SERIAL = INTEGER)
-	// Note: vector(1536) is fixed size for OpenAI text-embedding-3-small model
-	//       The dimension column stores metadata for validation purposes
-	//       If multi-dimension support is needed, consider separate tables per dimension
-	if _, err := db.Exec(`
-CREATE TABLE IF NOT EXISTS article_embeddings (
-    id              SERIAL PRIMARY KEY,
-    article_id      INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
-    embedding_type  VARCHAR(50) NOT NULL,
-    provider        VARCHAR(50) NOT NULL,
-    model           VARCHAR(100) NOT NULL,
-    dimension       INT NOT NULL,
-    embedding       vector(1536) NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(article_id, embedding_type, provider, model)
-)`); err != nil {
-		return err
-	}
-
-	// Embedding Feature: article_embeddings インデックス追加
-	embeddingIndexes := []string{
-		// article_id による検索用 B-tree インデックス
-		`CREATE INDEX IF NOT EXISTS idx_article_embeddings_article_id ON article_embeddings(article_id)`,
-	}
-	for _, idx := range embeddingIndexes {
-		if _, err := db.Exec(idx); err != nil {
-			return err
-		}
-	}
-
-	// Embedding Feature: IVFFlat ベクトル類似検索インデックス
-	// Note: エラーをログ出力するが、処理は継続（pgvector拡張がない場合は作成不可）
-	// lists=100 は <1M レコードに適した値
-	if _, err := db.Exec(`
-CREATE INDEX IF NOT EXISTS idx_article_embeddings_vector
-    ON article_embeddings USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100)`); err != nil {
-		// IVFFlatインデックスが作成できない場合は警告を出力
-		// ベクトル検索は動作するが、パフォーマンスが低下する（フルスキャン）
-		println("WARNING: Failed to create IVFFlat index:", err.Error())
-		println("         Vector search will work but may be slower (full table scan).")
-	}
-
-	// シードデータの投入(重複は自動的にスキップ)
-	if _, err := db.Exec(seedSourcesSQL); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// MigrateDown rolls back the embedding feature schema.
-// This function removes embedding-related tables and indexes only.
-// Core tables (sources, articles) are intentionally preserved.
-// Use with caution: this will delete all embedding data.
-func MigrateDown(db *sql.DB) error {
-	return MigrateDownEmbeddingsOnly(db)
-}
-
-// MigrateDownEmbeddingsOnly rolls back only the embedding feature.
-// This is a targeted rollback that preserves other schema elements.
-// Drops: article_embeddings table, idx_article_embeddings_vector, idx_article_embeddings_article_id
-// Preserves: sources, articles tables, vector extension
-func MigrateDownEmbeddingsOnly(db *sql.DB) error {
-	dropStatements := []string{
-		// Drop IVFFlat vector index
-		`DROP INDEX IF EXISTS idx_article_embeddings_vector`,
-		// Drop article_id index
-		`DROP INDEX IF EXISTS idx_article_embeddings_article_id`,
-		// Drop article_embeddings table (CASCADE to handle foreign key references)
-		`DROP TABLE IF EXISTS article_embeddings CASCADE`,
-	}
-
-	for _, stmt := range dropStatements {
+	for _, stmt := range createTableStatements {
 		if _, err := db.Exec(stmt); err != nil {
 			return err
 		}
 	}
-
+	for _, stmt := range createIndexStatements {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	// ソース定義の手動移植(§9)。ON CONFLICT DO NOTHING で冪等。
+	if _, err := db.Exec(seedSourcesSQL); err != nil {
+		return err
+	}
 	return nil
 }

@@ -115,7 +115,7 @@ func TestSearchPaginated_ValidRequest(t *testing.T) {
 				URL:         "https://example.com/article1",
 				Summary:     "Learn Go programming",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Tech Blog",
 		},
@@ -127,7 +127,7 @@ func TestSearchPaginated_ValidRequest(t *testing.T) {
 				URL:         "https://example.com/article2",
 				Summary:     "Go basics",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Tech Blog",
 		},
@@ -184,7 +184,7 @@ func TestSearchPaginated_WithSourceIDFilter(t *testing.T) {
 				URL:         "https://example.com/article1",
 				Summary:     "Summary",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Source 5",
 		},
@@ -237,7 +237,7 @@ func TestSearchPaginated_WithDateRange(t *testing.T) {
 				URL:         "https://example.com/article1",
 				Summary:     "Summary",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Tech Blog",
 		},
@@ -504,7 +504,7 @@ func TestSearchPaginated_MultiplePages(t *testing.T) {
 				URL:         "https://example.com/",
 				Summary:     "Summary",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Test Source",
 		}
@@ -573,7 +573,7 @@ func TestSearchPaginated_LastPage(t *testing.T) {
 				URL:         "https://example.com/",
 				Summary:     "Summary",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Test Source",
 		}
@@ -694,7 +694,7 @@ func TestSearchPaginated_CountError(t *testing.T) {
 				URL:         "https://example.com/article1",
 				Summary:     "Summary",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Test Source",
 		},
@@ -797,7 +797,7 @@ func TestSearchPaginated_MultiKeyword(t *testing.T) {
 				URL:         "https://example.com/article1",
 				Summary:     "Complete guide",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Tech Blog",
 		},
@@ -847,7 +847,7 @@ func TestSearchPaginated_AllFilters(t *testing.T) {
 				URL:         "https://example.com/article1",
 				Summary:     "Summary",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Tech Blog",
 		},
@@ -897,7 +897,7 @@ func TestSearchPaginated_NoKeyword(t *testing.T) {
 				URL:         "https://example.com/article1",
 				Summary:     "Summary",
 				PublishedAt: now,
-				CreatedAt:   now,
+				CrawledAt:   now,
 			},
 			SourceName: "Tech Blog",
 		},
@@ -931,4 +931,8 @@ func TestSearchPaginated_NoKeyword(t *testing.T) {
 	if len(result.Data) != 1 {
 		t.Errorf("Data length = %d, want 1", len(result.Data))
 	}
+}
+
+func (s *stubSearchPaginatedRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
 }

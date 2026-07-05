@@ -30,7 +30,7 @@ The catchup-feed-backend project follows **Clean Architecture** principles with 
 
 ```
 ┌────────────────────────────────────────────┐
-│  Presentation Layer (HTTP Handlers)        │  ← cmd/api, internal/handler
+│  Presentation Layer (HTTP Handlers)        │  ← cmd/server, internal/handler
 ├────────────────────────────────────────────┤
 │  Use Case Layer (Business Logic)           │  ← internal/usecase
 ├────────────────────────────────────────────┤
@@ -96,7 +96,7 @@ cmd/
         └── main.go
 ```
 
-### `cmd/api/main.go` - REST API Server
+### `cmd/server/main.go` - REST API Server
 
 **Purpose:** HTTP server providing REST API for article and source management
 

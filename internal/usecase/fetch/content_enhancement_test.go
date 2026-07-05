@@ -94,10 +94,7 @@ func TestEnhanceContent_InsufficientRSSContent_FetchSuccess(t *testing.T) {
 				},
 			},
 		},
-		nil, // webScrapers
 		mockFetcher,
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -172,10 +169,7 @@ func TestEnhanceContent_InsufficientRSSContent_FetchFailed(t *testing.T) {
 				},
 			},
 		},
-		nil, // webScrapers
 		mockFetcher,
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -253,10 +247,7 @@ func TestEnhanceContent_FetchedShorterThanRSS(t *testing.T) {
 				},
 			},
 		},
-		nil, // webScrapers
 		mockFetcher,
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -334,10 +325,7 @@ func TestEnhanceContent_EmptyRSSContent(t *testing.T) {
 				},
 			},
 		},
-		nil, // webScrapers
 		mockFetcher,
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,
@@ -401,10 +389,7 @@ func TestEnhanceContent_ContentFetcherNil(t *testing.T) {
 				},
 			},
 		},
-		nil, // webScrapers
 		nil, // Feature disabled
-		&mockNotifyService{},
-		nil, // embeddingHook (disabled for tests)
 		fetchUC.ContentFetchConfig{
 			Parallelism: 10,
 			Threshold:   1500,

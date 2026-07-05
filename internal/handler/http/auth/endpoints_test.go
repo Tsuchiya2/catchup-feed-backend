@@ -31,14 +31,6 @@ func TestIsPublicEndpoint_ExhaustiveCoverage(t *testing.T) {
 			reason:   "Required for Kubernetes liveness probes",
 		},
 
-		// Metrics endpoint (Prometheus)
-		{
-			name:     "metrics exact",
-			path:     "/metrics",
-			expected: true,
-			reason:   "Required for Prometheus scraping",
-		},
-
 		// Swagger documentation
 		{
 			name:     "swagger root",
@@ -158,12 +150,6 @@ func TestIsPublicEndpoint_ExhaustiveCoverage(t *testing.T) {
 			expected: true,
 			reason:   "Query params don't affect prefix match",
 		},
-		{
-			name:     "metrics with query params",
-			path:     "/metrics?format=prometheus",
-			expected: true,
-			reason:   "Query params don't affect prefix match",
-		},
 
 		// Negative cases - paths that look similar but aren't public
 		{
@@ -173,10 +159,10 @@ func TestIsPublicEndpoint_ExhaustiveCoverage(t *testing.T) {
 			reason:   "Different from /health endpoint",
 		},
 		{
-			name:     "metric (singular)",
-			path:     "/metric",
+			name:     "metrics (removed endpoint)",
+			path:     "/metrics",
 			expected: false,
-			reason:   "Different from /metrics endpoint",
+			reason:   "Prometheus /metrics endpoint was removed and must require auth",
 		},
 		{
 			name:     "authenticate",
@@ -230,7 +216,6 @@ func TestPublicEndpointsList(t *testing.T) {
 		"/health",
 		"/ready",
 		"/live",
-		"/metrics",
 		"/swagger/",
 		"/auth/token",
 	}

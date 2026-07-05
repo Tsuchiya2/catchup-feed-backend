@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"catchup-feed/internal/handler/http/pathutil"
 	"catchup-feed/internal/handler/http/requestid"
 	"catchup-feed/internal/handler/http/respond"
 
@@ -20,91 +22,88 @@ type ctxKey string
 
 const ctxUser ctxKey = "user"
 
-// Authz is an authorization middleware that requires JWT authentication
-// for all HTTP methods on protected endpoints.
+// Authz is an authorization middleware that requires JWT authentication for
+// all HTTP methods on protected endpoints.
 //
 // Authorization Logic:
-// 1. Check if the endpoint is public (health checks, metrics, swagger, auth)
-//   - If public: Allow access without JWT validation
-//
-// 2. If protected: Require valid JWT token for ALL methods (GET, POST, PUT, DELETE, etc.)
-//   - Extract and validate JWT from Authorization header
-//   - Verify role-based permissions using checkRolePermission
-//   - Add user to request context
-//
-// Role-Based Authorization:
-// - Admin: Full access to all endpoints and methods (GET, POST, PUT, DELETE, etc.)
-// - Viewer: Read-only access (GET) to articles, sources, and swagger endpoints
-// - Permission checks use role + method + path combination
+//  1. Public endpoints (see PublicEndpoints) pass through without a token.
+//  2. Everything else requires a valid HS256 JWT for ALL methods.
+//  3. The token's sub claim must equal the configured administrator
+//     (ADMIN_USER). pulse is a single-admin system (C-20): there are no
+//     roles, and any validly-signed token whose subject is not the
+//     administrator — e.g. a leftover "viewer" token from the old system or
+//     a token with tampered claims — is rejected with 403.
 //
 // Security Note:
-// This middleware fixes CVE-CATCHUP-2024-002 (Authorization Bypass for GET Requests).
-// Previous implementation allowed GET requests to bypass JWT validation, making
-// list/search APIs publicly accessible.
+// This middleware fixes CVE-CATCHUP-2024-002 (Authorization Bypass for GET
+// Requests): GET requests to protected endpoints require authentication.
 //
-// Breaking Change:
-// GET requests to protected endpoints (/articles, /sources) now require authentication.
-// Clients must provide valid JWT tokens for all requests to protected resources.
+// JWT_SECRET and ADMIN_USER are read when the middleware is constructed, so
+// Authz must be called after startup validation (ValidateAdminCredentials
+// for ADMIN_USER; JWT_SECRET is validated by cmd/server's validateJWTSecret).
 func Authz(next http.Handler) http.Handler {
 	secret := []byte(os.Getenv("JWT_SECRET"))
+	adminUser := os.Getenv(EnvAdminUser)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Step 1: Check if endpoint is public
-		// Public endpoints are accessible without authentication
+		// Step 1: Public endpoints are accessible without authentication.
 		if IsPublicEndpoint(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Step 2: Protected endpoint - require JWT for ALL methods
-		user, role, err := validateJWT(r.Header.Get("Authorization"), secret)
+		requestID := requestid.FromContext(r.Context())
+		logger := slog.With(
+			slog.String("request_id", requestID),
+			slog.String("method", r.Method),
+			slog.String("path", pathutil.RedactPath(r.URL.Path)),
+		)
+
+		// Fail closed when the administrator or the signing key is not
+		// configured. An empty HS256 key would let anyone forge a validly
+		// signed token. Startup validation makes both branches unreachable
+		// in a correctly booted server.
+		if adminUser == "" {
+			logger.Error("authorization denied", slog.String("reason", "admin_user_not_configured"))
+			respond.SafeError(w, http.StatusUnauthorized, errors.New("unauthorized"))
+			return
+		}
+		if len(secret) == 0 {
+			logger.Error("authorization denied", slog.String("reason", "jwt_secret_not_configured"))
+			respond.SafeError(w, http.StatusUnauthorized, errors.New("unauthorized"))
+			return
+		}
+
+		// Step 2: Protected endpoint - require a valid JWT for ALL methods.
+		sub, err := validateJWT(r.Header.Get("Authorization"), secret)
 		if err != nil {
 			respond.SafeError(w, http.StatusUnauthorized, fmt.Errorf("unauthorized: %w", err))
 			return
 		}
 
-		// Get request ID for logging
-		requestID := requestid.FromContext(r.Context())
-		logger := slog.With(
-			slog.String("request_id", requestID),
-			slog.String("method", r.Method),
-			slog.String("path", r.URL.Path),
-		)
-
-		// Log authorization check started
-		logger.Debug("authorization check started", slog.String("role", role))
-
-		// Step 3: Check if user has permission for this request
-		// Track authorization check duration
-		authzStart := time.Now()
-		hasPermission := checkRolePermission(role, r.Method, r.URL.Path)
-		RecordAuthzCheckDuration(time.Since(authzStart).Seconds())
-
-		if !hasPermission {
-			// Record forbidden access attempt
-			RecordForbiddenAttempt(role, r.Method)
-
+		// Step 3: Single-admin check. A validly-signed token whose subject
+		// is not the administrator must not reach the admin API.
+		if subtle.ConstantTimeCompare([]byte(sub), []byte(adminUser)) != 1 {
 			logger.Warn("authorization denied",
-				slog.String("user_email", user),
-				slog.String("role", role),
-				slog.String("reason", "insufficient_permissions"))
-			respond.SafeError(w, http.StatusForbidden, fmt.Errorf("forbidden: %s role cannot perform %s operations", role, r.Method))
+				slog.String("user_email", sub),
+				slog.String("reason", "subject_is_not_admin"))
+			respond.SafeError(w, http.StatusForbidden, errors.New("forbidden"))
 			return
 		}
 
-		// Log successful authorization
-		logger.Info("authorization granted",
-			slog.String("user_email", user),
-			slog.String("role", role))
+		logger.Debug("authorization granted", slog.String("user_email", sub))
 
-		ctx := context.WithValue(r.Context(), ctxUser, user)
+		ctx := context.WithValue(r.Context(), ctxUser, sub)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-func validateJWT(authz string, secret []byte) (string, string, error) {
+// validateJWT parses and validates a Bearer token and returns its subject.
+// It enforces HS256, a valid signature, the presence of exp (not yet
+// expired) and a non-empty sub claim.
+func validateJWT(authz string, secret []byte) (string, error) {
 	const prefix = "Bearer "
 	if !strings.HasPrefix(authz, prefix) {
-		return "", "", errors.New("missing bearer token")
+		return "", errors.New("missing bearer token")
 	}
 	tokenString := strings.TrimPrefix(authz, prefix)
 	tok, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
@@ -114,22 +113,18 @@ func validateJWT(authz string, secret []byte) (string, string, error) {
 		return secret, nil
 	})
 	if err != nil || !tok.Valid {
-		return "", "", errors.New("invalid token")
+		return "", errors.New("invalid token")
 	}
 	claims, ok := tok.Claims.(jwt.MapClaims)
 	if !ok {
-		return "", "", errors.New("invalid claims")
+		return "", errors.New("invalid claims")
 	}
 	if exp, ok := claims["exp"].(float64); !ok || int64(exp) < time.Now().Unix() {
-		return "", "", errors.New("token expired")
+		return "", errors.New("token expired")
 	}
 	sub, ok := claims["sub"].(string)
-	if !ok {
-		return "", "", errors.New("invalid sub claim")
+	if !ok || sub == "" {
+		return "", errors.New("invalid sub claim")
 	}
-	role, ok := claims["role"].(string)
-	if !ok {
-		return "", "", errors.New("invalid role claim")
-	}
-	return sub, role, nil
+	return sub, nil
 }
