@@ -8,7 +8,9 @@
 #      「翌朝 04:15」に解決されて丸1日走るのを防ぐ(ジョブは翌夜に持ち越し)
 #   2. ブリッジを EXIT trap で先に張る: radio(04:30)発火まで Mac を起こして
 #      おく caffeinate。.env 不在・uv 不在などどの経路で死んでもブリッジは
-#      実行される(Phase 2 側の故障で Phase 1 の radio を潰さない)
+#      実行される(Phase 2 側の故障で Phase 1 の radio を潰さない)。
+#      窓内でも 04:14 を過ぎた発火は worker を起動せずブリッジのみ残す
+#      (deadline の strictly-after 解決による翌朝化を防ぐ)
 #   3. ~/pulse/.env を読み込む(launchd は環境変数を持たないため。
 #      DATABASE_URL は radio と共用)
 #   4. catchup-feed-ai の checkout(PULSE_AI_DIR)で uv run pulse-transcribe
@@ -39,7 +41,9 @@ log() { printf '%s transcribe-run: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >
 NIGHT_WINDOW_START="02:30"
 NIGHT_WINDOW_END="04:20"
 now_hm=$(date +%H:%M)
-if [ "$#" -eq 0 ] && [ ! -t 0 ]; then
+MANUAL=0
+if [ "$#" -gt 0 ] || [ -t 0 ]; then MANUAL=1; fi
+if [ "$MANUAL" -eq 0 ]; then
     if [[ "$now_hm" < "$NIGHT_WINDOW_START" || "$now_hm" > "$NIGHT_WINDOW_END" ]]; then
         log "outside the night window ($NIGHT_WINDOW_START-$NIGHT_WINDOW_END, now $now_hm): skipping, jobs carry over (§5.3)"
         exit 0
@@ -68,6 +72,22 @@ bridge_to_radio() {
     fi
 }
 trap bridge_to_radio EXIT
+# シグナル死での EXIT trap 発火はシェル実装依存(macOS bash 3.2 の実測では
+# 発火するが POSIX 未規定)。INT/TERM は明示的に exit へ変換して trap 経由を保証する。
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# --- 2b. 窓内の遅発ガード(worker は起動せず、ブリッジだけ残す) ---
+# worker の deadline は「今より後の次の HH:MM」に解決される(strictly after)。
+# 04:15 以降の発火では既定 04:15 が翌朝に解決され、キューが空でも丸1日
+# ポーリングし続ける。04:14 を過ぎた launchd 発火は worker を起動せず
+# 正常終了する — EXIT trap は登録済みなのでブリッジ(04:32 まで)は張られ、
+# radio は守られる。ジョブは翌夜へ持ち越し。
+DEADLINE_LAST_START="04:14"
+if [ "$MANUAL" -eq 0 ] && [[ "$now_hm" > "$DEADLINE_LAST_START" ]]; then
+    log "past $DEADLINE_LAST_START (now $now_hm): skipping the worker, holding the bridge only"
+    exit 0
+fi
 
 # --- 3. 環境と前提の検証(ここから先はどこで死んでもブリッジが残る) ---
 mkdir -p "$PULSE_HOME/logs"
