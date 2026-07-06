@@ -107,6 +107,80 @@ func TestRSSFetcher_Fetch_Atom(t *testing.T) {
 	}
 }
 
+// TestRSSFetcher_Fetch_Enclosures: Phase 2 §5.2 — podcast RSS の enclosure
+// (音声 URL)を FeedItem.EnclosureURL に載せる。audio/* を優先し video/*
+// にフォールバック。それ以外(image/* 等)や enclosure なしは空文字のまま
+// (呼び出し側が SkippedNoMedia としてスキップ)。
+func TestRSSFetcher_Fetch_Enclosures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rss := `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Test Podcast</title>
+    <link>https://example.com</link>
+    <description>Podcast</description>
+    <item>
+      <title>Ep 1: audio enclosure</title>
+      <link>https://example.com/ep1</link>
+      <enclosure url="https://cdn.example.com/ep1.mp3" length="123" type="audio/mpeg"/>
+    </item>
+    <item>
+      <title>Ep 2: image first, audio wins</title>
+      <link>https://example.com/ep2</link>
+      <enclosure url="https://cdn.example.com/ep2.jpg" length="10" type="image/jpeg"/>
+      <enclosure url="https://cdn.example.com/ep2.mp3" length="456" type="audio/mpeg"/>
+    </item>
+    <item>
+      <title>Ep 3: no enclosure</title>
+      <link>https://example.com/ep3</link>
+    </item>
+    <item>
+      <title>Ep 4: video enclosure only</title>
+      <link>https://example.com/ep4</link>
+      <enclosure url="https://cdn.example.com/ep4.mp4" length="789" type="video/mp4"/>
+    </item>
+    <item>
+      <title>Ep 5: image enclosure only</title>
+      <link>https://example.com/ep5</link>
+      <enclosure url="https://cdn.example.com/ep5.jpg" length="10" type="image/jpeg"/>
+    </item>
+  </channel>
+</rss>`
+		w.Header().Set("Content-Type", "application/rss+xml")
+		if _, err := w.Write([]byte(rss)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	fetcher := scraper.NewRSSFetcher(client)
+
+	items, err := fetcher.Fetch(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if len(items) != 5 {
+		t.Fatalf("items length = %d, want 5", len(items))
+	}
+
+	tests := []struct {
+		idx  int
+		want string
+	}{
+		{0, "https://cdn.example.com/ep1.mp3"},
+		{1, "https://cdn.example.com/ep2.mp3"}, // audio/* が image より優先
+		{2, ""},                                // enclosure なし → 空
+		{3, "https://cdn.example.com/ep4.mp4"}, // audio がなければ video/* にフォールバック
+		{4, ""},                                // image のみ → media なし(スキップ対象)
+	}
+	for _, tt := range tests {
+		if items[tt.idx].EnclosureURL != tt.want {
+			t.Errorf("items[%d].EnclosureURL = %q, want %q", tt.idx, items[tt.idx].EnclosureURL, tt.want)
+		}
+	}
+}
+
 func TestRSSFetcher_Fetch_EmptyFeed(t *testing.T) {
 	// 空のフィード
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

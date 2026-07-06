@@ -44,6 +44,9 @@ func (m *mockArticleRepo) CountArticles(_ context.Context) (int64, error) {
 }
 
 // Unused but required for interface
+func (m *mockArticleRepo) ListUnsummarized(_ context.Context, _ int) ([]*entity.Article, error) {
+	return nil, nil
+}
 func (m *mockArticleRepo) List(_ context.Context) ([]*entity.Article, error) {
 	return nil, nil
 }
@@ -332,5 +335,8 @@ func TestService_ListWithSourcePaginated_OffsetCalculation(t *testing.T) {
 }
 
 func (s *mockArticleRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
+}
+func (s *mockArticleRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
 	return nil
 }

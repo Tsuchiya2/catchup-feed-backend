@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  pulse transcribe worker 夜間バッチ(Phase 2 §3: 03:00 JST)。
+
+  - CHANGEME を自分のユーザー名に置換してから ~/Library/LaunchAgents/ に置く
+    (コマンドは deploy/ai.md 6章)。
+  - 夜間の時間割: 03:00 transcribe(deadline 04:15 で新規 claim 停止)
+    → 04:30 com.pulse.radio → 05:15 com.pulse.backup。deadline は worker の
+    CLI 引数の既定値(04:15、pulse-transcribe 側で定義)であり、radio の
+    枠を侵食しない(§3)。
+  - リトライ装置は意図的に付けない(KeepAlive なし)。失敗・不在の夜は
+    ジョブが jobs テーブルに残るだけで、翌夜に持ち越される(§5.3 縮退許容)。
+  - Mac がスリープ中に 03:00 を跨いだ場合、launchd は復帰時にまとめて
+    1回だけ発火するが、transcribe-run.sh の夜間窓ガードが受け流す
+    (02:30〜04:20 の外なら exit 0。窓内でも 04:14 を過ぎていたら
+    worker は起動せず、radio までのブリッジだけ残す = どちらも持ち越し)。
+    電源オフだった日はスキップ。
+  - 02:55 の自動ウェイクは pmset で別途登録する(ai.md 6章、ユーザー作業。
+    radio 用の 04:25 ウェイクの「置き換え」である点に注意 — pmset repeat は
+    ウェイク1本しか持てないため、04:30 までは transcribe-run.sh の
+    caffeinate ブリッジが Mac を起こしておく)。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pulse.transcribe</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/CHANGEME/pulse/bin/transcribe-run.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/CHANGEME/pulse/logs/transcribe.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/CHANGEME/pulse/logs/transcribe.err.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/CHANGEME/pulse</string>
+</dict>
+</plist>

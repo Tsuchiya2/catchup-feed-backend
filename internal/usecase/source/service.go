@@ -10,12 +10,14 @@ import (
 
 // CreateInput represents the input parameters for creating a new source.
 // Category drives the radio script corner assignment (§4) and is required;
-// Lang defaults to 'en' when empty.
+// Lang defaults to 'en' when empty. Kind selects the content pipeline
+// (Phase 2 §4: rss | youtube | podcast) and defaults to 'rss' when empty.
 type CreateInput struct {
 	Name     string
 	FeedURL  string
 	Category string
 	Lang     string
+	Kind     string
 }
 
 // UpdateInput represents the input parameters for updating an existing source.
@@ -26,6 +28,7 @@ type UpdateInput struct {
 	FeedURL  string
 	Category string
 	Lang     string
+	Kind     string
 	Active   *bool
 }
 
@@ -77,6 +80,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) error {
 		FeedURL:  in.FeedURL,
 		Category: in.Category,
 		Lang:     in.Lang,
+		Kind:     in.Kind,
 		Active:   true,
 	}
 	if err := src.Validate(); err != nil {
@@ -127,8 +131,14 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) error {
 	if in.Lang != "" {
 		src.Lang = in.Lang
 	}
+	if in.Kind != "" {
+		src.Kind = in.Kind
+	}
 	if in.Active != nil {
 		src.Active = *in.Active
+	}
+	if src.Kind != "" && !entity.ValidSourceKind(src.Kind) {
+		return &entity.ValidationError{Field: "kind", Message: "must be one of rss, youtube, podcast"}
 	}
 
 	if err := s.Repo.Update(ctx, src); err != nil {

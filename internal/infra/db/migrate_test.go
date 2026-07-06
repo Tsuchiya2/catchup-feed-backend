@@ -23,6 +23,11 @@ func expectFullMigration(mock sqlmock.Sqlmock) {
 		mock.ExpectExec("CREATE TABLE IF NOT EXISTS " + table + " ").
 			WillReturnResult(sqlmock.NewResult(0, 0))
 	}
+	// Phase 2 upgrade path: ALTER TABLE sources (kind) + DO block (CHECK).
+	mock.ExpectExec("ALTER TABLE sources ADD COLUMN IF NOT EXISTS kind").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("sources_kind_check").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	for range createIndexStatements {
 		mock.ExpectExec("CREATE INDEX IF NOT EXISTS").
 			WillReturnResult(sqlmock.NewResult(0, 0))
@@ -82,7 +87,27 @@ func TestMigrateUp_IndexError(t *testing.T) {
 		mock.ExpectExec("CREATE TABLE IF NOT EXISTS").
 			WillReturnResult(sqlmock.NewResult(0, 0))
 	}
+	for range alterTableStatements {
+		mock.ExpectExec("").
+			WillReturnResult(sqlmock.NewResult(0, 0))
+	}
 	mock.ExpectExec("CREATE INDEX IF NOT EXISTS").
+		WillReturnError(sql.ErrTxDone)
+
+	assert.Error(t, MigrateUp(db))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMigrateUp_AlterError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	for range wantTables {
+		mock.ExpectExec("CREATE TABLE IF NOT EXISTS").
+			WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+	mock.ExpectExec("ALTER TABLE sources ADD COLUMN IF NOT EXISTS kind").
 		WillReturnError(sql.ErrTxDone)
 
 	assert.Error(t, MigrateUp(db))
@@ -96,6 +121,10 @@ func TestMigrateUp_SeedError(t *testing.T) {
 
 	for range wantTables {
 		mock.ExpectExec("CREATE TABLE IF NOT EXISTS").
+			WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+	for range alterTableStatements {
+		mock.ExpectExec("").
 			WillReturnResult(sqlmock.NewResult(0, 0))
 	}
 	for range createIndexStatements {
@@ -128,6 +157,8 @@ func TestSchema_MatchesDesignDoc(t *testing.T) {
 		{"episodes store the mp3 path, not the blob (C-10)", "audio_path    text NOT NULL"},
 		{"sources carry the script corner category", "category      text NOT NULL"},
 		{"sources default lang to en", "lang          text NOT NULL DEFAULT 'en'"},
+		{"sources default kind to rss (Phase 2 §4)", "kind          text NOT NULL DEFAULT 'rss'"},
+		{"sources.kind constrained to rss|youtube|podcast", "CHECK (kind IN ('rss', 'youtube', 'podcast'))"},
 	}
 
 	for _, tt := range tests {

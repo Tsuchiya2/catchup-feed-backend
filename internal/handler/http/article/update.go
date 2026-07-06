@@ -23,9 +23,9 @@ type UpdateHandler struct{ Svc artUC.Service }
 // @Param        id path int true "記事ID"
 // @Param        article body UpdateRequest true "更新する記事情報"
 // @Success      204 "No Content"
-// @Failure      400 {string} string "Bad request - invalid input"
-// @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
-// @Failure      404 {string} string "Not found - article not found"
+// @Failure      400 {object} respond.ErrorResponse "Bad request - invalid input"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required - missing or invalid JWT token"
+// @Failure      404 {object} respond.ErrorResponse "Not found - article not found"
 // @Router       /articles/{id} [put]
 func (h UpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := pathutil.ExtractID(r.URL.Path, "/articles/")

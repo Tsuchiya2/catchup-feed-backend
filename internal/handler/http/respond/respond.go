@@ -10,6 +10,16 @@ import (
 	"strings"
 )
 
+// ErrorResponse documents the JSON error body written by Error / SafeError
+// / SafeErrorV2: {"error": "..."}. It exists for the swagger annotations
+// (@Failure ... {object} respond.ErrorResponse) so the generated spec
+// matches the actual wire format; the handlers themselves keep writing the
+// equivalent map. Note: /auth/token and the rate-limit middleware respond
+// with text/plain via http.Error and are annotated as {string} instead.
+type ErrorResponse struct {
+	Error string `json:"error" example:"invalid input"`
+}
+
 // JSON writes a JSON response with the given status code and data.
 func JSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")

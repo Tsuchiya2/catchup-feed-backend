@@ -136,14 +136,24 @@ func (c *Consumer) kinds() []string {
 	return slices.Sorted(maps.Keys(c.Handlers))
 }
 
-// Run consumes jobs until ctx is done. It first sweeps stale 'running'
-// rows back to pending: this worker is the queue's only consumer, so at
-// startup a running job can only be the orphan of a crashed predecessor
-// (§4 持ち越し課題). It always returns ctx.Err().
+// Run consumes jobs until ctx is done. A consumer without handlers is
+// rejected up front: empty kinds would make ClaimNext claim *every* kind —
+// including other consumers' pending jobs (e.g. 'transcribe' for the Mac
+// worker) — only to fail them terminally with "no handler registered".
+//
+// It first sweeps stale 'running' rows of its own kinds back to pending: a
+// running job of a kind this consumer handles can only be the orphan of a
+// crashed predecessor (§4 持ち越し課題). Other consumers' kinds are
+// deliberately left alone — their running rows are live, not stale.
+// Beyond the no-handlers guard it always returns ctx.Err().
 func (c *Consumer) Run(ctx context.Context) error {
 	logger := c.logger()
 
-	requeued, err := c.Jobs.RequeueRunning(ctx)
+	if len(c.Handlers) == 0 {
+		return errors.New("jobs: consumer has no registered handlers; refusing to run (empty kinds would claim every job kind)")
+	}
+
+	requeued, err := c.Jobs.RequeueRunning(ctx, c.kinds()...)
 	if err != nil {
 		// Non-fatal: the jobs themselves are still claimable next start.
 		logger.Error("jobs: stale running sweep failed", slog.Any("error", err))

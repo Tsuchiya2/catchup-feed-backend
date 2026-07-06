@@ -12,6 +12,7 @@ func TestSource_Validate(t *testing.T) {
 		source    Source
 		wantError string // empty = no error
 		wantLang  string
+		wantKind  string
 	}{
 		{
 			name: "valid source with explicit lang",
@@ -22,6 +23,7 @@ func TestSource_Validate(t *testing.T) {
 				Lang:     "ja",
 			},
 			wantLang: "ja",
+			wantKind: SourceKindRSS,
 		},
 		{
 			name: "empty lang defaults to en",
@@ -31,6 +33,39 @@ func TestSource_Validate(t *testing.T) {
 				Category: "dev",
 			},
 			wantLang: DefaultSourceLang,
+			wantKind: DefaultSourceKind,
+		},
+		{
+			name: "youtube kind is accepted",
+			source: Source{
+				Name:     "Some Channel",
+				FeedURL:  "https://www.youtube.com/feeds/videos.xml?channel_id=UC123",
+				Category: "dev",
+				Kind:     SourceKindYouTube,
+			},
+			wantLang: DefaultSourceLang,
+			wantKind: SourceKindYouTube,
+		},
+		{
+			name: "podcast kind is accepted",
+			source: Source{
+				Name:     "fukabori.fm",
+				FeedURL:  "https://example.com/podcast.rss",
+				Category: "dev",
+				Kind:     SourceKindPodcast,
+			},
+			wantLang: DefaultSourceLang,
+			wantKind: SourceKindPodcast,
+		},
+		{
+			name: "invalid kind is rejected",
+			source: Source{
+				Name:     "Golang Weekly",
+				FeedURL:  "https://example.com/feed.xml",
+				Category: "dev",
+				Kind:     "newsletter",
+			},
+			wantError: "kind",
 		},
 		{
 			name: "missing name",
@@ -71,6 +106,26 @@ func TestSource_Validate(t *testing.T) {
 			}
 			assert.NoError(t, err)
 			assert.Equal(t, tt.wantLang, tt.source.Lang)
+			assert.Equal(t, tt.wantKind, tt.source.Kind)
+		})
+	}
+}
+
+func TestValidSourceKind(t *testing.T) {
+	tests := []struct {
+		kind string
+		want bool
+	}{
+		{SourceKindRSS, true},
+		{SourceKindYouTube, true},
+		{SourceKindPodcast, true},
+		{"", false},
+		{"newsletter", false},
+		{"RSS", false}, // case-sensitive: CHECK 制約と同じ判定
+	}
+	for _, tt := range tests {
+		t.Run("kind="+tt.kind, func(t *testing.T) {
+			assert.Equal(t, tt.want, ValidSourceKind(tt.kind))
 		})
 	}
 }

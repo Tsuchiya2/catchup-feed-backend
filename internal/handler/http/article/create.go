@@ -21,8 +21,8 @@ type CreateHandler struct{ Svc artUC.Service }
 // @Produce      json
 // @Param        article body CreateRequest true "記事情報"
 // @Success      201 "Created"
-// @Failure      400 {string} string "Bad request - invalid input"
-// @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
+// @Failure      400 {object} respond.ErrorResponse "Bad request - invalid input"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required - missing or invalid JWT token"
 // @Router       /articles [post]
 func (h CreateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req CreateRequest

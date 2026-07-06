@@ -15,6 +15,17 @@ import (
 
 const (
 	summarizerParallelism = 5 // AI summarization parallelism (rate-limited)
+
+	// YouTubeDirectMaxPerCycle caps §5.1 stage-1 (Gemini URL 直接入力)
+	// attempts per crawl cycle. One video burns free-tier tokens on the
+	// order of a hundred text summaries, so the cap bounds a cycle's worst
+	// case (e.g. a freshly registered channel whose RSS is entirely new);
+	// the overflow takes the transcribe queue exactly like a stage-1
+	// failure. Right-sized against U-20 (2-3 channels total, typically ≤1
+	// new video/day each) with the hourly cron giving 24 cycles/day of
+	// headroom, and against the crawl budget (attempts are sequential,
+	// each bounded by the describer's own request timeout).
+	YouTubeDirectMaxPerCycle = 3
 )
 
 // FeedFetcher is an interface for fetching RSS/Atom feeds from a URL.
@@ -30,11 +41,14 @@ type ContentFetchConfig struct {
 }
 
 // FeedItem represents a single item from an RSS/Atom feed.
+// EnclosureURL carries the first media enclosure URL when the feed
+// provides one (podcast episodes, Phase 2 §5.2); empty otherwise.
 type FeedItem struct {
-	Title       string
-	URL         string
-	Content     string
-	PublishedAt time.Time
+	Title        string
+	URL          string
+	Content      string
+	PublishedAt  time.Time
+	EnclosureURL string
 }
 
 // Service provides feed crawling and article fetching use cases.
@@ -50,6 +64,30 @@ type Service struct {
 	FeedFetcher    FeedFetcher
 	ContentFetcher ContentFetcher     // Content enhancement for B-rated feeds
 	contentConfig  ContentFetchConfig // Configuration for content fetching behavior
+
+	// SummaryRepo is required only by SweepUnsummarized (Phase 2 §5.2b):
+	// the sweep upserts summaries for articles whose content arrived
+	// after insert (transcripts). Not part of NewService because the
+	// crawl path persists summaries atomically via CreateWithSummary.
+	SummaryRepo repository.SummaryRepository
+
+	// VideoDescriber, when non-nil, enables the §5.1 stage-1 attempt for
+	// kind='youtube' items before they fall back to the transcribe queue.
+	// nil (e.g. GEMINI_API_KEY unset) skips stage 1 entirely and every new
+	// video is enqueued for the Mac worker. Optional like SummaryRepo:
+	// not part of NewService.
+	VideoDescriber VideoDescriber
+}
+
+// VideoDescriber is the §5.1 stage-1 backend (Gemini に動画 URL を直接入力):
+// a single attempt to turn one public YouTube video URL into a detailed
+// transcript plus a Japanese summary in one request. Implemented by
+// summarizer.Gemini; Name() is persisted to summaries.provider. Only public
+// video URLs may be passed (C-12). Errors are never retried by the caller —
+// the transcribe queue (stage 2/3) is the recovery path (C-14).
+type VideoDescriber interface {
+	Name() string
+	DescribeVideo(ctx context.Context, videoURL string) (transcript, summary string, err error)
 }
 
 // Summarizer is an interface for AI-powered text summarization.
@@ -103,13 +141,24 @@ func NewService(
 }
 
 // CrawlStats contains statistics about a crawl operation.
+// TranscribeEnqueued counts articles inserted content-less with a pending
+// transcribe job (youtube/podcast sources, Phase 2 §5); those articles are
+// also counted in Inserted. SkippedNoMedia counts feed items dropped
+// because no media URL could be determined. YouTubeDirectAttempts counts
+// §5.1 stage-1 tries this cycle (capped at YouTubeDirectMaxPerCycle) and
+// YouTubeDirectSucceeded the ones persisted with a summary and no
+// transcribe job (also counted in Inserted, not in TranscribeEnqueued).
 type CrawlStats struct {
-	Sources        int
-	FeedItems      int64
-	Inserted       int64
-	Duplicated     int64
-	SummarizeError int64
-	Duration       time.Duration
+	Sources                int
+	FeedItems              int64
+	Inserted               int64
+	Duplicated             int64
+	SummarizeError         int64
+	TranscribeEnqueued     int64
+	SkippedNoMedia         int64
+	YouTubeDirectAttempts  int64
+	YouTubeDirectSucceeded int64
+	Duration               time.Duration
 }
 
 // CrawlAllSources fetches and processes articles from all active sources.
@@ -143,6 +192,10 @@ func (s *Service) CrawlAllSources(ctx context.Context) (*CrawlStats, error) {
 		slog.Int64("inserted", stats.Inserted),
 		slog.Int64("duplicated", stats.Duplicated),
 		slog.Int64("summarize_errors", stats.SummarizeError),
+		slog.Int64("transcribe_enqueued", stats.TranscribeEnqueued),
+		slog.Int64("skipped_no_media", stats.SkippedNoMedia),
+		slog.Int64("youtube_direct_attempts", stats.YouTubeDirectAttempts),
+		slog.Int64("youtube_direct_succeeded", stats.YouTubeDirectSucceeded),
 		slog.Duration("duration", stats.Duration),
 	)
 
@@ -175,9 +228,11 @@ func (s *Service) processSingleSource(ctx context.Context, src *entity.Source, s
 	}
 
 	// N+1問題解消: 事前に全URLをバッチで存在チェック
+	// (キーは articleURLForItem — articles.url に入る値と同じでないと
+	// dedupe が効かず、次サイクルで UNIQUE 制約に衝突する)
 	urls := make([]string, 0, len(feedItems))
 	for _, item := range feedItems {
-		urls = append(urls, item.URL)
+		urls = append(urls, articleURLForItem(src, item))
 	}
 	existsMap, err := s.ArticleRepo.ExistsByURLBatch(ctx, urls)
 	if err != nil {
@@ -192,8 +247,20 @@ func (s *Service) processSingleSource(ctx context.Context, src *entity.Source, s
 	beforeInserted := atomic.LoadInt64(&stats.Inserted)
 	beforeDuplicated := atomic.LoadInt64(&stats.Duplicated)
 
-	if err := s.processFeedItems(ctx, src, feedItems, existsMap, stats); err != nil {
-		return fmt.Errorf("process feed items: %w", err)
+	// kind 分岐 (Phase 2 §5): youtube/podcast share the gofeed new-item
+	// detection above but never touch go-readability or the summarizer —
+	// the article is stored content-less and a transcribe job carries the
+	// media URL to the Mac worker. Summarization happens only after the
+	// transcript fills content (§4: content が NULL のうちは要約対象外).
+	switch src.Kind {
+	case entity.SourceKindYouTube, entity.SourceKindPodcast:
+		if err := s.enqueueTranscribeItems(ctx, src, feedItems, existsMap, stats); err != nil {
+			return fmt.Errorf("enqueue transcribe items: %w", err)
+		}
+	default: // '' / 'rss': 既存挙動そのまま
+		if err := s.processFeedItems(ctx, src, feedItems, existsMap, stats); err != nil {
+			return fmt.Errorf("process feed items: %w", err)
+		}
 	}
 
 	sourceDuration := time.Since(sourceStart)
@@ -313,6 +380,179 @@ func (s *Service) processFeedItems(
 	}
 
 	return nil
+}
+
+// articleURLForItem resolves the value stored in articles.url for a feed
+// item. Podcast episodes may lack a <link> while still carrying a valid
+// enclosure (§5.2); falling back to the enclosure URL keeps the row's
+// unique key non-empty and stable, so dedupe works across crawl cycles.
+// Every dedupe lookup (ExistsByURLBatch keys, existsMap checks) MUST use
+// this same function — otherwise the next crawl re-inserts the episode and
+// hits the articles.url UNIQUE constraint.
+// For rss/youtube items this is the entry link unchanged (a youtube item
+// without a link cannot be identified and is skipped as SkippedNoMedia).
+func articleURLForItem(src *entity.Source, item FeedItem) string {
+	if item.URL == "" && src.Kind == entity.SourceKindPodcast {
+		return item.EnclosureURL
+	}
+	return item.URL
+}
+
+// enqueueTranscribeItems handles new items of youtube/podcast sources
+// (Phase 2 §5.1 / §5.2, Pi 側): each new item becomes an articles row with
+// content NULL plus a kind='transcribe' job, inserted atomically by the
+// repository — except youtube items that the §5.1 stage-1 describer handles
+// first (see describeVideoDirect). No parallelism: the DB writes are local
+// and the stage-1 API calls are the rate-limited resource (right-sizing;
+// attempts are capped per cycle anyway).
+//
+// Media URL resolution:
+//   - youtube: the entry link (動画 URL — YouTube channel RSS entries link
+//     to the watch page)
+//   - podcast: the feed enclosure audio URL; items without an enclosure
+//     are skipped with a log (§5.2: 無い項目はスキップしてログ)
+func (s *Service) enqueueTranscribeItems(
+	ctx context.Context,
+	src *entity.Source,
+	feedItems []FeedItem,
+	existsMap map[string]bool,
+	stats *CrawlStats,
+) error {
+	logger := slog.Default()
+
+	for _, item := range feedItems {
+		atomic.AddInt64(&stats.FeedItems, 1)
+
+		// articles.url に入る値(link 無し podcast は enclosure URL に
+		// フォールバック)。dedupe キーと INSERT 値を必ず一致させる:
+		// existsMap(ExistsByURLBatch)も同じ関数でキーを作っているので、
+		// 一度 INSERT したエピソードは次サイクルで Duplicated になる。
+		artURL := articleURLForItem(src, item)
+		if existsMap[artURL] {
+			atomic.AddInt64(&stats.Duplicated, 1)
+			continue
+		}
+
+		// §5.1 第1段: youtube のみ、Gemini に公開動画の URL を直接入力して
+		// 1回だけ試す。成功なら記事+要約が原子的に入り transcribe ジョブは
+		// 積まない。失敗はここで再試行せず既存の transcribe 経路へ落とす
+		// (C-14: 次段が回収する。dedupe により同一動画が翌サイクルで再び
+		// 第1段に来ることもない)。podcast は第1段を通らない(§5.2)。
+		// URL が空の item は動画を特定できないので第1段(Gemini 呼び出し
+		// +cap 1枠)を消費させず、下の SkippedNoMedia 経路へ直行させる。
+		if src.Kind == entity.SourceKindYouTube && s.VideoDescriber != nil && item.URL != "" {
+			if atomic.LoadInt64(&stats.YouTubeDirectAttempts) >= YouTubeDirectMaxPerCycle {
+				logger.Info("youtube direct cap reached for this cycle, deferring to transcribe queue",
+					slog.Int64("source_id", src.ID),
+					slog.String("url", item.URL),
+					slog.Int("cap", YouTubeDirectMaxPerCycle))
+			} else {
+				atomic.AddInt64(&stats.YouTubeDirectAttempts, 1)
+				handled, err := s.describeVideoDirect(ctx, src, item, stats)
+				if err != nil {
+					return err
+				}
+				if handled {
+					continue
+				}
+			}
+		}
+
+		mediaURL := item.URL
+		if src.Kind == entity.SourceKindPodcast {
+			mediaURL = item.EnclosureURL
+		}
+		if mediaURL == "" {
+			atomic.AddInt64(&stats.SkippedNoMedia, 1)
+			logger.Warn("no media URL for feed item, skipping",
+				slog.Int64("source_id", src.ID),
+				slog.String("source_kind", src.Kind),
+				slog.String("url", item.URL),
+				slog.String("title", item.Title))
+			continue
+		}
+
+		art := &entity.Article{
+			SourceID:    src.ID,
+			Title:       item.Title,
+			URL:         artURL,
+			Content:     "", // stored as NULL; the Mac transcribe worker fills it (§5)
+			PublishedAt: item.PublishedAt,
+			CrawledAt:   time.Now(),
+		}
+		if err := s.ArticleRepo.CreateWithTranscribeJob(ctx, art, mediaURL, src.Kind); err != nil {
+			return fmt.Errorf("create article with transcribe job in repository: %w", err)
+		}
+		atomic.AddInt64(&stats.Inserted, 1)
+		atomic.AddInt64(&stats.TranscribeEnqueued, 1)
+
+		logger.Info("article enqueued for transcription",
+			slog.Int64("article_id", art.ID),
+			slog.String("url", art.URL),
+			slog.String("source_kind", src.Kind),
+			slog.String("media_url", mediaURL))
+	}
+
+	return nil
+}
+
+// describeVideoDirect runs one §5.1 stage-1 attempt for a new youtube item.
+// Returns handled=true when the transcript + summary were persisted (no
+// transcribe job needed). A describer failure of any kind is not an error:
+// it logs a warning and returns handled=false so the caller falls back to
+// the transcribe queue — unless ctx itself is dead (shutdown / crawl
+// deadline), which aborts the crawl. Criticality is judged by ctx.Err()
+// directly, NOT errors.Is on the returned error: the describer applies its
+// own per-request timeout, so a quota/timeout failure can wrap
+// context.DeadlineExceeded while the crawl itself is fine (same reasoning
+// as processFeedItems). Database errors abort the crawl as everywhere else.
+func (s *Service) describeVideoDirect(ctx context.Context, src *entity.Source, item FeedItem, stats *CrawlStats) (bool, error) {
+	logger := slog.Default()
+
+	transcript, summary, err := s.VideoDescriber.DescribeVideo(ctx, item.URL)
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, err
+		}
+		logger.Warn("youtube direct description failed, falling back to transcribe queue",
+			slog.Int64("source_id", src.ID),
+			slog.String("url", item.URL),
+			slog.String("title", item.Title),
+			slog.Any("error", err))
+		return false, nil
+	}
+
+	provider := s.VideoDescriber.Name()
+	if provider == "" {
+		provider = entity.SummaryProviderUnknown
+	}
+	// Persist transcript + summary atomically on the existing crawl path
+	// (CreateWithSummary): the transcript goes to articles.content — same
+	// slot the Mac transcribe worker would fill — so the rest of the
+	// pipeline (選定 → 台本 → 放送) is untouched, and Phase 3 keeps the
+	// source text (§5.1: 要約のみのショートカットは作らない).
+	art := &entity.Article{
+		SourceID:    src.ID,
+		Title:       item.Title,
+		URL:         item.URL,
+		Content:     transcript,
+		Summary:     summary, // read-only join field; persisted via summaries row below
+		PublishedAt: item.PublishedAt,
+		CrawledAt:   time.Now(),
+	}
+	sum := &entity.Summary{Body: summary, Provider: provider}
+	if err := s.ArticleRepo.CreateWithSummary(ctx, art, sum); err != nil {
+		return false, fmt.Errorf("create article with summary in repository: %w", err)
+	}
+	atomic.AddInt64(&stats.Inserted, 1)
+	atomic.AddInt64(&stats.YouTubeDirectSucceeded, 1)
+
+	logger.Info("youtube video described directly",
+		slog.Int64("article_id", art.ID),
+		slog.String("url", art.URL),
+		slog.String("summary_provider", provider),
+		slog.Int("transcript_length", len(transcript)))
+	return true, nil
 }
 
 // summarize runs the configured summarizer, additionally reporting the

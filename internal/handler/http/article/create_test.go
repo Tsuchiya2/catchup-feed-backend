@@ -25,6 +25,9 @@ func (s *stubCreateRepo) Create(_ context.Context, a *entity.Article) error {
 }
 
 // 以下は未使用だが、インターフェース満たすために実装
+func (s *stubCreateRepo) ListUnsummarized(_ context.Context, _ int) ([]*entity.Article, error) {
+	return nil, nil
+}
 func (s *stubCreateRepo) List(_ context.Context) ([]*entity.Article, error) {
 	return nil, nil
 }
@@ -186,5 +189,8 @@ func TestCreateHandler_ServiceError(t *testing.T) {
 }
 
 func (s *stubCreateRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
+}
+func (s *stubCreateRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
 	return nil
 }

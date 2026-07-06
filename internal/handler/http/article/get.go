@@ -19,10 +19,10 @@ type GetHandler struct{ Svc artUC.Service }
 // @Produce      json
 // @Param        id path int true "記事ID"
 // @Success      200 {object} DTO "記事詳細"
-// @Failure      400 {string} string "Bad request - invalid article ID"
-// @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
-// @Failure      404 {string} string "Not found - article not found"
-// @Failure      500 {string} string "サーバーエラー"
+// @Failure      400 {object} respond.ErrorResponse "Bad request - invalid article ID"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required - missing or invalid JWT token"
+// @Failure      404 {object} respond.ErrorResponse "Not found - article not found"
+// @Failure      500 {object} respond.ErrorResponse "サーバーエラー"
 // @Router       /articles/{id} [get]
 func (h GetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := pathutil.ExtractID(r.URL.Path, "/articles/")

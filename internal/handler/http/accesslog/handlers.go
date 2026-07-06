@@ -74,9 +74,9 @@ type ListHandler struct{ Svc alUC.Service }
 // @Param        subscriber_id query int false "友人IDで絞り込み"
 // @Param        limit query int false "取得件数(デフォルト100、最大1000)"
 // @Success      200 {array} DTO "アクセスログ(新しい順)"
-// @Failure      400 {string} string "Bad request - invalid query parameter"
-// @Failure      401 {string} string "Authentication required"
-// @Failure      500 {string} string "サーバーエラー"
+// @Failure      400 {object} respond.ErrorResponse "Bad request - invalid query parameter"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required"
+// @Failure      500 {object} respond.ErrorResponse "サーバーエラー"
 // @Router       /access-logs [get]
 func (h ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -122,8 +122,8 @@ type SummaryHandler struct{ Svc alUC.Service }
 // @Security     BearerAuth
 // @Produce      json
 // @Success      200 {array} SummaryDTO "友人単位の集計"
-// @Failure      401 {string} string "Authentication required"
-// @Failure      500 {string} string "サーバーエラー"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required"
+// @Failure      500 {object} respond.ErrorResponse "サーバーエラー"
 // @Router       /access-logs/summary [get]
 func (h SummaryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	summaries, err := h.Svc.Summarize(r.Context())

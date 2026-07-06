@@ -99,8 +99,16 @@ type geminiContent struct {
 	Parts []geminiPart `json:"parts"`
 }
 
+// geminiPart is a single content part: text, or a media reference.
+// FileData with a public YouTube watch URL is the §5.1 stage-1 video input
+// (the API ingests the video server-side; nothing is downloaded here).
 type geminiPart struct {
-	Text string `json:"text"`
+	Text     string          `json:"text,omitempty"`
+	FileData *geminiFileData `json:"file_data,omitempty"`
+}
+
+type geminiFileData struct {
+	FileURI string `json:"file_uri"`
 }
 
 // geminiResponse is the minimal generateContent response body.
@@ -122,9 +130,15 @@ func (g *Gemini) Summarize(ctx context.Context, text string) (string, error) {
 func (g *Gemini) Generate(ctx context.Context, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, g.config.Options.Timeout)
 	defer cancel()
+	return g.generate(ctx, []geminiPart{{Text: prompt}})
+}
 
+// generate posts one generateContent call with the given parts and returns
+// the concatenated candidate text. The caller owns the deadline (text and
+// video requests need very different budgets).
+func (g *Gemini) generate(ctx context.Context, parts []geminiPart) (string, error) {
 	reqBody := geminiRequest{
-		Contents: []geminiContent{{Parts: []geminiPart{{Text: prompt}}}},
+		Contents: []geminiContent{{Parts: parts}},
 		GenerationConfig: &geminiGenerationConfig{
 			ThinkingConfig: &geminiThinkingConfig{ThinkingBudget: 0},
 		},

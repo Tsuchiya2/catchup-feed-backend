@@ -47,6 +47,9 @@ func (s *stubDeleteRepo) Create(_ context.Context, _ *entity.Article) error {
 func (s *stubDeleteRepo) Update(_ context.Context, _ *entity.Article) error {
 	return nil
 }
+func (s *stubDeleteRepo) ListUnsummarized(_ context.Context, _ int) ([]*entity.Article, error) {
+	return nil, nil
+}
 func (s *stubDeleteRepo) ExistsByURL(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
@@ -150,5 +153,8 @@ func TestDeleteHandler_DeleteError(t *testing.T) {
 }
 
 func (s *stubDeleteRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
+}
+func (s *stubDeleteRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
 	return nil
 }

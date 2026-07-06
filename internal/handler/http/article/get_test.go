@@ -56,6 +56,9 @@ func (s *stubGetRepo) Update(_ context.Context, _ *entity.Article) error {
 func (s *stubGetRepo) Delete(_ context.Context, _ int64) error {
 	return nil
 }
+func (s *stubGetRepo) ListUnsummarized(_ context.Context, _ int) ([]*entity.Article, error) {
+	return nil, nil
+}
 func (s *stubGetRepo) ExistsByURL(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
@@ -338,5 +341,8 @@ func TestGetHandler_SQLNoRowsError(t *testing.T) {
 }
 
 func (s *stubGetRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
+}
+func (s *stubGetRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
 	return nil
 }

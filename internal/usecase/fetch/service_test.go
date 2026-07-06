@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/repository"
 	fetchUC "catchup-feed/internal/usecase/fetch"
@@ -47,17 +49,28 @@ func (s *stubSourceRepo) SearchWithFilters(_ context.Context, _ []string, _ repo
 	return nil, nil
 }
 
+// transcribeJob は CreateWithTranscribeJob で記事と同時に enqueue された
+// transcribe ジョブの記録（Phase 2 §5 の payload 検証用）。
+type transcribeJob struct {
+	ArticleID  int64
+	MediaURL   string
+	SourceKind string
+}
+
 // stubArticleRepo はArticleRepositoryのモック実装。
 // summaries は CreateWithSummary で記事と同時に永続化された要約を
 // article_id ごとに記録する（summaries.provider の検証用）。
+// transcribeJobs は CreateWithTranscribeJob の enqueue 記録。
 type stubArticleRepo struct {
-	mu        sync.Mutex
-	articles  []*entity.Article
-	summaries map[int64]*entity.Summary
-	existsMap map[string]bool
-	existsErr error
-	createErr error
-	nextID    int64
+	mu                  sync.Mutex
+	articles            []*entity.Article
+	summaries           map[int64]*entity.Summary
+	transcribeJobs      []transcribeJob
+	existsMap           map[string]bool
+	existsErr           error
+	createErr           error
+	listUnsummarizedErr error
+	nextID              int64
 }
 
 func (s *stubArticleRepo) ExistsByURLBatch(_ context.Context, urls []string) (map[string]bool, error) {
@@ -100,6 +113,47 @@ func (s *stubArticleRepo) CreateWithSummary(_ context.Context, a *entity.Article
 	}
 	s.summaries[a.ID] = sum
 	return nil
+}
+
+func (s *stubArticleRepo) CreateWithTranscribeJob(_ context.Context, a *entity.Article, mediaURL, sourceKind string) error {
+	if s.createErr != nil {
+		return s.createErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	a.ID = s.nextID
+	s.articles = append(s.articles, a)
+	s.transcribeJobs = append(s.transcribeJobs, transcribeJob{
+		ArticleID:  a.ID,
+		MediaURL:   mediaURL,
+		SourceKind: sourceKind,
+	})
+	return nil
+}
+
+// ListUnsummarized returns articles with content but no recorded summary
+// (掃き取りパス §5.2b の対象抽出をメモリ上で再現).
+func (s *stubArticleRepo) ListUnsummarized(_ context.Context, limit int) ([]*entity.Article, error) {
+	if s.listUnsummarizedErr != nil {
+		return nil, s.listUnsummarizedErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*entity.Article
+	for _, a := range s.articles {
+		if a.Content == "" {
+			continue
+		}
+		if _, ok := s.summaries[a.ID]; ok {
+			continue
+		}
+		out = append(out, a)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // 以下は未使用だが、インターフェース満たすために実装
@@ -648,6 +702,242 @@ func TestService_CrawlAllSources_ListActiveError(t *testing.T) {
 	// エラーメッセージに"list active sources"が含まれることを確認
 	if err.Error() != "list active sources: database error" {
 		t.Errorf("error message = %q, want 'list active sources: database error'", err.Error())
+	}
+}
+
+/* ───────── Phase 2 §5: youtube / podcast の kind 分岐 ───────── */
+
+// failingSummarizer panics if called: youtube/podcast items must never
+// reach the summarizer (content NULL のうちは要約対象外, Phase 2 §4).
+type failingSummarizer struct{ t *testing.T }
+
+func (s *failingSummarizer) Summarize(_ context.Context, _ string) (string, error) {
+	s.t.Error("summarizer must not be called for youtube/podcast sources")
+	return "", errors.New("unexpected call")
+}
+
+// failingContentFetcher fails the test if called: youtube/podcast items
+// must never reach go-readability (Phase 2 §5).
+type failingContentFetcher struct{ t *testing.T }
+
+func (f *failingContentFetcher) FetchContent(_ context.Context, _ string) (string, error) {
+	f.t.Error("content fetcher must not be called for youtube/podcast sources")
+	return "", errors.New("unexpected call")
+}
+
+func TestService_CrawlAllSources_TranscribeKinds(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name           string
+		kind           string
+		items          []fetchUC.FeedItem
+		existsMap      map[string]bool
+		wantInserted   int64
+		wantEnqueued   int64
+		wantSkipped    int64
+		wantDuplicated int64
+		wantJobs       []transcribeJob
+		// wantArticleURLs は保存された articles.url の期待値(挿入順)。
+		// nil なら検証しない。
+		wantArticleURLs []string
+	}{
+		{
+			name: "youtube: media_url is the video URL",
+			kind: entity.SourceKindYouTube,
+			items: []fetchUC.FeedItem{
+				{Title: "Video 1", URL: "https://www.youtube.com/watch?v=abc", PublishedAt: now},
+			},
+			wantInserted: 1,
+			wantEnqueued: 1,
+			wantJobs: []transcribeJob{
+				{ArticleID: 1, MediaURL: "https://www.youtube.com/watch?v=abc", SourceKind: entity.SourceKindYouTube},
+			},
+		},
+		{
+			name: "podcast: media_url is the enclosure URL",
+			kind: entity.SourceKindPodcast,
+			items: []fetchUC.FeedItem{
+				{Title: "Ep 1", URL: "https://example.com/ep1", EnclosureURL: "https://cdn.example.com/ep1.mp3", PublishedAt: now},
+			},
+			wantInserted: 1,
+			wantEnqueued: 1,
+			wantJobs: []transcribeJob{
+				{ArticleID: 1, MediaURL: "https://cdn.example.com/ep1.mp3", SourceKind: entity.SourceKindPodcast},
+			},
+		},
+		{
+			name: "podcast: items without enclosure are skipped with log (§5.2)",
+			kind: entity.SourceKindPodcast,
+			items: []fetchUC.FeedItem{
+				{Title: "No enclosure", URL: "https://example.com/ep1", PublishedAt: now},
+				{Title: "Ep 2", URL: "https://example.com/ep2", EnclosureURL: "https://cdn.example.com/ep2.mp3", PublishedAt: now},
+			},
+			wantInserted: 1,
+			wantEnqueued: 1,
+			wantSkipped:  1,
+			wantJobs: []transcribeJob{
+				{ArticleID: 1, MediaURL: "https://cdn.example.com/ep2.mp3", SourceKind: entity.SourceKindPodcast},
+			},
+		},
+		{
+			name: "duplicates are not re-enqueued",
+			kind: entity.SourceKindYouTube,
+			items: []fetchUC.FeedItem{
+				{Title: "Known", URL: "https://www.youtube.com/watch?v=known", PublishedAt: now},
+			},
+			existsMap:      map[string]bool{"https://www.youtube.com/watch?v=known": true},
+			wantDuplicated: 1,
+		},
+		{
+			// CodeRabbit 指摘(PR #77): <link> なし podcast エピソードで
+			// articles.url が空のまま INSERT されないこと。enclosure URL に
+			// フォールバックする。
+			name: "podcast: link なしは enclosure URL を articles.url に使う",
+			kind: entity.SourceKindPodcast,
+			items: []fetchUC.FeedItem{
+				{Title: "No link", URL: "", EnclosureURL: "https://cdn.example.com/nolink.mp3", PublishedAt: now},
+			},
+			wantInserted: 1,
+			wantEnqueued: 1,
+			wantJobs: []transcribeJob{
+				{ArticleID: 1, MediaURL: "https://cdn.example.com/nolink.mp3", SourceKind: entity.SourceKindPodcast},
+			},
+			wantArticleURLs: []string{"https://cdn.example.com/nolink.mp3"},
+		},
+		{
+			// 不変条件: フォールバック後の URL が dedupe キーにもなる。
+			// 前サイクルで enclosure URL として INSERT 済みの link なし
+			// エピソードは、次サイクルで Duplicated になり再 INSERT
+			// (= articles.url UNIQUE 制約違反)を起こさない。
+			name: "podcast: link なしの既存エピソードは次サイクルで dedupe される",
+			kind: entity.SourceKindPodcast,
+			items: []fetchUC.FeedItem{
+				{Title: "No link", URL: "", EnclosureURL: "https://cdn.example.com/nolink.mp3", PublishedAt: now},
+			},
+			existsMap:      map[string]bool{"https://cdn.example.com/nolink.mp3": true},
+			wantDuplicated: 1,
+		},
+		{
+			// link も enclosure も無い podcast item は従来どおりスキップ
+			// (フォールバックしても空のまま → SkippedNoMedia)。
+			name: "podcast: link も enclosure も無い item はスキップ",
+			kind: entity.SourceKindPodcast,
+			items: []fetchUC.FeedItem{
+				{Title: "Nothing", URL: "", EnclosureURL: "", PublishedAt: now},
+			},
+			wantSkipped: 1,
+		},
+		{
+			// youtube は URL 空なら従来どおり SkippedNoMedia(enclosure への
+			// フォールバックは podcast 限定であることの確認)。
+			name: "youtube: URL 空は enclosure があっても SkippedNoMedia",
+			kind: entity.SourceKindYouTube,
+			items: []fetchUC.FeedItem{
+				{Title: "No URL", URL: "", EnclosureURL: "https://cdn.example.com/should-not-be-used.mp3", PublishedAt: now},
+			},
+			wantSkipped: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srcRepo := &stubSourceRepo{
+				sources: []*entity.Source{
+					{ID: 7, FeedURL: "https://example.com/feed", Kind: tt.kind, Active: true},
+				},
+			}
+			artRepo := &stubArticleRepo{existsMap: tt.existsMap}
+			fetcher := &stubFeedFetcher{items: tt.items}
+
+			svc := fetchUC.NewService(
+				srcRepo,
+				artRepo,
+				&failingSummarizer{t: t},
+				fetcher,
+				&failingContentFetcher{t: t},
+				fetchUC.ContentFetchConfig{Parallelism: 10, Threshold: 1500},
+			)
+
+			stats, err := svc.CrawlAllSources(context.Background())
+			if err != nil {
+				t.Fatalf("CrawlAllSources() error = %v", err)
+			}
+
+			if stats.Inserted != tt.wantInserted {
+				t.Errorf("Inserted = %d, want %d", stats.Inserted, tt.wantInserted)
+			}
+			if stats.TranscribeEnqueued != tt.wantEnqueued {
+				t.Errorf("TranscribeEnqueued = %d, want %d", stats.TranscribeEnqueued, tt.wantEnqueued)
+			}
+			if stats.SkippedNoMedia != tt.wantSkipped {
+				t.Errorf("SkippedNoMedia = %d, want %d", stats.SkippedNoMedia, tt.wantSkipped)
+			}
+			if stats.Duplicated != tt.wantDuplicated {
+				t.Errorf("Duplicated = %d, want %d", stats.Duplicated, tt.wantDuplicated)
+			}
+			if stats.SummarizeError != 0 {
+				t.Errorf("SummarizeError = %d, want 0", stats.SummarizeError)
+			}
+
+			// 記事は content 空(=NULL)・要約なしで保存される。
+			// articles.url は必ず非空(UNIQUE 制約のキー。link なし podcast
+			// は enclosure URL にフォールバックしている)
+			for _, art := range artRepo.articles {
+				if art.Content != "" {
+					t.Errorf("article content = %q, want empty (content NULL until transcribed)", art.Content)
+				}
+				if art.URL == "" {
+					t.Errorf("article %q has empty URL, want non-empty (fallback to media URL)", art.Title)
+				}
+			}
+			if tt.wantArticleURLs != nil {
+				gotURLs := make([]string, 0, len(artRepo.articles))
+				for _, art := range artRepo.articles {
+					gotURLs = append(gotURLs, art.URL)
+				}
+				assert.Equal(t, tt.wantArticleURLs, gotURLs, "articles.url")
+			}
+			if len(artRepo.summaries) != 0 {
+				t.Errorf("persisted summaries = %d, want 0", len(artRepo.summaries))
+			}
+
+			if len(artRepo.transcribeJobs) != len(tt.wantJobs) {
+				t.Fatalf("transcribe jobs = %d, want %d", len(artRepo.transcribeJobs), len(tt.wantJobs))
+			}
+			for i, want := range tt.wantJobs {
+				got := artRepo.transcribeJobs[i]
+				if got != want {
+					t.Errorf("transcribe job[%d] = %+v, want %+v", i, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestService_CrawlAllSources_TranscribeDBError: DB エラーはクロール中断
+// (既存 rss パスの CreateWithSummary エラーと同じ扱い)。
+func TestService_CrawlAllSources_TranscribeDBError(t *testing.T) {
+	srcRepo := &stubSourceRepo{
+		sources: []*entity.Source{
+			{ID: 7, FeedURL: "https://example.com/feed", Kind: entity.SourceKindYouTube, Active: true},
+		},
+	}
+	artRepo := &stubArticleRepo{createErr: errors.New("database down")}
+	fetcher := &stubFeedFetcher{
+		items: []fetchUC.FeedItem{
+			{Title: "Video", URL: "https://www.youtube.com/watch?v=abc", PublishedAt: time.Now()},
+		},
+	}
+
+	svc := fetchUC.NewService(
+		srcRepo, artRepo, &stubSummarizer{}, fetcher, nil,
+		fetchUC.ContentFetchConfig{Parallelism: 10, Threshold: 1500},
+	)
+
+	_, err := svc.CrawlAllSources(context.Background())
+	if err == nil {
+		t.Fatal("CrawlAllSources() error = nil, want error")
 	}
 }
 

@@ -17,9 +17,9 @@ type DeleteHandler struct{ Svc artUC.Service }
 // @Security     BearerAuth
 // @Param        id path int true "記事ID"
 // @Success      204 "No Content"
-// @Failure      400 {string} string "Bad request - invalid ID"
-// @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
-// @Failure      500 {string} string "サーバーエラー"
+// @Failure      400 {object} respond.ErrorResponse "Bad request - invalid ID"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required - missing or invalid JWT token"
+// @Failure      500 {object} respond.ErrorResponse "サーバーエラー"
 // @Router       /articles/{id} [delete]
 func (h DeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := pathutil.ExtractID(r.URL.Path, "/articles/")

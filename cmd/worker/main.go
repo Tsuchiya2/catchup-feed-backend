@@ -198,7 +198,7 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 		Threshold:   contentFetchConfig.Threshold,
 	}
 
-	return fetchUC.NewService(
+	svc := fetchUC.NewService(
 		srcRepo,
 		artRepo,
 		sum,
@@ -206,6 +206,19 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 		contentFetcher,
 		fetchConfig,
 	)
+	// §5.2b: the hourly sweep upserts summaries for articles whose content
+	// arrived after insert (Mac transcribe worker), so it needs the
+	// summaries repository the atomic crawl path does not.
+	svc.SummaryRepo = pgRepo.NewSummaryRepo(database)
+
+	// §5.1 第1段: kind='youtube' の新着に対する Gemini URL 直接入力。
+	// GEMINI_API_KEY 未設定なら nil のまま = 第1段スキップで全件が
+	// transcribe 経路(Mac の第2段・第3段)へ。nil の具象型を interface
+	// フィールドへ直接代入しない(non-nil interface になるため)。
+	if vd := summarizer.NewVideoDescriberFromEnv(logger); vd != nil {
+		svc.VideoDescriber = vd
+	}
+	return svc
 }
 
 // createSummarizer builds the Gemini -> Groq -> Ollama fallback chain from
@@ -239,6 +252,18 @@ func createHTTPClient() *http.Client {
 	}
 }
 
+// cronSlogLogger adapts slog to the robfig/cron Logger interface so chain
+// decorators (SkipIfStillRunning) log through the worker's JSON logger.
+type cronSlogLogger struct{ logger *slog.Logger }
+
+func (l cronSlogLogger) Info(msg string, keysAndValues ...any) {
+	l.logger.Info("cron: "+msg, slog.Any("details", keysAndValues))
+}
+
+func (l cronSlogLogger) Error(err error, msg string, keysAndValues ...any) {
+	l.logger.Error("cron: "+msg, slog.Any("error", err), slog.Any("details", keysAndValues))
+}
+
 // startCronWorker starts the cron scheduler (crawl + daily cleanup
 // enqueue) and blocks until ctx is done.
 func startCronWorker(ctx context.Context, logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.WorkerConfig, healthServer *workerPkg.HealthServer, jobQueue repository.JobRepository) {
@@ -248,10 +273,21 @@ func startCronWorker(ctx context.Context, logger *slog.Logger, svc fetchUC.Servi
 		logger.Error("invalid timezone, using UTC", slog.String("timezone", cfg.Timezone), slog.Any("error", err))
 		loc = time.UTC
 	}
-	c := cron.New(cron.WithLocation(loc))
+	// SkipIfStillRunning: crawl+sweep は逐次で最悪 CrawlTimeout×2(既定60分)
+	// まで走り得るため、前回実行が毎時発火と接触したら重ねずスキップする
+	// (次の毎時発火が回収する、縮退許容)。スキップはログで観測できる。
+	c := cron.New(
+		cron.WithLocation(loc),
+		cron.WithChain(cron.SkipIfStillRunning(cronSlogLogger{logger: logger})),
+	)
 
 	_, err = c.AddFunc(cfg.CronSchedule, func() {
+		// Crawl first, then sweep (§5.2b: クロールの後に掃き取り). The sweep
+		// runs even when the crawl errored: its targets (transcripts filled
+		// in by the Mac worker overnight) do not depend on this cycle's
+		// crawl succeeding.
 		runCrawlJob(logger, svc, cfg)
+		runSweepJob(logger, svc, cfg)
 	})
 	if err != nil {
 		logger.Error("failed to add cron job", slog.Any("error", err))
@@ -311,6 +347,36 @@ func runCrawlJob(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.Worker
 		slog.Int64("inserted", stats.Inserted),
 		slog.Int64("duplicated", stats.Duplicated),
 		slog.Int64("summarize_errors", stats.SummarizeError),
+		slog.Int64("youtube_direct_attempts", stats.YouTubeDirectAttempts),
+		slog.Int64("youtube_direct_succeeded", stats.YouTubeDirectSucceeded),
+		slog.Duration("duration", stats.Duration),
+	)
+}
+
+// runSweepJob executes the §5.2b summary sweep: summarize articles whose
+// content was filled in after insert (transcribe path). Failed articles
+// are simply left in place — the next hourly run retries them (縮退許容,
+// no jobs-table bookkeeping).
+func runSweepJob(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.WorkerConfig) {
+	startTime := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.CrawlTimeout)
+	defer cancel()
+
+	stats, err := svc.SweepUnsummarized(ctx)
+	if err != nil {
+		logger.Error("summary sweep failed",
+			slog.Any("error", hhttp.SanitizeError(err)),
+			slog.Duration("duration", time.Since(startTime)))
+		return
+	}
+	if stats.Candidates == 0 {
+		return // the common case: nothing transcribed since last cycle
+	}
+	logger.Info("summary sweep completed",
+		slog.Int("candidates", stats.Candidates),
+		slog.Int64("summarized", stats.Summarized),
+		slog.Int64("failed", stats.Failed),
+		slog.Bool("limit_hit", stats.LimitHit),
 		slog.Duration("duration", stats.Duration),
 	)
 }

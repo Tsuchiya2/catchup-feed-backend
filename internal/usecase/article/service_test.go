@@ -75,6 +75,9 @@ func (s *stubRepo) Delete(_ context.Context, id int64) error {
 }
 
 // ExistsByURL checks if any article exists with the given URL.
+func (s *stubRepo) ListUnsummarized(_ context.Context, _ int) ([]*entity.Article, error) {
+	return nil, nil
+}
 func (s *stubRepo) ExistsByURL(_ context.Context, url string) (bool, error) {
 	if s.err != nil {
 		return false, s.err
@@ -1360,5 +1363,8 @@ func TestService_SearchWithFiltersPaginated_PaginationCalculation(t *testing.T) 
 }
 
 func (s *stubRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
+	return nil
+}
+func (s *stubRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
 	return nil
 }

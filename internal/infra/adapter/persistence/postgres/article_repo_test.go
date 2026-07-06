@@ -406,6 +406,58 @@ func TestArticleRepo_CreateWithSummary_DefaultsProvider(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestArticleRepo_CreateWithTranscribeJob pins the Phase 2 §5 invariant:
+// the content-less article and its transcribe job land in one transaction,
+// and the payload carries {article_id, media_url, source_kind} — the
+// contract the Mac transcribe worker reads.
+func TestArticleRepo_CreateWithTranscribeJob(t *testing.T) {
+	repo, mock, closeFn := newArticleRepo(t)
+	defer closeFn()
+
+	now := time.Now()
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO articles")).
+		WithArgs(int64(2), "Ep 1", "https://example.com/ep1",
+			nil, // content is stored as NULL until transcribed
+			now, now).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(42)))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO jobs")).
+		WithArgs(entity.JobKindTranscribe,
+			[]byte(`{"article_id":42,"media_url":"https://cdn.example.com/ep1.mp3","source_kind":"podcast"}`)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	art := &entity.Article{
+		SourceID: 2, Title: "Ep 1", URL: "https://example.com/ep1",
+		PublishedAt: now, CrawledAt: now,
+	}
+	require.NoError(t, repo.CreateWithTranscribeJob(context.Background(),
+		art, "https://cdn.example.com/ep1.mp3", entity.SourceKindPodcast))
+	assert.Equal(t, int64(42), art.ID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestArticleRepo_CreateWithTranscribeJob_JobErrorRollsBack: a job insert
+// failure must roll the article back — otherwise a content-less article
+// would exist with no transcribe job to ever fill it (stuck row).
+func TestArticleRepo_CreateWithTranscribeJob_JobErrorRollsBack(t *testing.T) {
+	repo, mock, closeFn := newArticleRepo(t)
+	defer closeFn()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO articles")).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(42)))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO jobs")).
+		WillReturnError(errors.New("connection reset"))
+	mock.ExpectRollback()
+
+	err := repo.CreateWithTranscribeJob(context.Background(),
+		&entity.Article{SourceID: 2, Title: "t", URL: "https://u", CrawledAt: time.Now()},
+		"https://www.youtube.com/watch?v=abc", entity.SourceKindYouTube)
+	assert.Error(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestArticleRepo_Create_DatabaseError(t *testing.T) {
 	repo, mock, closeFn := newArticleRepo(t)
 	defer closeFn()
@@ -586,4 +638,63 @@ func TestArticleRepo_GetWithSource_NotFound(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, article)
 	assert.Empty(t, sourceName)
+}
+
+/* ─────────────────── ListUnsummarized (Phase 2 §5.2b) ─────────────────── */
+
+func TestArticleRepo_ListUnsummarized(t *testing.T) {
+	now := time.Date(2026, 7, 6, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name    string
+		rows    *sqlmock.Rows
+		queryEr error
+		wantLen int
+		wantErr bool
+	}{
+		{
+			name: "returns content-filled articles without summaries",
+			rows: sqlmock.NewRows(articleCols).
+				AddRow(int64(1), int64(2), "transcribed", "https://u1", "transcript text", "", now, now).
+				AddRow(int64(3), int64(2), "another", "https://u2", "more text", "", nil, now),
+			wantLen: 2,
+		},
+		{
+			name:    "no candidates returns empty slice",
+			rows:    sqlmock.NewRows(articleCols),
+			wantLen: 0,
+		},
+		{
+			name:    "database error",
+			queryEr: errors.New("db down"),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, mock, closeFn := newArticleRepo(t)
+			defer closeFn()
+
+			// The WHERE clause is the §5.2b target definition: content
+			// present AND no summaries row (via the shared LEFT JOIN).
+			exp := mock.ExpectQuery(regexp.QuoteMeta(
+				"WHERE a.content IS NOT NULL AND a.content <> ''\n  AND sm.article_id IS NULL\nORDER BY a.id\nLIMIT $1")).
+				WithArgs(50)
+			if tt.queryEr != nil {
+				exp.WillReturnError(tt.queryEr)
+			} else {
+				exp.WillReturnRows(tt.rows)
+			}
+
+			got, err := repo.ListUnsummarized(context.Background(), 50)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Len(t, got, tt.wantLen)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
 }
