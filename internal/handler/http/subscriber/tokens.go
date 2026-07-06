@@ -23,10 +23,10 @@ type IssueTokenHandler struct {
 // @Produce      json
 // @Param        id path int true "友人ID"
 // @Success      201 {object} IssuedTokenDTO "発行されたトークン(平文と購読 URL はこのレスポンス限り)"
-// @Failure      400 {string} string "Bad request - invalid ID"
-// @Failure      401 {string} string "Authentication required"
-// @Failure      404 {string} string "Not found - subscriber not found"
-// @Failure      409 {string} string "Conflict - subscriber is deactivated"
+// @Failure      400 {object} respond.ErrorResponse "Bad request - invalid ID"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required"
+// @Failure      404 {object} respond.ErrorResponse "Not found - subscriber not found"
+// @Failure      409 {object} respond.ErrorResponse "Conflict - subscriber is deactivated"
 // @Router       /subscribers/{id}/tokens [post]
 func (h IssueTokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
@@ -60,9 +60,9 @@ type ListTokensHandler struct{ Svc subUC.Service }
 // @Produce      json
 // @Param        id path int true "友人ID"
 // @Success      200 {array} TokenDTO "トークン一覧(平文・ハッシュは含まない)"
-// @Failure      400 {string} string "Bad request - invalid ID"
-// @Failure      401 {string} string "Authentication required"
-// @Failure      404 {string} string "Not found - subscriber not found"
+// @Failure      400 {object} respond.ErrorResponse "Bad request - invalid ID"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required"
+// @Failure      404 {object} respond.ErrorResponse "Not found - subscriber not found"
 // @Router       /subscribers/{id}/tokens [get]
 func (h ListTokensHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
@@ -92,9 +92,9 @@ type RevokeTokenHandler struct{ Svc subUC.Service }
 // @Produce      json
 // @Param        id path int true "トークンID"
 // @Success      200 {object} RevokedTokenDTO "失効後のトークン(note で不可逆であることを明示)"
-// @Failure      400 {string} string "Bad request - invalid ID"
-// @Failure      401 {string} string "Authentication required"
-// @Failure      404 {string} string "Not found - token not found"
+// @Failure      400 {object} respond.ErrorResponse "Bad request - invalid ID"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required"
+// @Failure      404 {object} respond.ErrorResponse "Not found - token not found"
 // @Router       /tokens/{id} [delete]
 func (h RevokeTokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)

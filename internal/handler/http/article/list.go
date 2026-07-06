@@ -26,9 +26,9 @@ type ListHandler struct {
 // @Param        page   query    int  false  "ページ番号 (1-based)" default(1) minimum(1)
 // @Param        limit  query    int  false  "1ページあたりの件数" default(20) minimum(1) maximum(100)
 // @Success      200 {object} pagination.Response[DTO] "ページネーション付き記事一覧"
-// @Failure      400 {string} string "Invalid query parameters"
-// @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
-// @Failure      500 {string} string "サーバーエラー"
+// @Failure      400 {object} respond.ErrorResponse "Invalid query parameters"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required - missing or invalid JWT token"
+// @Failure      500 {object} respond.ErrorResponse "サーバーエラー"
 // @Router       /articles [get]
 func (h ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

@@ -29,6 +29,12 @@ const tokenTTL = 1 * time.Hour
 // and issues a JWT. pulse is a single-admin system (C-7/C-20): the token
 // carries only sub/iat/exp claims and no role.
 //
+// Unlike the admin API handlers (respond.SafeError -> JSON
+// {"error": "..."}), this endpoint replies to failures with http.Error
+// (text/plain) - the 429 likewise comes from the rate-limit middleware as
+// text/plain. The @Failure annotations below stay {string} on purpose so
+// the spec matches the wire format the frontend already handles.
+//
 // @Summary      JWT トークン取得
 // @Description  管理者のユーザー名とパスワードで認証し、JWT トークンを発行します
 // @Tags         auth

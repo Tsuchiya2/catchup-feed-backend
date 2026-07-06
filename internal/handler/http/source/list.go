@@ -16,8 +16,8 @@ type ListHandler struct{ Svc srcUC.Service }
 // @Security     BearerAuth
 // @Produce      json
 // @Success      200 {array} DTO "ソース一覧"
-// @Failure      401 {string} string "Authentication required - missing or invalid JWT token"
-// @Failure      500 {string} string "サーバーエラー"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required - missing or invalid JWT token"
+// @Failure      500 {object} respond.ErrorResponse "サーバーエラー"
 // @Router       /sources [get]
 func (h ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	list, err := h.Svc.List(r.Context())

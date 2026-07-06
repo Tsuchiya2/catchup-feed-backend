@@ -25,8 +25,8 @@ type ListHandler struct{ Svc subUC.Service }
 // @Security     BearerAuth
 // @Produce      json
 // @Success      200 {array} DTO "友人一覧"
-// @Failure      401 {string} string "Authentication required"
-// @Failure      500 {string} string "サーバーエラー"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required"
+// @Failure      500 {object} respond.ErrorResponse "サーバーエラー"
 // @Router       /subscribers [get]
 func (h ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	list, err := h.Svc.List(r.Context())
@@ -52,8 +52,8 @@ type CreateHandler struct{ Svc subUC.Service }
 // @Produce      json
 // @Param        subscriber body Request true "友人情報"
 // @Success      201 {object} DTO "作成された友人"
-// @Failure      400 {string} string "Bad request - name is required"
-// @Failure      401 {string} string "Authentication required"
+// @Failure      400 {object} respond.ErrorResponse "Bad request - name is required"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required"
 // @Router       /subscribers [post]
 func (h CreateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req Request
@@ -79,9 +79,9 @@ type GetHandler struct{ Svc subUC.Service }
 // @Produce      json
 // @Param        id path int true "友人ID"
 // @Success      200 {object} DTO "友人"
-// @Failure      400 {string} string "Bad request - invalid ID"
-// @Failure      401 {string} string "Authentication required"
-// @Failure      404 {string} string "Not found - subscriber not found"
+// @Failure      400 {object} respond.ErrorResponse "Bad request - invalid ID"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required"
+// @Failure      404 {object} respond.ErrorResponse "Not found - subscriber not found"
 // @Router       /subscribers/{id} [get]
 func (h GetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
@@ -109,9 +109,9 @@ type UpdateHandler struct{ Svc subUC.Service }
 // @Param        id path int true "友人ID"
 // @Param        subscriber body Request true "更新する友人情報"
 // @Success      200 {object} DTO "更新後の友人"
-// @Failure      400 {string} string "Bad request - invalid input"
-// @Failure      401 {string} string "Authentication required"
-// @Failure      404 {string} string "Not found - subscriber not found"
+// @Failure      400 {object} respond.ErrorResponse "Bad request - invalid input"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required"
+// @Failure      404 {object} respond.ErrorResponse "Not found - subscriber not found"
 // @Router       /subscribers/{id} [put]
 func (h UpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
@@ -141,9 +141,9 @@ type DeleteHandler struct{ Svc subUC.Service }
 // @Security     BearerAuth
 // @Param        id path int true "友人ID"
 // @Success      204 "No Content"
-// @Failure      400 {string} string "Bad request - invalid ID"
-// @Failure      401 {string} string "Authentication required"
-// @Failure      404 {string} string "Not found - subscriber not found"
+// @Failure      400 {object} respond.ErrorResponse "Bad request - invalid ID"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required"
+// @Failure      404 {object} respond.ErrorResponse "Not found - subscriber not found"
 // @Router       /subscribers/{id} [delete]
 func (h DeleteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)

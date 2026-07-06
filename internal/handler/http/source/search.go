@@ -23,10 +23,10 @@ type SearchHandler struct{ Svc srcUC.Service }
 // @Param        category query string false "カテゴリでフィルタ（台本のコーナー分け単位）"
 // @Param        active query bool false "アクティブ状態でフィルタ"
 // @Success      200 {array} DTO "検索結果"
-// @Failure      400 {string} string "Bad request"
-// @Failure      401 {string} string "Authentication required"
-// @Failure      429 {string} string "Too many requests - rate limit exceeded"
-// @Failure      500 {string} string "Server error"
+// @Failure      400 {object} respond.ErrorResponse "Bad request"
+// @Failure      401 {object} respond.ErrorResponse "Authentication required"
+// @Failure      429 {object} respond.ErrorResponse "Too many requests - rate limit exceeded"
+// @Failure      500 {object} respond.ErrorResponse "Server error"
 // @Router       /sources/search [get]
 func (h SearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Parse keyword parameter (optional - allows filter-only searches)
