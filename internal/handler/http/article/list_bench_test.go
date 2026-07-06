@@ -142,3 +142,6 @@ func BenchmarkListHandler_Parallel(b *testing.B) {
 func (s *benchListRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
 	return nil
 }
+func (s *benchListRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
+	return nil
+}

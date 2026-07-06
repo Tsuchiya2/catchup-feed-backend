@@ -12,7 +12,7 @@ import (
 )
 
 // sourceColumns is the §4 sources column list used by every SELECT.
-const sourceColumns = "id, name, feed_url, category, lang, active, created_at"
+const sourceColumns = "id, name, feed_url, category, lang, kind, active, created_at"
 
 type SourceRepo struct{ db *sql.DB }
 
@@ -28,8 +28,8 @@ type scanner interface {
 func scanSource(s scanner) (*entity.Source, error) {
 	var source entity.Source
 	if err := s.Scan(
-		&source.ID, &source.Name, &source.FeedURL,
-		&source.Category, &source.Lang, &source.Active, &source.CreatedAt,
+		&source.ID, &source.Name, &source.FeedURL, &source.Category,
+		&source.Lang, &source.Kind, &source.Active, &source.CreatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -152,12 +152,15 @@ func (repo *SourceRepo) Create(ctx context.Context, source *entity.Source) error
 	if source.Lang == "" {
 		source.Lang = entity.DefaultSourceLang
 	}
+	if source.Kind == "" {
+		source.Kind = entity.DefaultSourceKind
+	}
 	const query = `
-INSERT INTO sources (name, feed_url, category, lang, active)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO sources (name, feed_url, category, lang, kind, active)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING id, created_at`
 	err := repo.db.QueryRowContext(ctx, query,
-		source.Name, source.FeedURL, source.Category, source.Lang, source.Active,
+		source.Name, source.FeedURL, source.Category, source.Lang, source.Kind, source.Active,
 	).Scan(&source.ID, &source.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("Create: %w", err)
@@ -169,17 +172,21 @@ func (repo *SourceRepo) Update(ctx context.Context, source *entity.Source) error
 	if source.Lang == "" {
 		source.Lang = entity.DefaultSourceLang
 	}
+	if source.Kind == "" {
+		source.Kind = entity.DefaultSourceKind
+	}
 	const query = `
 UPDATE sources SET
        name     = $1,
        feed_url = $2,
        category = $3,
        lang     = $4,
-       active   = $5
-WHERE id = $6`
+       kind     = $5,
+       active   = $6
+WHERE id = $7`
 	res, err := repo.db.ExecContext(ctx, query,
 		source.Name, source.FeedURL, source.Category,
-		source.Lang, source.Active, source.ID,
+		source.Lang, source.Kind, source.Active, source.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("Update: %w", err)

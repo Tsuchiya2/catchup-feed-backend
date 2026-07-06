@@ -81,6 +81,44 @@ func TestCreateHandler_Success(t *testing.T) {
 	if stub.lastSource.Lang != "en" {
 		t.Errorf("Lang = %q, want default %q", stub.lastSource.Lang, "en")
 	}
+	if stub.lastSource.Kind != entity.SourceKindRSS {
+		t.Errorf("Kind = %q, want default %q", stub.lastSource.Kind, entity.SourceKindRSS)
+	}
+}
+
+// TestCreateHandler_Kind: Phase 2 §4 — kind は 3値のみ受け付け、省略時 rss。
+func TestCreateHandler_Kind(t *testing.T) {
+	tests := []struct {
+		name     string
+		kind     string
+		wantCode int
+		wantKind string
+	}{
+		{name: "youtube", kind: "youtube", wantCode: http.StatusCreated, wantKind: entity.SourceKindYouTube},
+		{name: "podcast", kind: "podcast", wantCode: http.StatusCreated, wantKind: entity.SourceKindPodcast},
+		{name: "invalid kind rejected", kind: "newsletter", wantCode: http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &stubCreateRepo{}
+			handler := source.CreateHandler{Svc: srcUC.Service{Repo: stub}}
+
+			body := `{"name": "Some Channel", "feedURL": "https://www.youtube.com/feeds/videos.xml?channel_id=UC123", "category": "dev", "kind": "` + tt.kind + `"}`
+			req := httptest.NewRequest(http.MethodPost, "/sources", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantCode {
+				t.Fatalf("status code = %d, want %d", rr.Code, tt.wantCode)
+			}
+			if tt.wantCode == http.StatusCreated && stub.lastSource.Kind != tt.wantKind {
+				t.Errorf("Kind = %q, want %q", stub.lastSource.Kind, tt.wantKind)
+			}
+		})
+	}
 }
 
 func TestCreateHandler_MissingFields(t *testing.T) {
@@ -217,6 +255,44 @@ func TestUpdateHandler_Success(t *testing.T) {
 
 	if stub.source.Name != "Updated Name" {
 		t.Errorf("Name = %q, want %q", stub.source.Name, "Updated Name")
+	}
+}
+
+// TestUpdateHandler_Kind: Phase 2 §4 — kind の更新と省略時の維持。
+func TestUpdateHandler_Kind(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantKind string
+	}{
+		{name: "kind can be updated", body: `{"kind": "podcast"}`, wantKind: entity.SourceKindPodcast},
+		{name: "omitted kind keeps current value", body: `{"name": "Renamed"}`, wantKind: entity.SourceKindYouTube},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &stubUpdateRepo{
+				source: &entity.Source{
+					ID: 1, Name: "Some Channel",
+					FeedURL:  "https://www.youtube.com/feeds/videos.xml?channel_id=UC123",
+					Category: "dev", Kind: entity.SourceKindYouTube, Active: true,
+				},
+			}
+			handler := source.UpdateHandler{Svc: srcUC.Service{Repo: stub}}
+
+			req := httptest.NewRequest(http.MethodPut, "/sources/1", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusNoContent {
+				t.Fatalf("status code = %d, want %d", rr.Code, http.StatusNoContent)
+			}
+			if stub.source.Kind != tt.wantKind {
+				t.Errorf("Kind = %q, want %q", stub.source.Kind, tt.wantKind)
+			}
+		})
 	}
 }
 

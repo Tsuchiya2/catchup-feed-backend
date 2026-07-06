@@ -113,6 +113,50 @@ func TestService_Create_success(t *testing.T) {
 	}
 }
 
+/* 2b. Create: kind の既定値とバリデーション (Phase 2 §4) */
+func TestService_Create_kind(t *testing.T) {
+	tests := []struct {
+		name     string
+		kind     string
+		wantErr  bool
+		wantKind string
+	}{
+		{name: "empty kind defaults to rss", kind: "", wantKind: entity.SourceKindRSS},
+		{name: "youtube kind is stored", kind: entity.SourceKindYouTube, wantKind: entity.SourceKindYouTube},
+		{name: "podcast kind is stored", kind: entity.SourceKindPodcast, wantKind: entity.SourceKindPodcast},
+		{name: "invalid kind is rejected", kind: "newsletter", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := newStub()
+			svc := srcUC.Service{Repo: stub}
+
+			err := svc.Create(context.Background(), srcUC.CreateInput{
+				Name: "n", FeedURL: "https://example.com/feed", Category: "dev",
+				Kind: tt.kind,
+			})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("want validation error, got nil")
+				}
+				if len(stub.data) != 0 {
+					t.Fatalf("invalid kind must not be stored: %#v", stub.data)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create err=%v", err)
+			}
+			for _, got := range stub.data {
+				if got.Kind != tt.wantKind {
+					t.Fatalf("kind = %q, want %q", got.Kind, tt.wantKind)
+				}
+			}
+		})
+	}
+}
+
 /* 3. Update: レコードが存在しない場合 ErrSourceNotFound */
 func TestService_Update_notFound(t *testing.T) {
 	svc := srcUC.Service{Repo: newStub()}
@@ -143,6 +187,45 @@ func TestService_Update_ok(t *testing.T) {
 	got := stub.data[1]
 	if got.Name != newName || got.Active != active {
 		t.Fatalf("update failed: %#v", got)
+	}
+}
+
+/* 4b. Update: kind の変更・維持・バリデーション (Phase 2 §4) */
+func TestService_Update_kind(t *testing.T) {
+	tests := []struct {
+		name     string
+		kind     string
+		wantErr  bool
+		wantKind string
+	}{
+		{name: "empty kind keeps current value", kind: "", wantKind: entity.SourceKindPodcast},
+		{name: "kind can be changed", kind: entity.SourceKindYouTube, wantKind: entity.SourceKindYouTube},
+		{name: "invalid kind is rejected", kind: "newsletter", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := newStub()
+			stub.data[1] = &entity.Source{
+				ID: 1, Name: "fukabori.fm", FeedURL: "https://example.com/podcast.rss",
+				Category: "dev", Kind: entity.SourceKindPodcast, Active: true,
+			}
+			svc := srcUC.Service{Repo: stub}
+
+			err := svc.Update(context.Background(), srcUC.UpdateInput{ID: 1, Kind: tt.kind})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("want validation error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Update err=%v", err)
+			}
+			if got := stub.data[1].Kind; got != tt.wantKind {
+				t.Fatalf("kind = %q, want %q", got, tt.wantKind)
+			}
+		})
 	}
 }
 

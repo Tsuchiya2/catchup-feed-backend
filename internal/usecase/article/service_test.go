@@ -1362,3 +1362,6 @@ func TestService_SearchWithFiltersPaginated_PaginationCalculation(t *testing.T) 
 func (s *stubRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
 	return nil
 }
+func (s *stubRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
+	return nil
+}

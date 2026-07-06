@@ -76,7 +76,7 @@ func (h SearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Convert to DTO
 	out := make([]DTO, 0, len(list))
 	for _, e := range list {
-		out = append(out, toDTO(e.ID, e.Name, e.FeedURL, e.Category, e.Lang, e.Active, e.CreatedAt))
+		out = append(out, toDTO(e.ID, e.Name, e.FeedURL, e.Category, e.Lang, e.Kind, e.Active, e.CreatedAt))
 	}
 	respond.JSON(w, http.StatusOK, out)
 }

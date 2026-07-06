@@ -188,3 +188,6 @@ func TestCreateHandler_ServiceError(t *testing.T) {
 func (s *stubCreateRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
 	return nil
 }
+func (s *stubCreateRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
+	return nil
+}

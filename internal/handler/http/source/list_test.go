@@ -60,6 +60,7 @@ func TestListHandler_Success(t *testing.T) {
 				Name:      "Tech Blog",
 				FeedURL:   "https://example.com/feed",
 				Category:  "dev",
+				Kind:      entity.SourceKindRSS,
 				CreatedAt: now,
 				Active:    true,
 			},
@@ -68,6 +69,7 @@ func TestListHandler_Success(t *testing.T) {
 				Name:      "News Site",
 				FeedURL:   "https://news.example.com/rss",
 				Category:  "dev",
+				Kind:      entity.SourceKindPodcast,
 				CreatedAt: now,
 				Active:    false,
 			},
@@ -104,11 +106,17 @@ func TestListHandler_Success(t *testing.T) {
 	if result[0].Active != true {
 		t.Errorf("result[0].Active = %v, want true", result[0].Active)
 	}
+	if result[0].Kind != entity.SourceKindRSS {
+		t.Errorf("result[0].Kind = %q, want %q", result[0].Kind, entity.SourceKindRSS)
+	}
 	if result[1].ID != 2 {
 		t.Errorf("result[1].ID = %d, want 2", result[1].ID)
 	}
 	if result[1].Active != false {
 		t.Errorf("result[1].Active = %v, want false", result[1].Active)
+	}
+	if result[1].Kind != entity.SourceKindPodcast {
+		t.Errorf("result[1].Kind = %q, want %q", result[1].Kind, entity.SourceKindPodcast)
 	}
 }
 

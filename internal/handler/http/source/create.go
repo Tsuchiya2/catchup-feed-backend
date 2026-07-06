@@ -36,7 +36,7 @@ func (h CreateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	err := h.Svc.Create(r.Context(), srcUC.CreateInput{
 		Name: req.Name, FeedURL: req.FeedURL,
-		Category: req.Category, Lang: req.Lang,
+		Category: req.Category, Lang: req.Lang, Kind: req.Kind,
 	})
 	if err != nil {
 		respond.SafeError(w, http.StatusBadRequest, err)

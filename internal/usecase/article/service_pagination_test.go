@@ -334,3 +334,6 @@ func TestService_ListWithSourcePaginated_OffsetCalculation(t *testing.T) {
 func (s *mockArticleRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
 	return nil
 }
+func (s *mockArticleRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
+	return nil
+}

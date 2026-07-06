@@ -19,14 +19,14 @@ import (
 
 /* ─────────────────────────── ヘルパ ─────────────────────────── */
 
-// sourceCols is the §4 sources column list.
+// sourceCols is the §4 sources column list (+ Phase 2 kind).
 var sourceCols = []string{
-	"id", "name", "feed_url", "category", "lang", "active", "created_at",
+	"id", "name", "feed_url", "category", "lang", "kind", "active", "created_at",
 }
 
 func srcRow(s *entity.Source) *sqlmock.Rows {
 	return sqlmock.NewRows(sourceCols).AddRow(
-		s.ID, s.Name, s.FeedURL, s.Category, s.Lang, s.Active, s.CreatedAt,
+		s.ID, s.Name, s.FeedURL, s.Category, s.Lang, s.Kind, s.Active, s.CreatedAt,
 	)
 }
 
@@ -54,7 +54,7 @@ func TestSourceRepo_Get(t *testing.T) {
 			want: &entity.Source{
 				ID: 1, Name: "Golang Weekly",
 				FeedURL:  "https://example.com/feed.xml",
-				Category: "dev", Lang: "en", Active: true, CreatedAt: now,
+				Category: "dev", Lang: "en", Kind: "rss", Active: true, CreatedAt: now,
 			},
 		},
 		{
@@ -106,7 +106,7 @@ func TestSourceRepo_List(t *testing.T) {
 	mock.ExpectQuery("FROM sources").
 		WillReturnRows(srcRow(&entity.Source{
 			ID: 1, Name: "n", FeedURL: "u", Category: "dev", Lang: "en",
-			Active: true, CreatedAt: now,
+			Kind: "rss", Active: true, CreatedAt: now,
 		}))
 
 	got, err := repo.List(context.Background())
@@ -135,7 +135,7 @@ func TestSourceRepo_List_ScanError(t *testing.T) {
 
 	mock.ExpectQuery("FROM sources").
 		WillReturnRows(sqlmock.NewRows(sourceCols).
-			AddRow("not-an-int", "n", "u", "dev", "en", true, time.Now()))
+			AddRow("not-an-int", "n", "u", "dev", "en", "rss", true, time.Now()))
 
 	_, err := repo.List(context.Background())
 	assert.Error(t, err)
@@ -231,22 +231,34 @@ func TestSourceRepo_Create(t *testing.T) {
 		name     string
 		source   *entity.Source
 		wantLang string
+		wantKind string
 	}{
 		{
 			name: "explicit lang",
 			source: &entity.Source{
 				Name: "Publickey", FeedURL: "https://example.com/atom.xml",
-				Category: "community", Lang: "ja", Active: true,
+				Category: "community", Lang: "ja", Kind: "rss", Active: true,
 			},
 			wantLang: "ja",
+			wantKind: "rss",
 		},
 		{
-			name: "empty lang defaults to en",
+			name: "empty lang and kind default to en / rss",
 			source: &entity.Source{
 				Name: "Golang Weekly", FeedURL: "https://example.com/feed.xml",
 				Category: "dev", Active: true,
 			},
 			wantLang: entity.DefaultSourceLang,
+			wantKind: entity.DefaultSourceKind,
+		},
+		{
+			name: "podcast kind is persisted",
+			source: &entity.Source{
+				Name: "fukabori.fm", FeedURL: "https://example.com/podcast.rss",
+				Category: "dev", Lang: "ja", Kind: entity.SourceKindPodcast, Active: true,
+			},
+			wantLang: "ja",
+			wantKind: entity.SourceKindPodcast,
 		},
 	}
 
@@ -257,13 +269,14 @@ func TestSourceRepo_Create(t *testing.T) {
 
 			now := time.Now()
 			mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO sources")).
-				WithArgs(tt.source.Name, tt.source.FeedURL, tt.source.Category, tt.wantLang, true).
+				WithArgs(tt.source.Name, tt.source.FeedURL, tt.source.Category, tt.wantLang, tt.wantKind, true).
 				WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(5), now))
 
 			err := repo.Create(context.Background(), tt.source)
 			require.NoError(t, err)
 			assert.Equal(t, int64(5), tt.source.ID)
 			assert.Equal(t, tt.wantLang, tt.source.Lang)
+			assert.Equal(t, tt.wantKind, tt.source.Kind)
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
@@ -287,12 +300,12 @@ func TestSourceRepo_Update(t *testing.T) {
 	defer closeFn()
 
 	mock.ExpectExec("UPDATE sources").
-		WithArgs("new", "https://u", "ai", "en", false, int64(1)).
+		WithArgs("new", "https://u", "ai", "en", "youtube", false, int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err := repo.Update(context.Background(), &entity.Source{
 		ID: 1, Name: "new", FeedURL: "https://u",
-		Category: "ai", Lang: "en", Active: false,
+		Category: "ai", Lang: "en", Kind: "youtube", Active: false,
 	})
 	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())

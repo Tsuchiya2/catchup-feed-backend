@@ -30,11 +30,14 @@ type ContentFetchConfig struct {
 }
 
 // FeedItem represents a single item from an RSS/Atom feed.
+// EnclosureURL carries the first media enclosure URL when the feed
+// provides one (podcast episodes, Phase 2 §5.2); empty otherwise.
 type FeedItem struct {
-	Title       string
-	URL         string
-	Content     string
-	PublishedAt time.Time
+	Title        string
+	URL          string
+	Content      string
+	PublishedAt  time.Time
+	EnclosureURL string
 }
 
 // Service provides feed crawling and article fetching use cases.
@@ -103,13 +106,19 @@ func NewService(
 }
 
 // CrawlStats contains statistics about a crawl operation.
+// TranscribeEnqueued counts articles inserted content-less with a pending
+// transcribe job (youtube/podcast sources, Phase 2 §5); those articles are
+// also counted in Inserted. SkippedNoMedia counts feed items dropped
+// because no media URL could be determined.
 type CrawlStats struct {
-	Sources        int
-	FeedItems      int64
-	Inserted       int64
-	Duplicated     int64
-	SummarizeError int64
-	Duration       time.Duration
+	Sources            int
+	FeedItems          int64
+	Inserted           int64
+	Duplicated         int64
+	SummarizeError     int64
+	TranscribeEnqueued int64
+	SkippedNoMedia     int64
+	Duration           time.Duration
 }
 
 // CrawlAllSources fetches and processes articles from all active sources.
@@ -143,6 +152,8 @@ func (s *Service) CrawlAllSources(ctx context.Context) (*CrawlStats, error) {
 		slog.Int64("inserted", stats.Inserted),
 		slog.Int64("duplicated", stats.Duplicated),
 		slog.Int64("summarize_errors", stats.SummarizeError),
+		slog.Int64("transcribe_enqueued", stats.TranscribeEnqueued),
+		slog.Int64("skipped_no_media", stats.SkippedNoMedia),
 		slog.Duration("duration", stats.Duration),
 	)
 
@@ -192,8 +203,20 @@ func (s *Service) processSingleSource(ctx context.Context, src *entity.Source, s
 	beforeInserted := atomic.LoadInt64(&stats.Inserted)
 	beforeDuplicated := atomic.LoadInt64(&stats.Duplicated)
 
-	if err := s.processFeedItems(ctx, src, feedItems, existsMap, stats); err != nil {
-		return fmt.Errorf("process feed items: %w", err)
+	// kind 分岐 (Phase 2 §5): youtube/podcast share the gofeed new-item
+	// detection above but never touch go-readability or the summarizer —
+	// the article is stored content-less and a transcribe job carries the
+	// media URL to the Mac worker. Summarization happens only after the
+	// transcript fills content (§4: content が NULL のうちは要約対象外).
+	switch src.Kind {
+	case entity.SourceKindYouTube, entity.SourceKindPodcast:
+		if err := s.enqueueTranscribeItems(ctx, src, feedItems, existsMap, stats); err != nil {
+			return fmt.Errorf("enqueue transcribe items: %w", err)
+		}
+	default: // '' / 'rss': 既存挙動そのまま
+		if err := s.processFeedItems(ctx, src, feedItems, existsMap, stats); err != nil {
+			return fmt.Errorf("process feed items: %w", err)
+		}
 	}
 
 	sourceDuration := time.Since(sourceStart)
@@ -310,6 +333,71 @@ func (s *Service) processFeedItems(
 
 	if err := eg.Wait(); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// enqueueTranscribeItems handles new items of youtube/podcast sources
+// (Phase 2 §5.1 / §5.2, Pi 側): each new item becomes an articles row with
+// content NULL plus a kind='transcribe' job, inserted atomically by the
+// repository. No parallelism — these are two local DB inserts per item.
+//
+// Media URL resolution:
+//   - youtube: the entry link (動画 URL — YouTube channel RSS entries link
+//     to the watch page)
+//   - podcast: the feed enclosure audio URL; items without an enclosure
+//     are skipped with a log (§5.2: 無い項目はスキップしてログ)
+func (s *Service) enqueueTranscribeItems(
+	ctx context.Context,
+	src *entity.Source,
+	feedItems []FeedItem,
+	existsMap map[string]bool,
+	stats *CrawlStats,
+) error {
+	logger := slog.Default()
+
+	for _, item := range feedItems {
+		atomic.AddInt64(&stats.FeedItems, 1)
+
+		if existsMap[item.URL] {
+			atomic.AddInt64(&stats.Duplicated, 1)
+			continue
+		}
+
+		mediaURL := item.URL
+		if src.Kind == entity.SourceKindPodcast {
+			mediaURL = item.EnclosureURL
+		}
+		if mediaURL == "" {
+			atomic.AddInt64(&stats.SkippedNoMedia, 1)
+			logger.Warn("no media URL for feed item, skipping",
+				slog.Int64("source_id", src.ID),
+				slog.String("source_kind", src.Kind),
+				slog.String("url", item.URL),
+				slog.String("title", item.Title))
+			continue
+		}
+
+		art := &entity.Article{
+			SourceID:    src.ID,
+			Title:       item.Title,
+			URL:         item.URL,
+			Content:     "", // stored as NULL; the Mac transcribe worker fills it (§5)
+			PublishedAt: item.PublishedAt,
+			CrawledAt:   time.Now(),
+		}
+		if err := s.ArticleRepo.CreateWithTranscribeJob(ctx, art, mediaURL, src.Kind); err != nil {
+			return fmt.Errorf("create article with transcribe job in repository: %w", err)
+		}
+		atomic.AddInt64(&stats.Inserted, 1)
+		atomic.AddInt64(&stats.TranscribeEnqueued, 1)
+
+		logger.Info("article enqueued for transcription",
+			slog.Int64("article_id", art.ID),
+			slog.String("url", art.URL),
+			slog.String("source_kind", src.Kind),
+			slog.String("media_url", mediaURL))
 	}
 
 	return nil

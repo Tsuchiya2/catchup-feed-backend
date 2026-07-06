@@ -62,6 +62,14 @@ type ArticleRepository interface {
 	// permanently unsummarized articles). Sets article.ID and
 	// summary.ArticleID.
 	CreateWithSummary(ctx context.Context, article *entity.Article, summary *entity.Summary) error
+	// CreateWithTranscribeJob inserts the article (content NULL) and a
+	// kind='transcribe' job in one transaction (Phase 2 §5: youtube /
+	// podcast の新着検知). Either both rows land or neither, so a
+	// content-less article always has a pending transcribe job. The job
+	// payload is entity.TranscribePayload {article_id, media_url,
+	// source_kind}; it is claimed by the Mac transcribe worker only, never
+	// by the Pi consumer. Sets article.ID.
+	CreateWithTranscribeJob(ctx context.Context, article *entity.Article, mediaURL, sourceKind string) error
 	Update(ctx context.Context, article *entity.Article) error
 	Delete(ctx context.Context, id int64) error
 	ExistsByURL(ctx context.Context, url string) (bool, error)

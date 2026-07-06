@@ -152,3 +152,6 @@ func TestDeleteHandler_DeleteError(t *testing.T) {
 func (s *stubDeleteRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
 	return nil
 }
+func (s *stubDeleteRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
+	return nil
+}

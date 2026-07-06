@@ -406,6 +406,58 @@ func TestArticleRepo_CreateWithSummary_DefaultsProvider(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestArticleRepo_CreateWithTranscribeJob pins the Phase 2 §5 invariant:
+// the content-less article and its transcribe job land in one transaction,
+// and the payload carries {article_id, media_url, source_kind} — the
+// contract the Mac transcribe worker reads.
+func TestArticleRepo_CreateWithTranscribeJob(t *testing.T) {
+	repo, mock, closeFn := newArticleRepo(t)
+	defer closeFn()
+
+	now := time.Now()
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO articles")).
+		WithArgs(int64(2), "Ep 1", "https://example.com/ep1",
+			nil, // content is stored as NULL until transcribed
+			now, now).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(42)))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO jobs")).
+		WithArgs(entity.JobKindTranscribe,
+			[]byte(`{"article_id":42,"media_url":"https://cdn.example.com/ep1.mp3","source_kind":"podcast"}`)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	art := &entity.Article{
+		SourceID: 2, Title: "Ep 1", URL: "https://example.com/ep1",
+		PublishedAt: now, CrawledAt: now,
+	}
+	require.NoError(t, repo.CreateWithTranscribeJob(context.Background(),
+		art, "https://cdn.example.com/ep1.mp3", entity.SourceKindPodcast))
+	assert.Equal(t, int64(42), art.ID)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestArticleRepo_CreateWithTranscribeJob_JobErrorRollsBack: a job insert
+// failure must roll the article back — otherwise a content-less article
+// would exist with no transcribe job to ever fill it (stuck row).
+func TestArticleRepo_CreateWithTranscribeJob_JobErrorRollsBack(t *testing.T) {
+	repo, mock, closeFn := newArticleRepo(t)
+	defer closeFn()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO articles")).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(42)))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO jobs")).
+		WillReturnError(errors.New("connection reset"))
+	mock.ExpectRollback()
+
+	err := repo.CreateWithTranscribeJob(context.Background(),
+		&entity.Article{SourceID: 2, Title: "t", URL: "https://u", CrawledAt: time.Now()},
+		"https://www.youtube.com/watch?v=abc", entity.SourceKindYouTube)
+	assert.Error(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestArticleRepo_Create_DatabaseError(t *testing.T) {
 	repo, mock, closeFn := newArticleRepo(t)
 	defer closeFn()

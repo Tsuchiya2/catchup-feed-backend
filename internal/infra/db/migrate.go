@@ -26,6 +26,9 @@ var createTableStatements = []string{
     feed_url      text NOT NULL UNIQUE,
     category      text NOT NULL,            -- 台本のコーナー分けに使用
     lang          text NOT NULL DEFAULT 'en',
+    kind          text NOT NULL DEFAULT 'rss'
+                  CONSTRAINT sources_kind_check
+                  CHECK (kind IN ('rss', 'youtube', 'podcast')),  -- Phase 2 §4
     active        boolean NOT NULL DEFAULT true,
     created_at    timestamptz NOT NULL DEFAULT now()
 )`,
@@ -100,6 +103,27 @@ var createTableStatements = []string{
 )`,
 }
 
+// alterTableStatements upgrade a database created by an earlier schema
+// version (CREATE TABLE IF NOT EXISTS is a no-op on existing tables, so
+// column additions need explicit idempotent ALTERs). Executed after the
+// CREATE TABLEs, before the indexes.
+//
+//   - sources.kind (Phase 2 §4): DEFAULT 'rss' rewrites existing Phase 1
+//     rows in place, keeping them fully compatible. The CHECK constraint is
+//     added via a DO block because PostgreSQL has no ADD CONSTRAINT IF NOT
+//     EXISTS; duplicate_object makes the re-run a no-op (fresh databases
+//     already get the constraint inline from CREATE TABLE).
+var alterTableStatements = []string{
+	`ALTER TABLE sources ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'rss'`,
+	`DO $$
+BEGIN
+    ALTER TABLE sources ADD CONSTRAINT sources_kind_check
+        CHECK (kind IN ('rss', 'youtube', 'podcast'));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$`,
+}
+
 // createIndexStatements are implementation-need indexes beyond §4 (which
 // only specifies constraints). Kept deliberately small — single-user scale:
 //   - idx_articles_published_at: every article listing / radio article
@@ -117,10 +141,15 @@ var createIndexStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_feed_access_logs_token_id ON feed_access_logs (token_id)`,
 }
 
-// MigrateUp applies the pulse Phase 1 schema. It is idempotent and safe to
-// run at every process startup.
+// MigrateUp applies the pulse schema (Phase 1 §4 + Phase 2 §4 差分). It is
+// idempotent and safe to run at every process startup.
 func MigrateUp(db *sql.DB) error {
 	for _, stmt := range createTableStatements {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	for _, stmt := range alterTableStatements {
 		if _, err := db.Exec(stmt); err != nil {
 			return err
 		}

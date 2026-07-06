@@ -340,3 +340,6 @@ func TestGetHandler_SQLNoRowsError(t *testing.T) {
 func (s *stubGetRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
 	return nil
 }
+func (s *stubGetRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
+	return nil
+}

@@ -41,7 +41,7 @@ func (h UpdateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	err = h.Svc.Update(r.Context(), srcUC.UpdateInput{
 		ID: id, Name: req.Name, FeedURL: req.FeedURL,
-		Category: req.Category, Lang: req.Lang,
+		Category: req.Category, Lang: req.Lang, Kind: req.Kind,
 		Active: req.Active,
 	})
 	if err != nil {

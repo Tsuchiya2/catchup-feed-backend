@@ -936,3 +936,6 @@ func TestSearchPaginated_NoKeyword(t *testing.T) {
 func (s *stubSearchPaginatedRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
 	return nil
 }
+func (s *stubSearchPaginatedRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
+	return nil
+}

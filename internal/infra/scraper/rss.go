@@ -5,6 +5,7 @@ package scraper
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"catchup-feed/internal/usecase/fetch"
@@ -56,12 +57,33 @@ func (f *RSSFetcher) doFetch(ctx context.Context, feedURL string) ([]fetch.FeedI
 		}
 
 		items = append(items, fetch.FeedItem{
-			Title:       it.Title,
-			URL:         it.Link,
-			Content:     content,
-			PublishedAt: pubAt,
+			Title:        it.Title,
+			URL:          it.Link,
+			Content:      content,
+			PublishedAt:  pubAt,
+			EnclosureURL: enclosureURL(it.Enclosures),
 		})
 	}
 
 	return items, nil
+}
+
+// enclosureURL picks the media URL from the item enclosures (Phase 2 §5.2:
+// podcast の media_url は enclosure の音声 URL). Audio enclosures win;
+// otherwise the first enclosure with a URL is used. Returns "" when the
+// item has no usable enclosure (the caller skips such items).
+func enclosureURL(encs []*gofeed.Enclosure) string {
+	first := ""
+	for _, enc := range encs {
+		if enc == nil || enc.URL == "" {
+			continue
+		}
+		if strings.HasPrefix(enc.Type, "audio/") {
+			return enc.URL
+		}
+		if first == "" {
+			first = enc.URL
+		}
+	}
+	return first
 }
