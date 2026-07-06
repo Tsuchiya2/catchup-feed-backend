@@ -11,6 +11,19 @@ import (
 // JobRepository is the DB-backed queue between processes (jobs table, §4 /
 // C-4: プロセス間連携は PostgreSQL のジョブテーブル経由のみ). Deliberately
 // minimal — enqueue, claim, mark — not a worker framework.
+//
+// Deferral (持ち越し) is a legal queue operation, distinct from failure:
+// a consumer that has claimed a job but NOT yet started processing it may
+// hand the job back with `status='pending', attempts = attempts - 1`,
+// rolling back the increment its own claim made. A deferral does not
+// consume the retry ceiling — it is scheduling, not an error (e.g. the Mac
+// transcribe worker returns jobs that do not fit the remaining nightly
+// transcription budget to the next night, D-14 / Phase 2 §5.2). The
+// rollback is permitted only while the job is untouched (no side effects
+// from processing); once processing has started, a failure must go through
+// MarkFailed as usual and consume an attempt. This deferral is currently
+// performed only by the Python transcribe worker; the Go consumer never
+// defers.
 type JobRepository interface {
 	// Enqueue inserts a pending job. A nil payload is stored as '{}'.
 	// runAfter schedules the earliest execution time (time.Time{} = now).
