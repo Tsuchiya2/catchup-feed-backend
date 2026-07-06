@@ -10,8 +10,8 @@ import (
 )
 
 // itunesNS is the iTunes podcast namespace. Only the minimal tags needed
-// for podcast-app subscription are emitted (author, duration, explicit,
-// block); artwork and directory metadata are out of scope for Phase 1.
+// for podcast-app subscription are emitted (duration, explicit, block,
+// image); directory metadata is out of scope for Phase 1.
 const itunesNS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 
 // channelVoicevoxAttribution is the U-13 credit line appended to every
@@ -28,6 +28,10 @@ type channelMeta struct {
 	Link        string
 	Description string
 	Language    string // "ja" for pulse
+	// ImageURL is the absolute channel-artwork URL, built the same way as
+	// the enclosure URLs: under the token path for the public feed, under
+	// /private for the tailnet feed. Empty omits the image tags.
+	ImageURL string
 }
 
 // rssDoc is the RSS 2.0 document. Prefixed names like "itunes:author" are
@@ -47,9 +51,27 @@ type rssChannel struct {
 	Language    string `xml:"language"`
 	// itunes:block keeps token-bearing subscription URLs out of the Apple
 	// directory: this is a capability URL, not a discoverable show (C-6).
-	ItunesBlock    string    `xml:"itunes:block"`
-	ItunesExplicit string    `xml:"itunes:explicit"`
-	Items          []rssItem `xml:"item"`
+	ItunesBlock    string `xml:"itunes:block"`
+	ItunesExplicit string `xml:"itunes:explicit"`
+	// Channel artwork, in both dialects podcast apps read: the iTunes tag
+	// (what Apple Podcasts / Overcast use) and the plain RSS 2.0 <image>
+	// (the fallback for stricter readers).
+	ItunesImage *rssItunesImage `xml:"itunes:image,omitempty"`
+	Image       *rssImage       `xml:"image,omitempty"`
+	Items       []rssItem       `xml:"item"`
+}
+
+// rssItunesImage is <itunes:image href="..."/>.
+type rssItunesImage struct {
+	Href string `xml:"href,attr"`
+}
+
+// rssImage is the RSS 2.0 <image> element. Title and Link are required by
+// the spec and mirror the channel's own title and link.
+type rssImage struct {
+	URL   string `xml:"url"`
+	Title string `xml:"title"`
+	Link  string `xml:"link"`
 }
 
 type rssItem struct {
@@ -115,6 +137,10 @@ func renderRSS(meta channelMeta, episodes []*entity.Episode, enclosureURL func(*
 			Items:          items,
 		},
 	}
+	if meta.ImageURL != "" {
+		doc.Channel.ItunesImage = &rssItunesImage{Href: meta.ImageURL}
+		doc.Channel.Image = &rssImage{URL: meta.ImageURL, Title: meta.Title, Link: meta.Link}
+	}
 
 	body, err := xml.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -134,6 +160,17 @@ func publicEnclosureURL(baseURL, token string, episodeID int64) string {
 // /private/episodes/{id}.mp3.
 func privateEnclosureURL(baseURL string, episodeID int64) string {
 	return fmt.Sprintf("%s/private/episodes/%d.mp3", baseURL, episodeID)
+}
+
+// publicArtworkURL builds the channel-artwork URL under the same token
+// path as the feed itself (C-9): /feeds/{token}/artwork.jpg.
+func publicArtworkURL(baseURL, token string) string {
+	return fmt.Sprintf("%s/feeds/%s/artwork.jpg", baseURL, url.PathEscape(token))
+}
+
+// privateArtworkURL builds the tailnet artwork URL: /private/artwork.jpg.
+func privateArtworkURL(baseURL string) string {
+	return baseURL + "/private/artwork.jpg"
 }
 
 // itunesDuration renders seconds in the M:SS / H:MM:SS form podcast apps
