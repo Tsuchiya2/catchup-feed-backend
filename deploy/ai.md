@@ -53,7 +53,7 @@ content が埋まった後は**既存パイプラインが無改修で拾う**: 
 |---|---|---|
 | 02:55 | pmset 自動ウェイク | 6章で **04:25 から置き換える**(pmset のウェイクは1本のみ) |
 | 03:00 | `com.pulse.transcribe` | 文字起こし。**04:15(`--deadline` 既定)で新規 claim 停止**、処理中のジョブは完遂 |
-| 04:15〜04:30 | transcribe-run.sh のブリッジ | caffeinate で Mac を起こしたまま radio の発火を待つ |
+| 04:15〜04:32 | transcribe-run.sh のブリッジ | caffeinate で Mac を起こしたまま radio(04:30)の発火を待つ。終端は `TRANSCRIBE_BRIDGE_UNTIL`(既定 04:32) |
 | 04:30 | `com.pulse.radio` | ラジオ生成(既存) |
 | 05:15 | `com.pulse.backup` | pg_dump pull(既存) |
 | 06:30 | (Pi)cleanup_old_media | D-4、既存 |
@@ -120,6 +120,12 @@ transcribe worker の設定は pydantic-settings(`src/pulse_transcribe/config.py
 **`--deadline` の意味に注意**: 「今から見て次にその時刻になる瞬間」まで動く。昼間に引数なしで
 実行すると既定 04:15 は**翌朝**に解決され、朝まで poll し続ける。手動実行では必ず近い時刻を渡すこと。
 
+なお transcribe-run.sh には**夜間窓ガード**があり、引数なし・非対話(= launchd 発火)が
+02:30〜04:20 の窓外に起きた場合は何もせず正常終了する(スリープ持ち越しで昼間にまとめて
+発火したとき、deadline が翌朝に解決されて丸1日走るのを防ぐ。ジョブは翌夜に持ち越し)。
+手動実行は引数を渡すか端末から実行すればガードの対象外 — この章の手順どおり
+`--deadline` を渡していれば意識しなくてよい。
+
 ### 5.2 実ジョブで1本通す
 
 1. ダッシュボードで kind=youtube または podcast のソースを登録する(D-13 の選定から1本。
@@ -157,6 +163,15 @@ transcribe worker の設定は pydantic-settings(`src/pulse_transcribe/config.py
 
 ## 6. launchd 登録(03:00)+ 自動ウェイクの変更【ユーザー作業あり】
 
+**前提条件(順序厳守)**: 5章の手動確認が通っていること。特に後述のウェイク置き換えを
+先にやってはいけない — transcribe-run.sh が未配置・パス誤りのまま 02:55 に切り替えると、
+launchd の spawn 自体が失敗して(スクリプト内のブリッジも張られず)04:30 前に Mac が
+再スリープし、**radio が発火しない**。Phase 2 の故障が Phase 1 を潰す唯一の経路がここ。
+
+**Phase 2 の夜間運用は AC(電源)接続が前提**。caffeinate のスリープ抑止とブリッジは
+バッテリー駆動では保証されない(寝た夜は文字起こし持ち越し+radio 欠番で正常、ではあるが
+常態化させない)。
+
 ```bash
 cd <catchup-feed-backend の checkout>
 sed "s/CHANGEME/$(whoami)/g" deploy/launchd/com.pulse.transcribe.plist \
@@ -176,12 +191,15 @@ pmset -g sched    # 02:55 の1本だけになっていること
 ```
 
 pmset の繰り返しウェイクは**1本しか持てない**。04:30 の radio は、transcribe-run.sh が
-終了後 04:32 まで caffeinate で Mac を起こしておく「ブリッジ」で発火を保証する
-(バッテリー駆動の夜は抑止しきれず寝ることがあるが、その日は欠番・持ち越しで正常)。
+04:32(`TRANSCRIBE_BRIDGE_UNTIL`)まで caffeinate で Mac を起こしておく「ブリッジ」で
+発火を保証する。ブリッジは EXIT trap で張られるため、.env 不在・uv 不在など**スクリプトが
+どの経路で失敗してもその夜の radio は守られる**(launchd の spawn 自体の失敗だけは
+救えない — 冒頭の前提条件が 5章の手動確認を要求する理由)。
 
 失敗時の挙動: launchd はリトライしない(KeepAlive なし)。ジョブは jobs テーブルに残り、
 翌夜の起動時スイープ(running の巻き戻し)とリトライ規則で勝手に回収される。
-ログは `~/pulse/logs/transcribe.{out,err}.log`。
+ログは `~/pulse/logs/transcribe.{out,err}.log`。スリープ持ち越しの coalesced 発火は
+夜間窓ガード(5.1章)が exit 0 で受け流す(ログに "outside the night window")。
 
 ## 7. 他サービスとの連携(契約とデータの流れ)
 
@@ -245,7 +263,9 @@ Pi worker の毎時 cron が「content 有り・summary 無し」の記事を掃
   - 続くようなら yt-dlp を上げる: `cd ~/pulse/catchup-feed-ai && uv lock --upgrade-package yt-dlp && uv sync`
     (yt-dlp は YouTube 側変更への追随が速い。上げても直らない期間は字幕がある動画だけが通る)
 - **朝になっても文字起こしが無い**
-  1. そもそも走ったか: `~/pulse/logs/transcribe.out.log` の日付
+  1. そもそも走ったか: `~/pulse/logs/transcribe.out.log` の日付。
+     "outside the night window" があれば、Mac がスリープ中に 03:00 を跨いで蓋開け時に
+     まとめて発火したケース — 窓ガードのスキップで正常(翌夜に持ち越し)
   2. 走ったが空振り: "transcribe worker started" 後に claim が無い → 7.1 の SQL で pending の有無を確認。
      pending ゼロなら第1段(Gemini)で全部済んでいる(正常)
   3. deferred で終了している → D-14 の持ち越し(正常)。連夜続くなら backlog が2時間/夜を
