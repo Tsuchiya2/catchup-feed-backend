@@ -26,6 +26,16 @@ const (
 	// headroom, and against the crawl budget (attempts are sequential,
 	// each bounded by the describer's own request timeout).
 	YouTubeDirectMaxPerCycle = 3
+
+	// TranscribeBackfillCutoff bounds how far back the transcribe path
+	// (youtube/podcast) ingests feed items (D-15, Phase 2 §5.2): items whose
+	// published_at is older than this are skipped entirely — no articles
+	// INSERT, no transcribe job, no §5.1 stage-1 attempt. Podcast feeds
+	// carry their full history (e.g. Latent Space, 212 items), and ingesting
+	// it would fill every morning's radio with months of back-catalog.
+	// Items with an unknown published_at (zero value) are treated as new —
+	// D-15: 判定不能を落とさない. The rss path is NOT affected.
+	TranscribeBackfillCutoff = 14 * 24 * time.Hour
 )
 
 // FeedFetcher is an interface for fetching RSS/Atom feeds from a URL.
@@ -144,7 +154,9 @@ func NewService(
 // TranscribeEnqueued counts articles inserted content-less with a pending
 // transcribe job (youtube/podcast sources, Phase 2 §5); those articles are
 // also counted in Inserted. SkippedNoMedia counts feed items dropped
-// because no media URL could be determined. YouTubeDirectAttempts counts
+// because no media URL could be determined. SkippedBackfill counts
+// transcribe-path items dropped by the D-15 backlog cutoff (published_at
+// older than TranscribeBackfillCutoff). YouTubeDirectAttempts counts
 // §5.1 stage-1 tries this cycle (capped at YouTubeDirectMaxPerCycle) and
 // YouTubeDirectSucceeded the ones persisted with a summary and no
 // transcribe job (also counted in Inserted, not in TranscribeEnqueued).
@@ -156,6 +168,7 @@ type CrawlStats struct {
 	SummarizeError         int64
 	TranscribeEnqueued     int64
 	SkippedNoMedia         int64
+	SkippedBackfill        int64
 	YouTubeDirectAttempts  int64
 	YouTubeDirectSucceeded int64
 	Duration               time.Duration
@@ -194,6 +207,7 @@ func (s *Service) CrawlAllSources(ctx context.Context) (*CrawlStats, error) {
 		slog.Int64("summarize_errors", stats.SummarizeError),
 		slog.Int64("transcribe_enqueued", stats.TranscribeEnqueued),
 		slog.Int64("skipped_no_media", stats.SkippedNoMedia),
+		slog.Int64("skipped_backfill", stats.SkippedBackfill),
 		slog.Int64("youtube_direct_attempts", stats.YouTubeDirectAttempts),
 		slog.Int64("youtube_direct_succeeded", stats.YouTubeDirectSucceeded),
 		slog.Duration("duration", stats.Duration),
@@ -399,7 +413,8 @@ func articleURLForItem(src *entity.Source, item FeedItem) string {
 }
 
 // enqueueTranscribeItems handles new items of youtube/podcast sources
-// (Phase 2 §5.1 / §5.2, Pi 側): each new item becomes an articles row with
+// (Phase 2 §5.1 / §5.2, Pi 側): items older than TranscribeBackfillCutoff
+// are dropped up front (D-15); each remaining new item becomes an articles row with
 // content NULL plus a kind='transcribe' job, inserted atomically by the
 // repository — except youtube items that the §5.1 stage-1 describer handles
 // first (see describeVideoDirect). No parallelism: the DB writes are local
@@ -420,8 +435,29 @@ func (s *Service) enqueueTranscribeItems(
 ) error {
 	logger := slog.Default()
 
+	// D-15 バックログカットオフ: published_at がこの時刻より古い item は
+	// 取り込まない(§5.2)。published_at 不明(zero value)は新着扱い。
+	// ソース単位のサマリ1行に集計するため件数はローカルに数える(初回
+	// クロールのポッドキャストは数百件スキップし得るので item ごとの
+	// ログは出さない)。
+	backfillCutoff := time.Now().Add(-TranscribeBackfillCutoff)
+	var skippedBackfill int64
+
 	for _, item := range feedItems {
 		atomic.AddInt64(&stats.FeedItems, 1)
+
+		// カットオフ判定は dedupe より前・§5.1 第1段の cap より前に置く:
+		// 古い item に Gemini 呼び出し枠(YouTubeDirectMaxPerCycle)を
+		// 消費させないのが D-15 の要件。dedupe との順序はどちらでも
+		// 正しさは変わらないが、ループ先頭に置くのが最も単純で、既存の
+		// existsMap 構築(processSingleSource、kind 非依存)を触らずに
+		// 済む — ExistsByURLBatch のキー数削減は初回クロール1回きりの
+		// 話なので、そのために dedupe キー収集へ kind 分岐を持ち込む
+		// 価値はない。
+		if !item.PublishedAt.IsZero() && item.PublishedAt.Before(backfillCutoff) {
+			skippedBackfill++
+			continue
+		}
 
 		// articles.url に入る値(link 無し podcast は enclosure URL に
 		// フォールバック)。dedupe キーと INSERT 値を必ず一致させる:
@@ -491,6 +527,15 @@ func (s *Service) enqueueTranscribeItems(
 			slog.String("url", art.URL),
 			slog.String("source_kind", src.Kind),
 			slog.String("media_url", mediaURL))
+	}
+
+	if skippedBackfill > 0 {
+		atomic.AddInt64(&stats.SkippedBackfill, skippedBackfill)
+		logger.Info("skipped backlog items older than cutoff (D-15)",
+			slog.Int64("source_id", src.ID),
+			slog.String("source_kind", src.Kind),
+			slog.Int64("skipped_backfill", skippedBackfill),
+			slog.Duration("cutoff", TranscribeBackfillCutoff))
 	}
 
 	return nil
