@@ -70,10 +70,11 @@ func (f *RSSFetcher) doFetch(ctx context.Context, feedURL string) ([]fetch.FeedI
 
 // enclosureURL picks the media URL from the item enclosures (Phase 2 §5.2:
 // podcast の media_url は enclosure の音声 URL). Audio enclosures win;
-// otherwise the first enclosure with a URL is used. Returns "" when the
-// item has no usable enclosure (the caller skips such items).
+// otherwise the first video enclosure is used. Anything else (image/jpeg
+// cover art etc.) is not media: such items return "" and the caller skips
+// them (SkippedNoMedia).
 func enclosureURL(encs []*gofeed.Enclosure) string {
-	first := ""
+	firstVideo := ""
 	for _, enc := range encs {
 		if enc == nil || enc.URL == "" {
 			continue
@@ -81,9 +82,9 @@ func enclosureURL(encs []*gofeed.Enclosure) string {
 		if strings.HasPrefix(enc.Type, "audio/") {
 			return enc.URL
 		}
-		if first == "" {
-			first = enc.URL
+		if firstVideo == "" && strings.HasPrefix(enc.Type, "video/") {
+			firstVideo = enc.URL
 		}
 	}
-	return first
+	return firstVideo
 }

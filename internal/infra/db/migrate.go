@@ -108,8 +108,10 @@ var createTableStatements = []string{
 // column additions need explicit idempotent ALTERs). Executed after the
 // CREATE TABLEs, before the indexes.
 //
-//   - sources.kind (Phase 2 §4): DEFAULT 'rss' rewrites existing Phase 1
-//     rows in place, keeping them fully compatible. The CHECK constraint is
+//   - sources.kind (Phase 2 §4): the constant DEFAULT 'rss' is recorded in
+//     the catalog only (PostgreSQL 11+ ADD COLUMN with a constant default
+//     does not rewrite the table); existing Phase 1 rows simply read back
+//     'rss', keeping them fully compatible. The CHECK constraint is
 //     added via a DO block because PostgreSQL has no ADD CONSTRAINT IF NOT
 //     EXISTS; duplicate_object makes the re-run a no-op (fresh databases
 //     already get the constraint inline from CREATE TABLE).

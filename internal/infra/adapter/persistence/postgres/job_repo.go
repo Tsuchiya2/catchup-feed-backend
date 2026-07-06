@@ -105,16 +105,29 @@ func (repo *JobRepo) MarkDone(ctx context.Context, id int64) error {
 	return nil
 }
 
-// RequeueRunning flips every running job back to pending (stale-job sweep,
-// see repository.JobRepository). last_error records the sweep so the
-// dashboard of a crash-looping job tells the story.
-func (repo *JobRepo) RequeueRunning(ctx context.Context) (int64, error) {
-	const query = `
+// RequeueRunning flips running jobs of the given kinds back to pending
+// (stale-job sweep, see repository.JobRepository). The kind restriction is
+// load-bearing: other consumers' running jobs (e.g. the Mac transcribe
+// worker's) are mid-execution, not orphans, and must not be requeued. No
+// kinds sweeps nothing. last_error records the sweep so the dashboard of a
+// crash-looping job tells the story.
+func (repo *JobRepo) RequeueRunning(ctx context.Context, kinds ...string) (int64, error) {
+	if len(kinds) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, len(kinds))
+	args := make([]any, len(kinds))
+	for i, kind := range kinds {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = kind
+	}
+	// #nosec G201 -- the interpolated fragment contains only generated placeholders ($1, $2, ...).
+	query := fmt.Sprintf(`
 UPDATE jobs SET
        status     = 'pending',
        last_error = 'requeued: claimed by a worker that did not finish (stale running sweep)'
-WHERE status = 'running'`
-	res, err := repo.db.ExecContext(ctx, query)
+WHERE status = 'running' AND kind IN (%s)`, strings.Join(placeholders, ", "))
+	res, err := repo.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("RequeueRunning: %w", err)
 	}

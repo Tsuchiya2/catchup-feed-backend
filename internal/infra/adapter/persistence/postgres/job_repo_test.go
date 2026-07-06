@@ -220,21 +220,37 @@ func TestJobRepo_MarkFailed(t *testing.T) {
 
 func TestJobRepo_RequeueRunning(t *testing.T) {
 	tests := []struct {
-		name string
-		rows int64
+		name      string
+		kinds     []string
+		rows      int64
+		wantQuery string
+		wantArgs  []driverValue
 	}{
-		{name: "requeues orphaned running jobs", rows: 2},
-		{name: "no running jobs is a no-op", rows: 0},
+		{
+			name:      "requeues orphaned running jobs of own kinds only",
+			kinds:     []string{entity.JobKindNotifyEpisode, entity.JobKindRegenerateFeed},
+			rows:      2,
+			wantQuery: `WHERE status = 'running' AND kind IN ($1, $2)`,
+			wantArgs:  []driverValue{entity.JobKindNotifyEpisode, entity.JobKindRegenerateFeed},
+		},
+		{
+			name:      "no matching running jobs is a no-op",
+			kinds:     []string{entity.JobKindCleanupOldMedia},
+			rows:      0,
+			wantQuery: `WHERE status = 'running' AND kind IN ($1)`,
+			wantArgs:  []driverValue{entity.JobKindCleanupOldMedia},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo, mock, closeFn := newJobRepo(t)
 			defer closeFn()
 
-			mock.ExpectExec(regexp.QuoteMeta("WHERE status = 'running'")).
+			mock.ExpectExec(regexp.QuoteMeta(tt.wantQuery)).
+				WithArgs(tt.wantArgs...).
 				WillReturnResult(sqlmock.NewResult(0, tt.rows))
 
-			n, err := repo.RequeueRunning(context.Background())
+			n, err := repo.RequeueRunning(context.Background(), tt.kinds...)
 			require.NoError(t, err)
 			assert.Equal(t, tt.rows, n)
 			assert.NoError(t, mock.ExpectationsWereMet())
@@ -242,13 +258,27 @@ func TestJobRepo_RequeueRunning(t *testing.T) {
 	}
 }
 
+// TestJobRepo_RequeueRunning_NoKinds: no kinds sweeps nothing — an
+// unrestricted sweep would requeue jobs another consumer (the Mac
+// transcribe worker) is executing right now. No SQL may even be issued.
+func TestJobRepo_RequeueRunning_NoKinds(t *testing.T) {
+	repo, mock, closeFn := newJobRepo(t)
+	defer closeFn()
+
+	n, err := repo.RequeueRunning(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.NoError(t, mock.ExpectationsWereMet(), "no query expected for an empty kind set")
+}
+
 func TestJobRepo_RequeueRunning_Error(t *testing.T) {
 	repo, mock, closeFn := newJobRepo(t)
 	defer closeFn()
 
-	mock.ExpectExec(regexp.QuoteMeta("WHERE status = 'running'")).
+	mock.ExpectExec(regexp.QuoteMeta("WHERE status = 'running' AND kind IN ($1)")).
+		WithArgs(entity.JobKindRegenerateFeed).
 		WillReturnError(errors.New("connection refused"))
 
-	_, err := repo.RequeueRunning(context.Background())
+	_, err := repo.RequeueRunning(context.Background(), entity.JobKindRegenerateFeed)
 	assert.ErrorContains(t, err, "RequeueRunning")
 }

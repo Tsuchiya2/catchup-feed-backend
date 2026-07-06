@@ -108,8 +108,9 @@ func TestRSSFetcher_Fetch_Atom(t *testing.T) {
 }
 
 // TestRSSFetcher_Fetch_Enclosures: Phase 2 §5.2 — podcast RSS の enclosure
-// (音声 URL)を FeedItem.EnclosureURL に載せる。audio/* を優先し、
-// enclosure なしの項目は空文字のまま(呼び出し側がスキップ)。
+// (音声 URL)を FeedItem.EnclosureURL に載せる。audio/* を優先し video/*
+// にフォールバック。それ以外(image/* 等)や enclosure なしは空文字のまま
+// (呼び出し側が SkippedNoMedia としてスキップ)。
 func TestRSSFetcher_Fetch_Enclosures(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rss := `<?xml version="1.0" encoding="UTF-8"?>
@@ -134,9 +135,14 @@ func TestRSSFetcher_Fetch_Enclosures(t *testing.T) {
       <link>https://example.com/ep3</link>
     </item>
     <item>
-      <title>Ep 4: non-audio enclosure only</title>
+      <title>Ep 4: video enclosure only</title>
       <link>https://example.com/ep4</link>
       <enclosure url="https://cdn.example.com/ep4.mp4" length="789" type="video/mp4"/>
+    </item>
+    <item>
+      <title>Ep 5: image enclosure only</title>
+      <link>https://example.com/ep5</link>
+      <enclosure url="https://cdn.example.com/ep5.jpg" length="10" type="image/jpeg"/>
     </item>
   </channel>
 </rss>`
@@ -154,8 +160,8 @@ func TestRSSFetcher_Fetch_Enclosures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch() error = %v", err)
 	}
-	if len(items) != 4 {
-		t.Fatalf("items length = %d, want 4", len(items))
+	if len(items) != 5 {
+		t.Fatalf("items length = %d, want 5", len(items))
 	}
 
 	tests := []struct {
@@ -165,7 +171,8 @@ func TestRSSFetcher_Fetch_Enclosures(t *testing.T) {
 		{0, "https://cdn.example.com/ep1.mp3"},
 		{1, "https://cdn.example.com/ep2.mp3"}, // audio/* が image より優先
 		{2, ""},                                // enclosure なし → 空
-		{3, "https://cdn.example.com/ep4.mp4"}, // audio がなければ先頭の enclosure
+		{3, "https://cdn.example.com/ep4.mp4"}, // audio がなければ video/* にフォールバック
+		{4, ""},                                // image のみ → media なし(スキップ対象)
 	}
 	for _, tt := range tests {
 		if items[tt.idx].EnclosureURL != tt.want {

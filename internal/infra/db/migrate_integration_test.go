@@ -194,17 +194,27 @@ func TestTranscribeEnqueue_RealPostgres(t *testing.T) {
 	}, payload)
 
 	// The Pi consumer claims only its registered kinds (cmd/worker):
-	// draining with those kinds must leave the transcribe job pending.
+	// draining that backlog to exhaustion — however many pi-kind jobs the
+	// database happens to hold — must never reach the transcribe job.
 	jobs := pgRepo.NewJobRepo(conn)
 	piWorkerKinds := []string{
 		entity.JobKindRegenerateFeed, entity.JobKindNotifyEpisode,
 		entity.JobKindNotifyError, entity.JobKindCleanupOldMedia,
 	}
-	if job, err := jobs.ClaimNext(context.Background(), piWorkerKinds...); assert.NoError(t, err) && job != nil {
-		assert.NotEqual(t, entity.JobKindTranscribe, job.Kind,
+	var drained []int64
+	for {
+		job, err := jobs.ClaimNext(context.Background(), piWorkerKinds...)
+		require.NoError(t, err)
+		if job == nil {
+			break // pi-kind backlog fully drained; transcribe was never claimed
+		}
+		require.NotEqual(t, entity.JobKindTranscribe, job.Kind,
 			"Pi worker kinds must never claim transcribe jobs")
-		// Put the unrelated backlog job back the way we found it.
-		_, err = conn.Exec(`UPDATE jobs SET status='pending', attempts=attempts-1 WHERE id=$1`, job.ID)
+		drained = append(drained, job.ID)
+	}
+	// Put the unrelated backlog jobs back the way we found them.
+	for _, id := range drained {
+		_, err := conn.Exec(`UPDATE jobs SET status='pending', attempts=attempts-1 WHERE id=$1`, id)
 		require.NoError(t, err)
 	}
 
@@ -220,4 +230,59 @@ func TestTranscribeEnqueue_RealPostgres(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, claimed)
 	assert.Equal(t, entity.JobKindTranscribe, claimed.Kind)
+}
+
+// TestRequeueRunning_KindScoped_RealPostgres proves the multi-consumer
+// stale-sweep contract (repository.JobRepository) against a real
+// PostgreSQL: the Pi worker's startup sweep, restricted to its registered
+// kinds, must not flip a 'running' transcribe job — that row belongs to the
+// Mac Python worker and is mid-execution, not stale. The reverse scope
+// (sweeping only 'transcribe') is verified too.
+func TestRequeueRunning_KindScoped_RealPostgres(t *testing.T) {
+	conn := openTestDB(t)
+	require.NoError(t, MigrateUp(conn))
+
+	insertRunning := func(kind string) int64 {
+		var id int64
+		require.NoError(t, conn.QueryRow(
+			`INSERT INTO jobs (kind, status, attempts) VALUES ($1, 'running', 1) RETURNING id`,
+			kind).Scan(&id))
+		t.Cleanup(func() { _, _ = conn.Exec(`DELETE FROM jobs WHERE id = $1`, id) })
+		return id
+	}
+	transcribeID := insertRunning(entity.JobKindTranscribe)
+	piID := insertRunning(entity.JobKindRegenerateFeed)
+
+	jobStatus := func(id int64) (status string, attempts int) {
+		require.NoError(t, conn.QueryRow(
+			`SELECT status, attempts FROM jobs WHERE id = $1`, id).Scan(&status, &attempts))
+		return status, attempts
+	}
+
+	// Pi worker restart: sweeps only its own kinds.
+	jobs := pgRepo.NewJobRepo(conn)
+	piWorkerKinds := []string{
+		entity.JobKindRegenerateFeed, entity.JobKindNotifyEpisode,
+		entity.JobKindNotifyError, entity.JobKindCleanupOldMedia,
+	}
+	n, err := jobs.RequeueRunning(context.Background(), piWorkerKinds...)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, n, int64(1))
+
+	status, attempts := jobStatus(piID)
+	assert.Equal(t, entity.JobStatusPending, status, "own-kind orphan is requeued")
+	assert.Equal(t, 1, attempts, "attempts from the crashed claim stay counted")
+
+	status, attempts = jobStatus(transcribeID)
+	assert.Equal(t, entity.JobStatusRunning, status,
+		"the Mac worker's running transcribe job must survive the Pi sweep")
+	assert.Equal(t, 1, attempts,
+		"the Mac worker's job must not gain attempts from the Pi sweep")
+
+	// The Mac worker's own sweep (kind 'transcribe') does requeue it.
+	n, err = jobs.RequeueRunning(context.Background(), entity.JobKindTranscribe)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, n, int64(1))
+	status, _ = jobStatus(transcribeID)
+	assert.Equal(t, entity.JobStatusPending, status)
 }

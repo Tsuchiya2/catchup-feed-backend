@@ -28,11 +28,18 @@ type JobRepository interface {
 	// terminally. Retry-count policy stays in the caller: it reads
 	// Job.Attempts (incremented by ClaimNext) and decides.
 	MarkFailed(ctx context.Context, id int64, lastError string, retryAt *time.Time) error
-	// RequeueRunning flips every running job back to pending and returns
-	// how many rows it touched. The worker is the queue's only consumer
-	// (C-4: single worker on the Pi), so at consumer startup any 'running'
-	// row is by definition an orphan of a crashed previous process — this
-	// is the stale-job sweep. Attempts stay as incremented by the crashed
-	// claim, so a repeatedly crashing job still hits the retry ceiling.
-	RequeueRunning(ctx context.Context) (int64, error)
+	// RequeueRunning flips running jobs of the given kinds back to pending
+	// and returns how many rows it touched (the stale-job sweep, run at
+	// consumer startup). The jobs table has multiple consumers — the Pi
+	// worker (cmd/worker) and the Mac transcribe worker (Python, Phase 2) —
+	// so each consumer MUST sweep only the kinds it is registered to
+	// handle and never touch another consumer's 'running' rows: a row of
+	// my own kinds that is 'running' when I start can only be the orphan
+	// of my crashed predecessor, while a 'running' row of a foreign kind
+	// is very likely mid-execution on the other host. Sweeping it would
+	// cause double execution and double attempts-counting. Calling with no
+	// kinds sweeps nothing (never all). Attempts stay as incremented by
+	// the crashed claim, so a repeatedly crashing job still hits the retry
+	// ceiling.
+	RequeueRunning(ctx context.Context, kinds ...string) (int64, error)
 }

@@ -112,12 +112,12 @@ func (q *fakeJobQueue) MarkFailed(_ context.Context, id int64, lastError string,
 	return errors.New("not found")
 }
 
-func (q *fakeJobQueue) RequeueRunning(_ context.Context) (int64, error) {
+func (q *fakeJobQueue) RequeueRunning(_ context.Context, kinds ...string) (int64, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	var n int64
 	for _, job := range q.jobs {
-		if job.Status == entity.JobStatusRunning {
+		if job.Status == entity.JobStatusRunning && slices.Contains(kinds, job.Kind) {
 			job.Status = entity.JobStatusPending
 			n++
 		}
@@ -274,6 +274,24 @@ func TestConsumer_Run(t *testing.T) {
 		})
 		runUntil(t, consumer, queue, func() bool { return queue.get(orphan.ID).Status == entity.JobStatusDone })
 		assert.Equal(t, 2, queue.get(orphan.ID).Attempts, "the crashed claim's attempt must stay counted")
+	})
+
+	t.Run("startup sweep only touches this consumer's kinds", func(t *testing.T) {
+		queue := &fakeJobQueue{}
+		// A transcribe job mid-execution on another consumer (Mac worker)
+		// must survive this consumer's startup sweep untouched.
+		foreign := queue.add(entity.JobKindTranscribe, entity.JobStatusRunning, 1, `{}`)
+		orphan := queue.add("ok", entity.JobStatusRunning, 1, `{}`)
+
+		consumer := newTestConsumer(queue, map[string]jobs.Handler{
+			"ok": jobs.HandlerFunc(func(_ context.Context, _ *entity.Job) error { return nil }),
+		})
+		runUntil(t, consumer, queue, func() bool { return queue.get(orphan.ID).Status == entity.JobStatusDone })
+		got := queue.get(foreign.ID)
+		assert.Equal(t, entity.JobStatusRunning, got.Status,
+			"another consumer's running job must not be requeued")
+		assert.Equal(t, 1, got.Attempts,
+			"another consumer's running job must not gain attempts")
 	})
 
 	t.Run("unregistered kinds are never claimed", func(t *testing.T) {
