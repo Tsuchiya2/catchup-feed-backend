@@ -165,6 +165,29 @@ func newTestConsumer(queue *fakeJobQueue, handlers map[string]jobs.Handler) *job
 }
 
 func TestConsumer_Run(t *testing.T) {
+	t.Run("no handlers: Run refuses instead of claiming every kind", func(t *testing.T) {
+		// An empty Handlers map would make ClaimNext run unrestricted and
+		// terminally fail other consumers' pending jobs (e.g. 'transcribe'
+		// waiting for the Mac worker) with "no handler registered".
+		queue := &fakeJobQueue{}
+		foreign := queue.add("transcribe", entity.JobStatusPending, 0, `{}`)
+
+		for name, handlers := range map[string]map[string]jobs.Handler{
+			"nil map":   nil,
+			"empty map": {},
+		} {
+			consumer := newTestConsumer(queue, handlers)
+			err := consumer.Run(context.Background())
+			require.Error(t, err, name)
+			assert.Contains(t, err.Error(), "no registered handlers", name)
+		}
+
+		// The foreign pending job was never touched.
+		got := queue.get(foreign.ID)
+		assert.Equal(t, entity.JobStatusPending, got.Status)
+		assert.Equal(t, 0, got.Attempts)
+	})
+
 	t.Run("success marks the job done", func(t *testing.T) {
 		queue := &fakeJobQueue{}
 		job := queue.add("ok", entity.JobStatusPending, 0, `{}`)
@@ -309,7 +332,11 @@ func TestConsumer_Run(t *testing.T) {
 
 	t.Run("run returns when the context is canceled", func(t *testing.T) {
 		queue := &fakeJobQueue{}
-		consumer := newTestConsumer(queue, map[string]jobs.Handler{})
+		// At least one handler: an empty consumer is rejected before the
+		// poll loop and would never observe the cancellation.
+		consumer := newTestConsumer(queue, map[string]jobs.Handler{
+			"noop": jobs.HandlerFunc(func(context.Context, *entity.Job) error { return nil }),
+		})
 
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
