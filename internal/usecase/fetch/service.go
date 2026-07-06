@@ -53,6 +53,12 @@ type Service struct {
 	FeedFetcher    FeedFetcher
 	ContentFetcher ContentFetcher     // Content enhancement for B-rated feeds
 	contentConfig  ContentFetchConfig // Configuration for content fetching behavior
+
+	// SummaryRepo is required only by SweepUnsummarized (Phase 2 §5.2b):
+	// the sweep upserts summaries for articles whose content arrived
+	// after insert (transcripts). Not part of NewService because the
+	// crawl path persists summaries atomically via CreateWithSummary.
+	SummaryRepo repository.SummaryRepository
 }
 
 // Summarizer is an interface for AI-powered text summarization.

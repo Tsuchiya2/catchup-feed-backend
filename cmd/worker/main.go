@@ -198,7 +198,7 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 		Threshold:   contentFetchConfig.Threshold,
 	}
 
-	return fetchUC.NewService(
+	svc := fetchUC.NewService(
 		srcRepo,
 		artRepo,
 		sum,
@@ -206,6 +206,11 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 		contentFetcher,
 		fetchConfig,
 	)
+	// §5.2b: the hourly sweep upserts summaries for articles whose content
+	// arrived after insert (Mac transcribe worker), so it needs the
+	// summaries repository the atomic crawl path does not.
+	svc.SummaryRepo = pgRepo.NewSummaryRepo(database)
+	return svc
 }
 
 // createSummarizer builds the Gemini -> Groq -> Ollama fallback chain from
@@ -251,7 +256,12 @@ func startCronWorker(ctx context.Context, logger *slog.Logger, svc fetchUC.Servi
 	c := cron.New(cron.WithLocation(loc))
 
 	_, err = c.AddFunc(cfg.CronSchedule, func() {
+		// Crawl first, then sweep (§5.2b: クロールの後に掃き取り). The sweep
+		// runs even when the crawl errored: its targets (transcripts filled
+		// in by the Mac worker overnight) do not depend on this cycle's
+		// crawl succeeding.
 		runCrawlJob(logger, svc, cfg)
+		runSweepJob(logger, svc, cfg)
 	})
 	if err != nil {
 		logger.Error("failed to add cron job", slog.Any("error", err))
@@ -311,6 +321,34 @@ func runCrawlJob(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.Worker
 		slog.Int64("inserted", stats.Inserted),
 		slog.Int64("duplicated", stats.Duplicated),
 		slog.Int64("summarize_errors", stats.SummarizeError),
+		slog.Duration("duration", stats.Duration),
+	)
+}
+
+// runSweepJob executes the §5.2b summary sweep: summarize articles whose
+// content was filled in after insert (transcribe path). Failed articles
+// are simply left in place — the next hourly run retries them (縮退許容,
+// no jobs-table bookkeeping).
+func runSweepJob(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.WorkerConfig) {
+	startTime := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.CrawlTimeout)
+	defer cancel()
+
+	stats, err := svc.SweepUnsummarized(ctx)
+	if err != nil {
+		logger.Error("summary sweep failed",
+			slog.Any("error", hhttp.SanitizeError(err)),
+			slog.Duration("duration", time.Since(startTime)))
+		return
+	}
+	if stats.Candidates == 0 {
+		return // the common case: nothing transcribed since last cycle
+	}
+	logger.Info("summary sweep completed",
+		slog.Int("candidates", stats.Candidates),
+		slog.Int64("summarized", stats.Summarized),
+		slog.Int64("failed", stats.Failed),
+		slog.Bool("limit_hit", stats.LimitHit),
 		slog.Duration("duration", stats.Duration),
 	)
 }

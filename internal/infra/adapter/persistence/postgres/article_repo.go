@@ -383,6 +383,22 @@ VALUES ($1, $2)`
 	return nil
 }
 
+// ListUnsummarized selects articles with content but no summaries row —
+// the sweep targets of Phase 2 §5.2b (transcripts filled in after insert
+// by the Mac worker). The shared articleFrom LEFT JOIN doubles as the
+// NOT EXISTS check: sm.article_id IS NULL keeps exactly the unsummarized
+// rows. Oldest-first so a backlog beyond limit drains across sweeps.
+func (repo *ArticleRepo) ListUnsummarized(ctx context.Context, limit int) ([]*entity.Article, error) {
+	query := `
+SELECT ` + articleColumns + `
+` + articleFrom + `
+WHERE a.content IS NOT NULL AND a.content <> ''
+  AND sm.article_id IS NULL
+ORDER BY a.id
+LIMIT $1`
+	return repo.queryArticles(ctx, "ListUnsummarized", query, limit)
+}
+
 func (repo *ArticleRepo) Update(ctx context.Context, article *entity.Article) error {
 	const query = `
 UPDATE articles SET

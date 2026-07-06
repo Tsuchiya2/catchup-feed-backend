@@ -54,6 +54,9 @@ func (s *stubUpdateRepo) Create(_ context.Context, _ *entity.Article) error {
 func (s *stubUpdateRepo) Delete(_ context.Context, _ int64) error {
 	return nil
 }
+func (s *stubUpdateRepo) ListUnsummarized(_ context.Context, _ int) ([]*entity.Article, error) {
+	return nil, nil
+}
 func (s *stubUpdateRepo) ExistsByURL(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }

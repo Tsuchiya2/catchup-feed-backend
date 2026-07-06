@@ -60,14 +60,15 @@ type transcribeJob struct {
 // article_id ごとに記録する（summaries.provider の検証用）。
 // transcribeJobs は CreateWithTranscribeJob の enqueue 記録。
 type stubArticleRepo struct {
-	mu             sync.Mutex
-	articles       []*entity.Article
-	summaries      map[int64]*entity.Summary
-	transcribeJobs []transcribeJob
-	existsMap      map[string]bool
-	existsErr      error
-	createErr      error
-	nextID         int64
+	mu                  sync.Mutex
+	articles            []*entity.Article
+	summaries           map[int64]*entity.Summary
+	transcribeJobs      []transcribeJob
+	existsMap           map[string]bool
+	existsErr           error
+	createErr           error
+	listUnsummarizedErr error
+	nextID              int64
 }
 
 func (s *stubArticleRepo) ExistsByURLBatch(_ context.Context, urls []string) (map[string]bool, error) {
@@ -127,6 +128,30 @@ func (s *stubArticleRepo) CreateWithTranscribeJob(_ context.Context, a *entity.A
 		SourceKind: sourceKind,
 	})
 	return nil
+}
+
+// ListUnsummarized returns articles with content but no recorded summary
+// (掃き取りパス §5.2b の対象抽出をメモリ上で再現).
+func (s *stubArticleRepo) ListUnsummarized(_ context.Context, limit int) ([]*entity.Article, error) {
+	if s.listUnsummarizedErr != nil {
+		return nil, s.listUnsummarizedErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*entity.Article
+	for _, a := range s.articles {
+		if a.Content == "" {
+			continue
+		}
+		if _, ok := s.summaries[a.ID]; ok {
+			continue
+		}
+		out = append(out, a)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // 以下は未使用だが、インターフェース満たすために実装

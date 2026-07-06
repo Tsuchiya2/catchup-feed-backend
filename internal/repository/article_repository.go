@@ -70,6 +70,12 @@ type ArticleRepository interface {
 	// source_kind}; it is claimed by the Mac transcribe worker only, never
 	// by the Pi consumer. Sets article.ID.
 	CreateWithTranscribeJob(ctx context.Context, article *entity.Article, mediaURL, sourceKind string) error
+	// ListUnsummarized returns up to limit articles whose content is
+	// present (non-NULL, non-empty) but which have no summaries row —
+	// i.e. transcripts the Mac worker filled in after insert (Phase 2
+	// §5.2b). Ordered oldest-first (id ASC) so a backlog larger than
+	// limit still drains monotonically across hourly sweeps.
+	ListUnsummarized(ctx context.Context, limit int) ([]*entity.Article, error)
 	Update(ctx context.Context, article *entity.Article) error
 	Delete(ctx context.Context, id int64) error
 	ExistsByURL(ctx context.Context, url string) (bool, error)

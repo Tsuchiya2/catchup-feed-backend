@@ -53,6 +53,9 @@ func (s *stubSearchPaginatedRepo) Delete(_ context.Context, _ int64) error {
 	return nil
 }
 
+func (s *stubSearchPaginatedRepo) ListUnsummarized(_ context.Context, _ int) ([]*entity.Article, error) {
+	return nil, nil
+}
 func (s *stubSearchPaginatedRepo) ExistsByURL(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }

@@ -75,6 +75,9 @@ func (s *stubRepo) Delete(_ context.Context, id int64) error {
 }
 
 // ExistsByURL checks if any article exists with the given URL.
+func (s *stubRepo) ListUnsummarized(_ context.Context, _ int) ([]*entity.Article, error) {
+	return nil, nil
+}
 func (s *stubRepo) ExistsByURL(_ context.Context, url string) (bool, error) {
 	if s.err != nil {
 		return false, s.err

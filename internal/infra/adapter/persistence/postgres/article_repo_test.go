@@ -639,3 +639,62 @@ func TestArticleRepo_GetWithSource_NotFound(t *testing.T) {
 	assert.Nil(t, article)
 	assert.Empty(t, sourceName)
 }
+
+/* ─────────────────── ListUnsummarized (Phase 2 §5.2b) ─────────────────── */
+
+func TestArticleRepo_ListUnsummarized(t *testing.T) {
+	now := time.Date(2026, 7, 6, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name    string
+		rows    *sqlmock.Rows
+		queryEr error
+		wantLen int
+		wantErr bool
+	}{
+		{
+			name: "returns content-filled articles without summaries",
+			rows: sqlmock.NewRows(articleCols).
+				AddRow(int64(1), int64(2), "transcribed", "https://u1", "transcript text", "", now, now).
+				AddRow(int64(3), int64(2), "another", "https://u2", "more text", "", nil, now),
+			wantLen: 2,
+		},
+		{
+			name:    "no candidates returns empty slice",
+			rows:    sqlmock.NewRows(articleCols),
+			wantLen: 0,
+		},
+		{
+			name:    "database error",
+			queryEr: errors.New("db down"),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, mock, closeFn := newArticleRepo(t)
+			defer closeFn()
+
+			// The WHERE clause is the §5.2b target definition: content
+			// present AND no summaries row (via the shared LEFT JOIN).
+			exp := mock.ExpectQuery(regexp.QuoteMeta(
+				"WHERE a.content IS NOT NULL AND a.content <> ''\n  AND sm.article_id IS NULL\nORDER BY a.id\nLIMIT $1")).
+				WithArgs(50)
+			if tt.queryEr != nil {
+				exp.WillReturnError(tt.queryEr)
+			} else {
+				exp.WillReturnRows(tt.rows)
+			}
+
+			got, err := repo.ListUnsummarized(context.Background(), 50)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Len(t, got, tt.wantLen)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}

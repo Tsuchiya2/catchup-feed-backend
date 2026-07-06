@@ -44,6 +44,9 @@ func (m *mockArticleRepo) CountArticles(_ context.Context) (int64, error) {
 }
 
 // Unused but required for interface
+func (m *mockArticleRepo) ListUnsummarized(_ context.Context, _ int) ([]*entity.Article, error) {
+	return nil, nil
+}
 func (m *mockArticleRepo) List(_ context.Context) ([]*entity.Article, error) {
 	return nil, nil
 }
