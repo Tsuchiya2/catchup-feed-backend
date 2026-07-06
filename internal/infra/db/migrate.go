@@ -11,10 +11,20 @@ package db
 import (
 	"database/sql"
 	_ "embed"
+	"fmt"
 )
 
 //go:embed seeds/sources.sql
 var seedSourcesSQL string
+
+// createVectorExtension enables pgvector for book_chunks.embedding
+// (Phase 2 §6, U-24). Idempotent; requires the extension to be present in
+// the PostgreSQL image (compose/CI/Pi all run pgvector/pgvector:pg18) and
+// the connecting role to own the database (POSTGRES_USER does). On a plain
+// postgres image this statement fails and MigrateUp aborts with a message
+// naming the required image — the server refuses to start rather than boot
+// with a half-applied schema.
+const createVectorExtension = `CREATE EXTENSION IF NOT EXISTS vector`
 
 // createTableStatements is the §4 schema, one statement per table, in
 // dependency order.
@@ -101,6 +111,25 @@ var createTableStatements = []string{
     run_after     timestamptz NOT NULL DEFAULT now(),
     created_at    timestamptz NOT NULL DEFAULT now()
 )`,
+	// ===== 書籍 RAG(Phase 2 §6)=====
+	// Go コードからのアクセスは Phase 2 では発生しない(書き込み・検索は
+	// Python の pulse-books)。リポジトリ層・entity は右サイズ原則で作らない。
+	// DDL の正: catchup-feed-ai tests/test_books_db_integration.py(設計書
+	// Phase 2 §4 と同一)。embedding の次元は D-12 決定の bge-m3(1024次元)。
+	`CREATE TABLE IF NOT EXISTS books (
+  id          bigserial PRIMARY KEY,
+  title       text NOT NULL,
+  file_path   text NOT NULL,
+  imported_at timestamptz NOT NULL DEFAULT now()
+)`,
+	`CREATE TABLE IF NOT EXISTS book_chunks (
+  id        bigserial PRIMARY KEY,
+  book_id   bigint NOT NULL REFERENCES books,
+  position  int NOT NULL,
+  content   text NOT NULL,
+  embedding vector(1024),
+  UNIQUE (book_id, position)
+)`,
 }
 
 // alterTableStatements upgrade a database created by an earlier schema
@@ -143,9 +172,14 @@ var createIndexStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_feed_access_logs_token_id ON feed_access_logs (token_id)`,
 }
 
-// MigrateUp applies the pulse schema (Phase 1 §4 + Phase 2 §4 差分). It is
-// idempotent and safe to run at every process startup.
+// MigrateUp applies the pulse schema (Phase 1 §4 + Phase 2 §4/§6 差分). It
+// is idempotent and safe to run at every process startup.
 func MigrateUp(db *sql.DB) error {
+	// U-24: the vector type must exist before CREATE TABLE book_chunks.
+	if _, err := db.Exec(createVectorExtension); err != nil {
+		return fmt.Errorf(
+			"enable pgvector extension (U-24): book_chunks.embedding requires a pgvector-enabled PostgreSQL image such as pgvector/pgvector:pg18: %w", err)
+	}
 	for _, stmt := range createTableStatements {
 		if _, err := db.Exec(stmt); err != nil {
 			return err

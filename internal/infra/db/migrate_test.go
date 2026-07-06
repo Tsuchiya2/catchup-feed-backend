@@ -10,15 +10,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// §4 tables in dependency order — MigrateUp must create exactly these.
+// §4 (+ Phase 2 §6 books) tables in dependency order — MigrateUp must
+// create exactly these.
 var wantTables = []string{
 	"sources", "articles", "summaries",
 	"episodes", "segments",
 	"subscribers", "feed_tokens", "feed_access_logs",
 	"jobs",
+	"books", "book_chunks",
 }
 
 func expectFullMigration(mock sqlmock.Sqlmock) {
+	mock.ExpectExec("CREATE EXTENSION IF NOT EXISTS vector").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	for _, table := range wantTables {
 		mock.ExpectExec("CREATE TABLE IF NOT EXISTS " + table + " ").
 			WillReturnResult(sqlmock.NewResult(0, 0))
@@ -64,11 +68,33 @@ func TestMigrateUp_Idempotent(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestMigrateUp_ExtensionError: on an image without pgvector the CREATE
+// EXTENSION fails and MigrateUp must abort with a message naming the
+// required image (U-24 運用上の落とし穴: server が起動不能になる理由を
+// ログから即断できるようにする).
+func TestMigrateUp_ExtensionError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectExec("CREATE EXTENSION IF NOT EXISTS vector").
+		WillReturnError(sql.ErrConnDone)
+
+	err = MigrateUp(db)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sql.ErrConnDone, "original driver error stays unwrappable")
+	assert.Contains(t, err.Error(), "pgvector/pgvector:pg18",
+		"error must name the required image")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestMigrateUp_TableError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
+	mock.ExpectExec("CREATE EXTENSION IF NOT EXISTS vector").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS sources").
 		WillReturnError(sql.ErrConnDone)
 
@@ -83,6 +109,8 @@ func TestMigrateUp_IndexError(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
+	mock.ExpectExec("CREATE EXTENSION IF NOT EXISTS vector").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	for range wantTables {
 		mock.ExpectExec("CREATE TABLE IF NOT EXISTS").
 			WillReturnResult(sqlmock.NewResult(0, 0))
@@ -103,6 +131,8 @@ func TestMigrateUp_AlterError(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
+	mock.ExpectExec("CREATE EXTENSION IF NOT EXISTS vector").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	for range wantTables {
 		mock.ExpectExec("CREATE TABLE IF NOT EXISTS").
 			WillReturnResult(sqlmock.NewResult(0, 0))
@@ -119,6 +149,8 @@ func TestMigrateUp_SeedError(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
+	mock.ExpectExec("CREATE EXTENSION IF NOT EXISTS vector").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	for range wantTables {
 		mock.ExpectExec("CREATE TABLE IF NOT EXISTS").
 			WillReturnResult(sqlmock.NewResult(0, 0))
@@ -159,6 +191,9 @@ func TestSchema_MatchesDesignDoc(t *testing.T) {
 		{"sources default lang to en", "lang          text NOT NULL DEFAULT 'en'"},
 		{"sources default kind to rss (Phase 2 §4)", "kind          text NOT NULL DEFAULT 'rss'"},
 		{"sources.kind constrained to rss|youtube|podcast", "CHECK (kind IN ('rss', 'youtube', 'podcast'))"},
+		{"book_chunks reference books with NOT NULL FK (Phase 2 §6)", "book_id   bigint NOT NULL REFERENCES books"},
+		{"book_chunks embedding is 1024-dim (D-12: bge-m3)", "embedding vector(1024)"},
+		{"book_chunks unique per (book_id, position)", "UNIQUE (book_id, position)"},
 	}
 
 	for _, tt := range tests {
