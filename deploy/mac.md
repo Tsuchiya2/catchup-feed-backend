@@ -225,7 +225,7 @@ docker version                # Client/Server 両方出れば OK
 
 ```bash
 docker run -d --name open-webui --restart unless-stopped \
-  -p 127.0.0.1:3000:8080 \
+  -p 127.0.0.1:31337:8080 \
   -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
   -e ENABLE_OPENAI_API=false \
   -e SCARF_NO_ANALYTICS=true \
@@ -235,7 +235,7 @@ docker run -d --name open-webui --restart unless-stopped \
   ghcr.io/open-webui/open-webui:main
 ```
 
-- `-p 127.0.0.1:3000:8080`: **localhost バインドが分離の要**。LAN には出ない。外に見せるのは
+- `-p 127.0.0.1:31337:8080`: **localhost バインドが分離の要**。LAN には出ない。外に見せるのは
   次節の tailscale serve だけ(pi.md 5章の「設定で分離を保証する」と同じ考え方)
 - `OLLAMA_BASE_URL`: コンテナから Mac ホストの Ollama(2章)へ。macOS の Docker Desktop では
   `host.docker.internal` がそのまま解決される
@@ -249,7 +249,7 @@ docker run -d --name open-webui --restart unless-stopped \
 
 ### 12.3 初期設定(ブラウザ)
 
-1. Mac で http://127.0.0.1:3000 を開き、管理者アカウントを作成(ローカル保存。外部サービス登録ではない)
+1. Mac で http://127.0.0.1:31337 を開き、管理者アカウントを作成(ローカル保存。外部サービス登録ではない)
 2. 既定モデル: 管理者パネル → 設定 → モデルで **gemma4:12b** を既定にする(11章で pull 済みのものが並ぶ)
 3. **embedding を bge-m3 に変更**(書籍を1冊でも入れる前に必ず):
    管理者パネル → 設定 → **ドキュメント** → 「埋め込みモデルエンジン」を **Ollama**、
@@ -260,7 +260,7 @@ docker run -d --name open-webui --restart unless-stopped \
 ### 12.4 スマホから使う(Tailscale 経由 PWA)
 
 ```bash
-tailscale serve --bg 3000     # https://<Mac名>.<tailnet>.ts.net → 127.0.0.1:3000
+tailscale serve --bg 31337     # https://<Mac名>.<tailnet>.ts.net → 127.0.0.1:31337
 tailscale serve status        # 設定は再起動後も保持される
 ```
 
