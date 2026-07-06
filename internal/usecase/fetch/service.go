@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -192,6 +193,19 @@ func (s *Service) CrawlAllSources(ctx context.Context) (*CrawlStats, error) {
 	}
 	stats.Sources = len(srcs)
 
+	// transcribe kind (youtube/podcast) を rss より先に処理する(安定ソート:
+	// 同 kind 内は ListActive の返す id 順を維持)。transcribe 経路は
+	// go-readability も要約フォールバック連鎖も通らず(検知 + INSERT +
+	// transcribe ジョブ enqueue、§5.1 第1段は失敗しても transcribe へ落ちる
+	// だけ)数秒で完了する。一方 rss 経路は要約全プロバイダ全滅でクロール
+	// 全体を中断し得る(§8)し、CrawlTimeout も rss 処理中に尽きやすい。
+	// id 順のままだと末尾の youtube/podcast ソースが要約詰まりの人質になって
+	// 毎サイクル未到達になる(本番障害: id 305〜309 に一度も到達せず)。
+	// 先行させれば、クオータ枯渇日でも新着検知と enqueue は必ず成立する。
+	sort.SliceStable(srcs, func(i, j int) bool {
+		return isTranscribeKind(srcs[i]) && !isTranscribeKind(srcs[j])
+	})
+
 	for _, src := range srcs {
 		if err := s.processSingleSource(ctx, src, stats); err != nil {
 			return stats, err
@@ -214,6 +228,14 @@ func (s *Service) CrawlAllSources(ctx context.Context) (*CrawlStats, error) {
 	)
 
 	return stats, nil
+}
+
+// isTranscribeKind reports whether the source is handled by the transcribe
+// path (enqueueTranscribeItems: youtube/podcast, Phase 2 §5) as opposed to
+// the rss summarize path. Used by CrawlAllSources to order transcribe
+// sources ahead of rss sources.
+func isTranscribeKind(src *entity.Source) bool {
+	return src.Kind == entity.SourceKindYouTube || src.Kind == entity.SourceKindPodcast
 }
 
 // processSingleSource processes a single feed source by fetching, deduplicating,
