@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,104 @@ WHERE id = (
 RETURNING kind`).Scan(&claimedKind)
 	require.NoError(t, err)
 	assert.Equal(t, "regenerate_feed", claimedKind)
+}
+
+// vectorLiteral renders a 1024-dim unit vector along axis as the pgvector
+// input syntax '[v1,v2,...]'.
+func vectorLiteral(axis int) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i := 0; i < 1024; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		if i == axis {
+			b.WriteByte('1')
+		} else {
+			b.WriteByte('0')
+		}
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+// TestBooksVector_RealPostgres verifies the Phase 2 §6 book-RAG migration
+// (U-24) against a real pgvector-enabled PostgreSQL:
+//   - books / book_chunks accept the exact write shape pulse-books (Python)
+//     uses, including vector(1024) embeddings
+//   - `<=>` (cosine distance) nearest-neighbour search works
+//   - the vector(1024) typmod rejects other dimensionalities
+//   - UNIQUE (book_id, position) holds
+//   - re-running MigrateUp with data present is a non-destructive no-op
+//     (existing-DB safety for the live Pi)
+func TestBooksVector_RealPostgres(t *testing.T) {
+	conn := openTestDB(t)
+	require.NoError(t, MigrateUp(conn))
+
+	// Snapshot an unrelated Phase 1 table to prove non-interference.
+	var sourcesBefore int
+	require.NoError(t, conn.QueryRow(`SELECT count(*) FROM sources`).Scan(&sourcesBefore))
+
+	var bookID int64
+	require.NoError(t, conn.QueryRow(
+		`INSERT INTO books (title, file_path) VALUES ('Go言語による並行処理', '/books/concurrency-in-go.pdf') RETURNING id`,
+	).Scan(&bookID))
+	defer func() {
+		_, _ = conn.Exec(`DELETE FROM book_chunks WHERE book_id = $1`, bookID)
+		_, _ = conn.Exec(`DELETE FROM books WHERE id = $1`, bookID)
+	}()
+
+	// imported_at defaults to now().
+	var importedAtSet bool
+	require.NoError(t, conn.QueryRow(
+		`SELECT imported_at IS NOT NULL FROM books WHERE id = $1`, bookID).Scan(&importedAtSet))
+	assert.True(t, importedAtSet)
+
+	// Chunks along different axes: axis 0 and axis 1 are orthogonal.
+	for pos, axis := range []int{0, 1} {
+		_, err := conn.Exec(
+			`INSERT INTO book_chunks (book_id, position, content, embedding) VALUES ($1, $2, $3, $4::vector)`,
+			bookID, pos, fmt.Sprintf("chunk %d", pos), vectorLiteral(axis))
+		require.NoError(t, err)
+	}
+
+	// <=> cosine-distance search: a query vector on axis 0 must rank the
+	// axis-0 chunk first (distance 0) ahead of the orthogonal one.
+	var nearestPos int
+	var nearestDist float64
+	require.NoError(t, conn.QueryRow(
+		`SELECT position, embedding <=> $2::vector
+		 FROM book_chunks WHERE book_id = $1
+		 ORDER BY embedding <=> $2::vector LIMIT 1`,
+		bookID, vectorLiteral(0)).Scan(&nearestPos, &nearestDist))
+	assert.Equal(t, 0, nearestPos)
+	assert.InDelta(t, 0.0, nearestDist, 1e-9)
+
+	// vector(1024) rejects a 3-dim vector (D-12: bge-m3 の次元を型で固定).
+	_, err := conn.Exec(
+		`INSERT INTO book_chunks (book_id, position, content, embedding) VALUES ($1, 99, 'bad dim', '[1,0,0]'::vector)`,
+		bookID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "1024")
+
+	// UNIQUE (book_id, position): re-inserting position 0 must fail.
+	_, err = conn.Exec(
+		`INSERT INTO book_chunks (book_id, position, content, embedding) VALUES ($1, 0, 'dup', $2::vector)`,
+		bookID, vectorLiteral(2))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "book_chunks_book_id_position_key")
+
+	// Idempotent re-run with live data: nothing is dropped or duplicated.
+	require.NoError(t, MigrateUp(conn), "MigrateUp re-run over populated books tables")
+	var chunks int
+	require.NoError(t, conn.QueryRow(
+		`SELECT count(*) FROM book_chunks WHERE book_id = $1`, bookID).Scan(&chunks))
+	assert.Equal(t, 2, chunks, "re-run keeps existing chunks intact")
+
+	// Unrelated Phase 1 data untouched (seed is ON CONFLICT DO NOTHING).
+	var sourcesAfter int
+	require.NoError(t, conn.QueryRow(`SELECT count(*) FROM sources`).Scan(&sourcesAfter))
+	assert.Equal(t, sourcesBefore, sourcesAfter, "books migration must not touch sources")
 }
 
 // TestSourcesKind_RealPostgres verifies the Phase 2 §4 sources.kind
