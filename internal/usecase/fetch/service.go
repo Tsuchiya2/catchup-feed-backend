@@ -415,7 +415,9 @@ func (s *Service) enqueueTranscribeItems(
 		// 積まない。失敗はここで再試行せず既存の transcribe 経路へ落とす
 		// (C-14: 次段が回収する。dedupe により同一動画が翌サイクルで再び
 		// 第1段に来ることもない)。podcast は第1段を通らない(§5.2)。
-		if src.Kind == entity.SourceKindYouTube && s.VideoDescriber != nil {
+		// URL が空の item は動画を特定できないので第1段(Gemini 呼び出し
+		// +cap 1枠)を消費させず、下の SkippedNoMedia 経路へ直行させる。
+		if src.Kind == entity.SourceKindYouTube && s.VideoDescriber != nil && item.URL != "" {
 			if atomic.LoadInt64(&stats.YouTubeDirectAttempts) >= YouTubeDirectMaxPerCycle {
 				logger.Info("youtube direct cap reached for this cycle, deferring to transcribe queue",
 					slog.Int64("source_id", src.ID),

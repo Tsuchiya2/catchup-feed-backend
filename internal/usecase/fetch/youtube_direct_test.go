@@ -96,6 +96,7 @@ func TestService_CrawlAllSources_YouTubeDirect(t *testing.T) {
 		wantEnqueued  int64
 		wantJobs      int
 		wantSummaries int
+		wantNoMedia   int64
 	}{
 		{
 			name:          "第1段成功: CreateWithSummary 経路、transcribe ジョブなし",
@@ -167,6 +168,16 @@ func TestService_CrawlAllSources_YouTubeDirect(t *testing.T) {
 			wantSummaries: 0,
 		},
 		{
+			// URL 空の item は動画を特定できないため、第1段(Gemini 呼び出し
+			// +cap 1枠)を消費せず既存の SkippedNoMedia 経路へ直行する。
+			name:        "URL 空の youtube item は第1段を消費せず SkippedNoMedia へ",
+			kind:        entity.SourceKindYouTube,
+			items:       []fetchUC.FeedItem{{Title: "No URL", PublishedAt: now}},
+			describer:   &stubVideoDescriber{transcript: "書き起こし", summary: "要約"},
+			wantCalls:   0,
+			wantNoMedia: 1,
+		},
+		{
 			name:      "既存 URL は dedupe され第1段も呼ばれない",
 			kind:      entity.SourceKindYouTube,
 			items:     []fetchUC.FeedItem{videoItem(1)},
@@ -197,6 +208,7 @@ func TestService_CrawlAllSources_YouTubeDirect(t *testing.T) {
 			assert.Equal(t, tt.wantEnqueued, stats.TranscribeEnqueued, "TranscribeEnqueued")
 			assert.Len(t, artRepo.transcribeJobs, tt.wantJobs, "transcribe jobs")
 			assert.Len(t, artRepo.summaries, tt.wantSummaries, "persisted summaries")
+			assert.Equal(t, tt.wantNoMedia, stats.SkippedNoMedia, "SkippedNoMedia")
 		})
 	}
 }

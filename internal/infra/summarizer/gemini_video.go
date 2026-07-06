@@ -109,8 +109,9 @@ func buildVideoPrompt(charLimit int) string {
 }
 
 // parseVideoDescription splits the model output into transcript and summary.
-// Both sections must be present and non-empty; anything else is an error so
-// the caller falls back to the transcribe queue (壊れた応答を保存しない).
+// Both sections must be present, non-empty, and free of residual marker
+// lines; anything else is an error so the caller falls back to the
+// transcribe queue (壊れた応答を保存しない).
 func parseVideoDescription(out string) (transcript, summary string, err error) {
 	ti := strings.Index(out, transcriptMarker)
 	if ti < 0 {
@@ -130,6 +131,20 @@ func parseVideoDescription(out string) (transcript, summary string, err error) {
 	}
 	if summary == "" {
 		return "", "", fmt.Errorf("video response has empty summary section")
+	}
+	// Strict marker check: the prompt requires each marker exactly once, so
+	// a marker surviving inside a section body means the model deviated from
+	// the format and the split cannot be trusted (e.g. a duplicated
+	// transcript block, or a second summary appended after the first). Fail
+	// so the caller falls back to the transcribe queue instead of persisting
+	// a corrupted section. Note the split above already guarantees the
+	// transcript section cannot contain summaryMarker (si is its first
+	// occurrence), so only three residual cases exist.
+	if strings.Contains(transcript, transcriptMarker) {
+		return "", "", fmt.Errorf("video response has duplicate %s marker inside transcript section", transcriptMarker)
+	}
+	if strings.Contains(summary, transcriptMarker) || strings.Contains(summary, summaryMarker) {
+		return "", "", fmt.Errorf("video response has stray marker inside summary section")
 	}
 	return transcript, summary, nil
 }

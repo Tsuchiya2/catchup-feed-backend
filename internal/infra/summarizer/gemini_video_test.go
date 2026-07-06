@@ -126,6 +126,32 @@ func TestGemini_DescribeVideo_Errors(t *testing.T) {
 			wantErrSub: "empty summary",
 		},
 		{
+			// プロンプトは「各マーカー1回ずつ」を要求する。逸脱応答は保存
+			// せずエラー(→ 第2段フォールバック)にする(strict 分割)。
+			name: "duplicate transcript marker inside transcript section",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(geminiSuccessBody(
+					"===TRANSCRIPT===\n前半\n===TRANSCRIPT===\n後半\n===SUMMARY===\n要約")))
+			},
+			wantErrSub: "duplicate ===TRANSCRIPT=== marker inside transcript",
+		},
+		{
+			name: "duplicate summary marker inside summary section",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(geminiSuccessBody(
+					"===TRANSCRIPT===\n書き起こし\n===SUMMARY===\n要約その1\n===SUMMARY===\n要約その2")))
+			},
+			wantErrSub: "stray marker inside summary section",
+		},
+		{
+			name: "transcript marker leaking into summary section",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(geminiSuccessBody(
+					"===TRANSCRIPT===\n書き起こし\n===SUMMARY===\n要約\n===TRANSCRIPT===\n追加の書き起こし")))
+			},
+			wantErrSub: "stray marker inside summary section",
+		},
+		{
 			name: "no candidates",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = w.Write([]byte(`{"candidates":[]}`))
