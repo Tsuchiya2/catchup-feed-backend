@@ -282,6 +282,19 @@ docker exec -it pulse-postgres psql -U catchup-feed -c \
   "SELECT name, default_version, installed_version FROM pg_available_extensions WHERE name='vector';"
 ```
 
+### 12.6 書籍検索 Tool の登録(A-23、書籍 RAG との接続)
+
+壁打ち中の LLM が Pi の book_chunks を検索できるようにする Tool は
+catchup-feed-ai リポジトリの `openwebui/book_search_tool.py`。
+登録・Valves 設定・モデルへの有効化手順は同リポジトリ README の
+「Open WebUI への Tool 登録手順」を正とする。要点のみ:
+
+- Workspace → Tools に貼り付けて Save(依存はフロントマターで自動導入)
+- Valves の `DATABASE_URL` に `~/pulse/.env` と同じ DSN を設定(コンテナから Pi の
+  tailnet アドレスへは Docker Desktop 経由で追加設定なしに届く)
+- `OLLAMA_HOST` は既定 `http://host.docker.internal:11434`(2章の Ollama)のままでよい
+- C-12: Tool の通信先はローカル Ollama と Pi の Postgres のみ
+
 ## 停止・解除(参考)
 
 ```bash
