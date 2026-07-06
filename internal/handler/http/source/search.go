@@ -25,7 +25,7 @@ type SearchHandler struct{ Svc srcUC.Service }
 // @Success      200 {array} DTO "検索結果"
 // @Failure      400 {object} respond.ErrorResponse "Bad request"
 // @Failure      401 {object} respond.ErrorResponse "Authentication required"
-// @Failure      429 {object} respond.ErrorResponse "Too many requests - rate limit exceeded"
+// @Failure      429 {string} string "Too many requests - rate limit exceeded"
 // @Failure      500 {object} respond.ErrorResponse "Server error"
 // @Router       /sources/search [get]
 func (h SearchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
