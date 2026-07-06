@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/repository"
 	fetchUC "catchup-feed/internal/usecase/fetch"
@@ -736,6 +738,9 @@ func TestService_CrawlAllSources_TranscribeKinds(t *testing.T) {
 		wantSkipped    int64
 		wantDuplicated int64
 		wantJobs       []transcribeJob
+		// wantArticleURLs は保存された articles.url の期待値(挿入順)。
+		// nil なら検証しない。
+		wantArticleURLs []string
 	}{
 		{
 			name: "youtube: media_url is the video URL",
@@ -784,6 +789,55 @@ func TestService_CrawlAllSources_TranscribeKinds(t *testing.T) {
 			existsMap:      map[string]bool{"https://www.youtube.com/watch?v=known": true},
 			wantDuplicated: 1,
 		},
+		{
+			// CodeRabbit 指摘(PR #77): <link> なし podcast エピソードで
+			// articles.url が空のまま INSERT されないこと。enclosure URL に
+			// フォールバックする。
+			name: "podcast: link なしは enclosure URL を articles.url に使う",
+			kind: entity.SourceKindPodcast,
+			items: []fetchUC.FeedItem{
+				{Title: "No link", URL: "", EnclosureURL: "https://cdn.example.com/nolink.mp3", PublishedAt: now},
+			},
+			wantInserted: 1,
+			wantEnqueued: 1,
+			wantJobs: []transcribeJob{
+				{ArticleID: 1, MediaURL: "https://cdn.example.com/nolink.mp3", SourceKind: entity.SourceKindPodcast},
+			},
+			wantArticleURLs: []string{"https://cdn.example.com/nolink.mp3"},
+		},
+		{
+			// 不変条件: フォールバック後の URL が dedupe キーにもなる。
+			// 前サイクルで enclosure URL として INSERT 済みの link なし
+			// エピソードは、次サイクルで Duplicated になり再 INSERT
+			// (= articles.url UNIQUE 制約違反)を起こさない。
+			name: "podcast: link なしの既存エピソードは次サイクルで dedupe される",
+			kind: entity.SourceKindPodcast,
+			items: []fetchUC.FeedItem{
+				{Title: "No link", URL: "", EnclosureURL: "https://cdn.example.com/nolink.mp3", PublishedAt: now},
+			},
+			existsMap:      map[string]bool{"https://cdn.example.com/nolink.mp3": true},
+			wantDuplicated: 1,
+		},
+		{
+			// link も enclosure も無い podcast item は従来どおりスキップ
+			// (フォールバックしても空のまま → SkippedNoMedia)。
+			name: "podcast: link も enclosure も無い item はスキップ",
+			kind: entity.SourceKindPodcast,
+			items: []fetchUC.FeedItem{
+				{Title: "Nothing", URL: "", EnclosureURL: "", PublishedAt: now},
+			},
+			wantSkipped: 1,
+		},
+		{
+			// youtube は URL 空なら従来どおり SkippedNoMedia(enclosure への
+			// フォールバックは podcast 限定であることの確認)。
+			name: "youtube: URL 空は enclosure があっても SkippedNoMedia",
+			kind: entity.SourceKindYouTube,
+			items: []fetchUC.FeedItem{
+				{Title: "No URL", URL: "", EnclosureURL: "https://cdn.example.com/should-not-be-used.mp3", PublishedAt: now},
+			},
+			wantSkipped: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -826,11 +880,23 @@ func TestService_CrawlAllSources_TranscribeKinds(t *testing.T) {
 				t.Errorf("SummarizeError = %d, want 0", stats.SummarizeError)
 			}
 
-			// 記事は content 空(=NULL)・要約なしで保存される
+			// 記事は content 空(=NULL)・要約なしで保存される。
+			// articles.url は必ず非空(UNIQUE 制約のキー。link なし podcast
+			// は enclosure URL にフォールバックしている)
 			for _, art := range artRepo.articles {
 				if art.Content != "" {
 					t.Errorf("article content = %q, want empty (content NULL until transcribed)", art.Content)
 				}
+				if art.URL == "" {
+					t.Errorf("article %q has empty URL, want non-empty (fallback to media URL)", art.Title)
+				}
+			}
+			if tt.wantArticleURLs != nil {
+				gotURLs := make([]string, 0, len(artRepo.articles))
+				for _, art := range artRepo.articles {
+					gotURLs = append(gotURLs, art.URL)
+				}
+				assert.Equal(t, tt.wantArticleURLs, gotURLs, "articles.url")
 			}
 			if len(artRepo.summaries) != 0 {
 				t.Errorf("persisted summaries = %d, want 0", len(artRepo.summaries))

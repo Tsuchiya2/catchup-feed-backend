@@ -228,9 +228,11 @@ func (s *Service) processSingleSource(ctx context.Context, src *entity.Source, s
 	}
 
 	// N+1問題解消: 事前に全URLをバッチで存在チェック
+	// (キーは articleURLForItem — articles.url に入る値と同じでないと
+	// dedupe が効かず、次サイクルで UNIQUE 制約に衝突する)
 	urls := make([]string, 0, len(feedItems))
 	for _, item := range feedItems {
-		urls = append(urls, item.URL)
+		urls = append(urls, articleURLForItem(src, item))
 	}
 	existsMap, err := s.ArticleRepo.ExistsByURLBatch(ctx, urls)
 	if err != nil {
@@ -380,6 +382,22 @@ func (s *Service) processFeedItems(
 	return nil
 }
 
+// articleURLForItem resolves the value stored in articles.url for a feed
+// item. Podcast episodes may lack a <link> while still carrying a valid
+// enclosure (§5.2); falling back to the enclosure URL keeps the row's
+// unique key non-empty and stable, so dedupe works across crawl cycles.
+// Every dedupe lookup (ExistsByURLBatch keys, existsMap checks) MUST use
+// this same function — otherwise the next crawl re-inserts the episode and
+// hits the articles.url UNIQUE constraint.
+// For rss/youtube items this is the entry link unchanged (a youtube item
+// without a link cannot be identified and is skipped as SkippedNoMedia).
+func articleURLForItem(src *entity.Source, item FeedItem) string {
+	if item.URL == "" && src.Kind == entity.SourceKindPodcast {
+		return item.EnclosureURL
+	}
+	return item.URL
+}
+
 // enqueueTranscribeItems handles new items of youtube/podcast sources
 // (Phase 2 §5.1 / §5.2, Pi 側): each new item becomes an articles row with
 // content NULL plus a kind='transcribe' job, inserted atomically by the
@@ -405,7 +423,12 @@ func (s *Service) enqueueTranscribeItems(
 	for _, item := range feedItems {
 		atomic.AddInt64(&stats.FeedItems, 1)
 
-		if existsMap[item.URL] {
+		// articles.url に入る値(link 無し podcast は enclosure URL に
+		// フォールバック)。dedupe キーと INSERT 値を必ず一致させる:
+		// existsMap(ExistsByURLBatch)も同じ関数でキーを作っているので、
+		// 一度 INSERT したエピソードは次サイクルで Duplicated になる。
+		artURL := articleURLForItem(src, item)
+		if existsMap[artURL] {
 			atomic.AddInt64(&stats.Duplicated, 1)
 			continue
 		}
@@ -452,7 +475,7 @@ func (s *Service) enqueueTranscribeItems(
 		art := &entity.Article{
 			SourceID:    src.ID,
 			Title:       item.Title,
-			URL:         item.URL,
+			URL:         artURL,
 			Content:     "", // stored as NULL; the Mac transcribe worker fills it (§5)
 			PublishedAt: item.PublishedAt,
 			CrawledAt:   time.Now(),
