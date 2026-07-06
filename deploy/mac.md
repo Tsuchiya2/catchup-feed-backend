@@ -289,7 +289,10 @@ launchctl bootout gui/$(id -u)/com.pulse.radio
 launchctl bootout gui/$(id -u)/com.pulse.backup
 launchctl bootout gui/$(id -u)/com.pulse.transcribe   # Phase 2(ai.md)を入れている場合
 sudo pmset repeat cancel
-docker rm -f open-webui && tailscale serve --https=443 off   # Open WebUI(12章)を入れている場合
+# Open WebUI(12章)を入れている場合は次の2行を**両方**実行する(&& で繋がない:
+# コンテナが既に無くて docker rm が失敗しても、HTTPS 公開の解除は必ず行う)
+docker rm -f open-webui
+tailscale serve --https=443 off
 # (`tailscale serve reset` は 3章の Ollama TCP フォワードまで消えるので使わない)
 tailscale serve status   # 解除後の確認: Ollama の TCP 11434 だけが残っているのが正
 ```
