@@ -97,8 +97,8 @@ transcribe worker の設定は pydantic-settings(`src/pulse_transcribe/config.py
 - `DATABASE_URL` — **radio と完全に同じ値をそのまま共用**(mac.md 6章で設定済みのはず)。
   Pi の Postgres を tailnet 越しに指す: `postgres://catchup-feed:<POSTGRES_PASSWORD>@<pi の MagicDNS 名>:5433/catchup-feed?sslmode=disable`。
   psycopg(libpq)も Go 側と同じ URI を解釈するので書き分け不要。
-  ※ catchup-feed-ai リポジトリの `.env.example` に書かれている DSN(`pulse@...:5432/pulse`)は
-  汎用のプレースホルダで、**実際の値は上記(ポート 5433・DB 名 catchup-feed)が正**
+  ※ catchup-feed-ai リポジトリの `.env.example` の DSN は形式を示す例示 —
+  **実際の値は radio と同じ `~/pulse/.env` の DATABASE_URL をそのまま使う**
 - 任意キー(`WHISPER_MODEL` 等)は既定値でよければ書かなくてよい。一覧と説明は
   catchup-feed-ai の `.env.example` が正。使う場合は `~/pulse/.env` に追記する
   (env.mac.example の「transcribe worker」節に同じキーをコメントで載せてある)
