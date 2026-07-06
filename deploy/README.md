@@ -1,12 +1,14 @@
-# deploy/ — pulse Phase 1 デプロイ・運用資材
+# deploy/ — pulse デプロイ・運用資材
 
-設計書 §3(ホスト配置)・§8(バックアップ・縮退)・§9(旧システム停止)の実体。
-ホストごとの入口はこの2つ:
+Phase 1 設計書 §3(ホスト配置)・§8(バックアップ・縮退)・§9(旧システム停止)と
+Phase 2 設計書 §3・§6・§7(transcribe worker / Open WebUI / pgvector)の実体。
+入口はこの4つ:
 
 | ファイル | 対象 | 内容 |
 |---|---|---|
 | [pi.md](pi.md) | Raspberry Pi 5 | PostgreSQL / server / worker / episodes / Cloudflare Tunnel |
-| [mac.md](mac.md) | M3 MacBook Pro | VOICEVOX / Ollama / ffmpeg / radio / launchd / バックアップ |
+| [mac.md](mac.md) | M3 MacBook Pro | VOICEVOX / Ollama / ffmpeg / radio / launchd / バックアップ(11章〜: Phase 2 の Open WebUI・モデル追加) |
+| [ai.md](ai.md) | M3 MacBook Pro | Phase 2: transcribe worker(catchup-feed-ai)導入と他サービス連携(D-10) |
 | [legacy-shutdown.md](legacy-shutdown.md) | Pi | 旧 catchup-feed の計画停止(§9) |
 
 構成物:
@@ -21,9 +23,11 @@ deploy/
 ├── systemd/
 │   └── pulse.service         # ブート時に tailscaled 後で compose up する oneshot
 ├── launchd/
-│   ├── com.pulse.radio.plist   # 04:30 JST radio バッチ
-│   └── com.pulse.backup.plist  # 05:15 JST DB バックアップ(Mac が Pi から pull)
+│   ├── com.pulse.transcribe.plist  # 03:00 JST 文字起こし(Phase 2、deadline 04:15)
+│   ├── com.pulse.radio.plist       # 04:30 JST radio バッチ
+│   └── com.pulse.backup.plist      # 05:15 JST DB バックアップ(Mac が Pi から pull)
 └── scripts/
+    ├── transcribe-run.sh     # launchd → pulse-transcribe のラッパー(.env 読込 + 04:30 へのブリッジ)
     ├── radio-run.sh          # launchd → radio のラッパー(.env 読込 + VOICEVOX 起動)
     └── backup-pulse-db.sh    # pg_dump pull + episodes ミラー(Mac 側で実行)
 ```
