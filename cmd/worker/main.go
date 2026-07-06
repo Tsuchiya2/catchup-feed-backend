@@ -210,6 +210,14 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 	// arrived after insert (Mac transcribe worker), so it needs the
 	// summaries repository the atomic crawl path does not.
 	svc.SummaryRepo = pgRepo.NewSummaryRepo(database)
+
+	// §5.1 第1段: kind='youtube' の新着に対する Gemini URL 直接入力。
+	// GEMINI_API_KEY 未設定なら nil のまま = 第1段スキップで全件が
+	// transcribe 経路(Mac の第2段・第3段)へ。nil の具象型を interface
+	// フィールドへ直接代入しない(non-nil interface になるため)。
+	if vd := summarizer.NewVideoDescriberFromEnv(logger); vd != nil {
+		svc.VideoDescriber = vd
+	}
 	return svc
 }
 
@@ -321,6 +329,8 @@ func runCrawlJob(logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.Worker
 		slog.Int64("inserted", stats.Inserted),
 		slog.Int64("duplicated", stats.Duplicated),
 		slog.Int64("summarize_errors", stats.SummarizeError),
+		slog.Int64("youtube_direct_attempts", stats.YouTubeDirectAttempts),
+		slog.Int64("youtube_direct_succeeded", stats.YouTubeDirectSucceeded),
 		slog.Duration("duration", stats.Duration),
 	)
 }
