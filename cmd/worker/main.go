@@ -252,6 +252,18 @@ func createHTTPClient() *http.Client {
 	}
 }
 
+// cronSlogLogger adapts slog to the robfig/cron Logger interface so chain
+// decorators (SkipIfStillRunning) log through the worker's JSON logger.
+type cronSlogLogger struct{ logger *slog.Logger }
+
+func (l cronSlogLogger) Info(msg string, keysAndValues ...any) {
+	l.logger.Info("cron: "+msg, slog.Any("details", keysAndValues))
+}
+
+func (l cronSlogLogger) Error(err error, msg string, keysAndValues ...any) {
+	l.logger.Error("cron: "+msg, slog.Any("error", err), slog.Any("details", keysAndValues))
+}
+
 // startCronWorker starts the cron scheduler (crawl + daily cleanup
 // enqueue) and blocks until ctx is done.
 func startCronWorker(ctx context.Context, logger *slog.Logger, svc fetchUC.Service, cfg *workerPkg.WorkerConfig, healthServer *workerPkg.HealthServer, jobQueue repository.JobRepository) {
@@ -261,7 +273,13 @@ func startCronWorker(ctx context.Context, logger *slog.Logger, svc fetchUC.Servi
 		logger.Error("invalid timezone, using UTC", slog.String("timezone", cfg.Timezone), slog.Any("error", err))
 		loc = time.UTC
 	}
-	c := cron.New(cron.WithLocation(loc))
+	// SkipIfStillRunning: crawl+sweep は逐次で最悪 CrawlTimeout×2(既定60分)
+	// まで走り得るため、前回実行が毎時発火と接触したら重ねずスキップする
+	// (次の毎時発火が回収する、縮退許容)。スキップはログで観測できる。
+	c := cron.New(
+		cron.WithLocation(loc),
+		cron.WithChain(cron.SkipIfStillRunning(cronSlogLogger{logger: logger})),
+	)
 
 	_, err = c.AddFunc(cfg.CronSchedule, func() {
 		// Crawl first, then sweep (§5.2b: クロールの後に掃き取り). The sweep
