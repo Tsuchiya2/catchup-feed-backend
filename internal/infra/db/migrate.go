@@ -130,6 +130,36 @@ var createTableStatements = []string{
   embedding vector(1024),
   UNIQUE (book_id, position)
 )`,
+	// ===== 学習ループ(Phase 3 §4)=====
+	// DDL は docs/pulse-phase3-design.md §4 の逐語転記。
+	// segments.kind は Phase 1 から text 型・CHECK なしで 'quiz'|'review'|
+	// 'book_review' を予約済みのため ALTER 不要(§4 設計メモ。実 DB での確認は
+	// learning_integration_test.go)。
+	`CREATE TABLE IF NOT EXISTS learning_items (
+  id           bigserial PRIMARY KEY,
+  kind         text NOT NULL,                 -- 'article' | 'book'
+  article_id   bigint REFERENCES articles,    -- kind='article' のとき必須
+  book_id      bigint REFERENCES books,       -- kind='book' のとき必須
+  concept      text NOT NULL,                 -- 学習項目の見出し(1行。トラッカー・週次振り返り・ショーノートで使用)
+  question     text NOT NULL,                 -- 読み上げ用クイズ文(ラジオ口調の日本語)
+  answer       text NOT NULL,                 -- 読み上げ用の答え+一言解説
+  provider     text NOT NULL,                 -- 生成 LLM(gemini/groq/ollama。kind='book' は ollama 固定 = C-12)
+  stage        int  NOT NULL DEFAULT 0,       -- 間隔ラダーの現在段(0 起点)
+  due_on       date NOT NULL,                 -- 次回出題予定日
+  retired_at   timestamptz,                   -- NULL = 現役。卒業(ラダー完走)or 手動アーカイブ
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  CHECK ((kind = 'article') = (article_id IS NOT NULL)),
+  CHECK ((kind = 'book')    = (book_id    IS NOT NULL))
+)`,
+	`CREATE TABLE IF NOT EXISTS review_logs (
+  id          bigserial PRIMARY KEY,
+  item_id     bigint NOT NULL REFERENCES learning_items,
+  episode_id  bigint REFERENCES episodes,     -- どのエピソードで出題したか
+  asked_on    date NOT NULL,                  -- 出題日(JST の放送日)
+  result      text,                           -- 'good' | 'fuzzy' | 'forgot' | NULL = 未採点
+  graded_at   timestamptz,                    -- 採点時刻(自動解決時は NULL のまま result='auto' — §6)
+  UNIQUE (item_id, asked_on)                  -- 同日 rev 再実行(radio の冪等仕様)の冪等キー
+)`,
 }
 
 // alterTableStatements upgrade a database created by an earlier schema
@@ -144,6 +174,15 @@ var createTableStatements = []string{
 //     added via a DO block because PostgreSQL has no ADD CONSTRAINT IF NOT
 //     EXISTS; duplicate_object makes the re-run a no-op (fresh databases
 //     already get the constraint inline from CREATE TABLE).
+//   - books.review_cursor / books.review_status (Phase 3 §7.3): book_review
+//     progress lives on the books row (専用テーブルは過剰). The canonical
+//     books CREATE TABLE is owned by catchup-feed-ai (Phase 2 §6), so the
+//     Phase 3 columns are added here as idempotent ALTERs only — fresh and
+//     existing databases both go through the same path. review_status takes
+//     'idle' | 'active' | 'finished'; deliberately NO CHECK constraint: the
+//     "active は同時に最大1冊" exclusivity is a cross-row invariant that a
+//     column CHECK cannot express, so it is enforced in the application
+//     layer (設計書 §7.3, 管理 API の activate が担う).
 var alterTableStatements = []string{
 	`ALTER TABLE sources ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'rss'`,
 	`DO $$
@@ -153,6 +192,8 @@ BEGIN
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$`,
+	`ALTER TABLE books ADD COLUMN IF NOT EXISTS review_cursor int NOT NULL DEFAULT 0`,
+	`ALTER TABLE books ADD COLUMN IF NOT EXISTS review_status text NOT NULL DEFAULT 'idle'`,
 }
 
 // createIndexStatements are implementation-need indexes beyond §4 (which
@@ -172,8 +213,8 @@ var createIndexStatements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_feed_access_logs_token_id ON feed_access_logs (token_id)`,
 }
 
-// MigrateUp applies the pulse schema (Phase 1 §4 + Phase 2 §4/§6 差分). It
-// is idempotent and safe to run at every process startup.
+// MigrateUp applies the pulse schema (Phase 1 §4 + Phase 2 §4/§6 + Phase 3
+// §4 差分). It is idempotent and safe to run at every process startup.
 func MigrateUp(db *sql.DB) error {
 	// U-24: the vector type must exist before CREATE TABLE book_chunks.
 	if _, err := db.Exec(createVectorExtension); err != nil {
