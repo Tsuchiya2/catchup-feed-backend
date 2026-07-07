@@ -32,6 +32,10 @@ const (
 	// still guarantees the batch cannot wedge. Ollama-only degraded runs
 	// may legitimately need more — override with RADIO_TIMEOUT.
 	defaultRunTimeout = time.Hour
+
+	// defaultLearningURL is the dashboard grading page linked from private
+	// show notes (Phase 3 §7.5: 聴取→採点の唯一の橋).
+	defaultLearningURL = "https://pulse.catchup-feed.com/learning"
 )
 
 // Config holds the radio batch settings.
@@ -54,6 +58,9 @@ type Config struct {
 	RsyncPath string
 	// Timeout bounds one whole batch run (RADIO_TIMEOUT).
 	Timeout time.Duration
+	// LearningURL is the grading page linked from private show notes
+	// (RADIO_LEARNING_URL, Phase 3 §7.5).
+	LearningURL string
 }
 
 // LoadConfig reads the radio batch settings from environment variables:
@@ -65,6 +72,8 @@ type Config struct {
 //   - RADIO_RSYNC_DEST: rsync destination; empty = copy locally into RADIO_EPISODES_DIR
 //   - RADIO_RSYNC_PATH: rsync binary (default "rsync")
 //   - RADIO_TIMEOUT: whole-run timeout as a Go duration (default 1h)
+//   - RADIO_LEARNING_URL: dashboard grading page for private show notes
+//     (default https://pulse.catchup-feed.com/learning, Phase 3 §7.5)
 func LoadConfig(logger *slog.Logger) (Config, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -76,6 +85,7 @@ func LoadConfig(logger *slog.Logger) (Config, error) {
 		RsyncDest:   pkgconfig.GetEnvString("RADIO_RSYNC_DEST", ""),
 		RsyncPath:   pkgconfig.GetEnvString("RADIO_RSYNC_PATH", "rsync"),
 		Timeout:     pkgconfig.GetEnvDuration("RADIO_TIMEOUT", defaultRunTimeout),
+		LearningURL: pkgconfig.GetEnvString("RADIO_LEARNING_URL", defaultLearningURL),
 	}
 	if cfg.Timeout <= 0 {
 		logger.Warn("RADIO_TIMEOUT must be positive, using default",

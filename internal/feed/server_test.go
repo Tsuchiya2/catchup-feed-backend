@@ -745,6 +745,32 @@ func TestPrivateFeed_NoAuthAllKinds(t *testing.T) {
 	assert.Zero(t, f.tokens.lookups)
 }
 
+// TestPrivateFeed_CollapsesDailyPair pins the Phase 3 §7.1 fold: the radio
+// batch inserts a public and a private episode with the SAME published_at
+// (one selection timestamp per run), and the private feed must show only
+// the private one — the public twin is a strict subset of it. Unpaired
+// public episodes (私的版の生成が縮退した日, pre-Phase 3 の既存行) keep
+// appearing; the public feed path is untouched (§12-1).
+func TestPrivateFeed_CollapsesDailyPair(t *testing.T) {
+	now := time.Now()
+	f := newFixture(t, Config{})
+	f.episodes.episodes = []*entity.Episode{
+		sampleEpisode(1, entity.FeedKindPublic, "twin public edition", now),
+		sampleEpisode(2, entity.FeedKindPrivate, "twin private edition", now),
+		sampleEpisode(3, entity.FeedKindPublic, "solo public edition", now.Add(-24*time.Hour)),
+	}
+
+	rec := f.get(t, f.server.PrivateHandler(), "http://pi.tailnet:8081/private/feed.xml", nil)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "twin private edition")
+	assert.NotContains(t, body, "twin public edition",
+		"同一 published_at の公開版は私的フィードでは畳まれる(毎朝の二重掲載防止)")
+	assert.Contains(t, body, "solo public edition",
+		"私的版が欠けた日は公開版がフォールバックとして残る (§9)")
+}
+
 func TestPrivateFeed_ConfiguredBaseURL(t *testing.T) {
 	f := newFixture(t, Config{PrivateBaseURL: "http://100.64.0.1:8081"})
 	f.episodes.episodes = []*entity.Episode{sampleEpisode(9, entity.FeedKindPrivate, "j", time.Now())}

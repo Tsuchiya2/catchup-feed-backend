@@ -1,11 +1,16 @@
 // Command radio is the nightly episode batch (§3.2 / §6). It runs on the
 // Mac (launchd, 04:30 JST — §3.3), connects to the Pi's PostgreSQL over the
-// tailnet (DATABASE_URL), and generates one public episode: article
-// selection -> LLM script -> VOICEVOX -> ffmpeg -> rsync -> DB registration.
+// tailnet (DATABASE_URL), and generates the day's episodes: article
+// selection -> LLM script -> VOICEVOX -> ffmpeg -> rsync -> DB registration
+// for the public episode, then the Phase 3 private twin (news wav 共用 +
+// quiz corner, §7.1) as a best-effort follow-up. Learning-loop side steps
+// (auto-resolve, item generation, quiz selection) ride inside the same run
+// (Phase 3 §3).
 //
-// Exit codes: 0 = episode generated or cleanly skipped (no new articles,
-// D-1); 1 = failure — the day is skipped and launchd retries tomorrow (§8:
-// VOICEVOX 障害→当日スキップ).
+// Exit codes: 0 = episode generated or cleanly skipped (no new articles and
+// no due quiz items, D-1); 1 = failure — the day is skipped and launchd
+// retries tomorrow (§8: VOICEVOX 障害→当日スキップ). A private-twin failure
+// on a news day is NOT a run failure (縮退: 公開版は出す, Phase 3 §9).
 //
 // Flags:
 //
@@ -87,6 +92,7 @@ func main() {
 		slog.Float64("voicevox_speed", voicevoxCfg.SpeedScale),
 		slog.Bool("rsync_mode", cfg.RsyncDest != ""),
 		slog.Int("quiz_items_per_day", learningCfg.ItemsPerDay),
+		slog.Int("quiz_slots", learningCfg.Slots),
 		slog.Bool("dry_run", *dryRun))
 
 	pipeline := &radio.Pipeline{

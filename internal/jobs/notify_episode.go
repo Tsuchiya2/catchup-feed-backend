@@ -40,6 +40,14 @@ type notifyEpisodePayload struct {
 // attached on Discord for small public episodes; active friends with an
 // email address get a plain-text new-episode mail (C-11) — public episodes
 // only, private ones live outside the subscriber concept (C-5).
+//
+// 契約 (Phase 3 §12-7): radio は notify_episode ジョブを公開エピソードに
+// 対して**のみ**積む(「積まない」方式)。このハンドラは feed_kind に依らず
+// 管理チャネルへ show_notes を転送するため、私的エピソード — その show
+// notes は復習 concept 一覧などの学習コンテンツを含む — のジョブが積まれた
+// 時点で §10(学習コンテンツを Discord/Slack に流さない)に違反する。
+// エンキュー側の遵守が前提であり、ここに feed_kind ガードは足していない
+// (公開版の通知経路に一切差分を出さないため、§12-1)。
 type NotifyEpisodeHandler struct {
 	Episodes     EpisodeGetter
 	Subscribers  SubscriberLister

@@ -49,16 +49,24 @@ func cutQuizSection(out string) (body, section string, found bool) {
 	return out[:i], out[i+len(quizSectionMarker):], true
 }
 
-// quizLeakToken is the marker's distinctive core, matched as a bare
-// substring by stripQuizLeak so whitespace-mangled marker variants
-// ("=== LEARNING_ITEMS ===" 等) are still caught.
-const quizLeakToken = "LEARNING_ITEMS"
+// quizLeakTokenNormalized is the marker's distinctive core after
+// normalizeLeakChars: stripQuizLeak matches it against the alphanumerics of
+// each line, so every marker mangling that keeps the letters — whitespace
+// inside ("=== LEARNING_ITEMS ==="), a dropped underscore ("LEARNING
+// ITEMS"), decorations — is still caught.
+const quizLeakTokenNormalized = "LEARNINGITEMS"
 
-// stripQuizLeak truncates the broadcast body at the start of the first
-// LINE carrying a trace of a learning-item section that survived the
-// marker split (§12-1 の安全ネット): (1) the quizLeakToken substring
-// anywhere in the line — a whitespace-mangled marker — or (2) a line that,
-// after trimming, is a 記事番号 label line, detected with the same
+// quizLeakLabels are the item labels whose cutLabel match truncates the
+// body: any line the parser could read as an item field must never be read
+// on air, not just the leading 記事番号 line (a model may omit it and start
+// a bare item at 概念/問題/答え).
+var quizLeakLabels = [...]string{"記事番号", "概念", "問題", "答え"}
+
+// stripQuizLeak truncates the broadcast body at the start of the first LINE
+// carrying a trace of a learning-item section that survived the marker
+// split (§12-1 の安全ネット): (1) a line whose normalized alphanumerics
+// contain the marker core — any mangled marker variant — or (2) a line
+// that, after trimming, matches one of the quizLeakLabels with the same
 // cutLabel match the parser uses (パーサが項目と読める行を放送原稿が
 // 読み上げることはない). Cutting at the line start (not the token index)
 // keeps mangled-marker fragments like a leading "===" out of the body.
@@ -70,13 +78,42 @@ const quizLeakToken = "LEARNING_ITEMS"
 func stripQuizLeak(body string) (string, bool) {
 	offset := 0
 	for _, line := range strings.Split(body, "\n") {
-		if _, isItem := cutLabel(strings.TrimSpace(line), "記事番号"); isItem ||
-			strings.Contains(line, quizLeakToken) {
+		if isQuizLeakLine(line) {
 			return body[:offset], true
 		}
 		offset += len(line) + 1
 	}
 	return body, false
+}
+
+// isQuizLeakLine reports whether a single body line is a learning-item
+// trace (see stripQuizLeak).
+func isQuizLeakLine(line string) bool {
+	if strings.Contains(normalizeLeakChars(line), quizLeakTokenNormalized) {
+		return true
+	}
+	trimmed := strings.TrimSpace(line)
+	for _, label := range quizLeakLabels {
+		if _, ok := cutLabel(trimmed, label); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeLeakChars reduces a line to its uppercased ASCII alphanumerics,
+// making the marker-core match immune to separators, casing and spacing.
+func normalizeLeakChars(line string) string {
+	var sb strings.Builder
+	for _, r := range line {
+		switch {
+		case r >= 'a' && r <= 'z':
+			sb.WriteRune(r - ('a' - 'A'))
+		case (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'):
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
 }
 
 // parseQuizItems extracts up to max drafts from the learning-item section.

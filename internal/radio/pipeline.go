@@ -21,14 +21,21 @@ import (
 )
 
 // ErrNoArticles is returned when no summarized article arrived since the
-// previous episode. D-1: 記事ゼロの日はスキップ — the caller treats this as
-// a clean no-op, not a failure.
+// previous episode AND no quiz item is due (Phase 3 §7.1). D-1: 記事ゼロの
+// 日はスキップ — the caller treats this as a clean no-op, not a failure.
 var ErrNoArticles = errors.New("radio: no new summarized articles, skipping episode")
 
 // selectionLimit bounds the backlog fetched per run. Overflow beyond the
 // on-air cap still reaches the show notes; a multi-week gap is truncated
 // rather than producing a book-sized description.
 const selectionLimit = 200
+
+// quizPause is the silence between a quiz question and its answer (Phase 3
+// §7.2: question 読み上げ → 無音3秒 → answer 読み上げ). The pause is a
+// standalone silence wav in the ffmpeg concat list — never a VOICEVOX
+// "long pause" (§12-5) — fabricated per run in the engine's exact output
+// format (see Pipeline.synthesizeQuizCorner).
+const quizPause = 3 * time.Second
 
 // ArticleSource selects the episode's articles (§6-1).
 type ArticleSource interface {
@@ -59,15 +66,19 @@ type ScriptGenerator interface {
 	GenerateEpisode(ctx context.Context, date time.Time, articles []repository.RadioArticle, quizCount int) ([]*entity.Segment, []script.QuizDraft, error)
 }
 
-// LearningStore is the Phase 3 learning-item side of the batch (§5.1/
-// §5.2): the backpressure input, the same-day dedupe and the insert sink.
-// Satisfied by repository.LearningRepository. A nil LearningStore disables
-// item generation entirely — the broadcast pipeline itself never depends
-// on it (§12-1: 公開エピソードの完全不変).
+// LearningStore is the Phase 3 learning side of the batch: item generation
+// (§5.1/§5.2 — backpressure, same-day dedupe, insert) plus the review loop
+// (§3 の実行順: AutoResolve → 生成 → ListDue → 出題記録). Satisfied by
+// repository.LearningRepository. A nil LearningStore disables the learning
+// loop entirely — item generation, the private twin, everything; the public
+// broadcast never depends on it (§12-1: 公開エピソードの完全不変).
 type LearningStore interface {
 	CountOverdueActive(ctx context.Context, day time.Time) (int, error)
 	HasArticleItemCreatedOn(ctx context.Context, day time.Time) (bool, error)
 	InsertItem(ctx context.Context, item learning.NewItem, dueOn time.Time) (int64, error)
+	AutoResolve(ctx context.Context, cutoffDay, resolveDay time.Time, ladder []int) (int, error)
+	ListDue(ctx context.Context, day time.Time, limit int) ([]learning.Item, error)
+	RecordAsked(ctx context.Context, itemIDs []int64, episodeID int64, askedOn time.Time) error
 }
 
 // Synthesizer renders one segment script as sentence WAVs (§6-3) and names
@@ -108,10 +119,10 @@ type Pipeline struct {
 	TTS      Synthesizer
 	Encoder  Encoder
 	Transfer Transferer
-	// Learning enables Phase 3 item generation (§5.1); nil turns it off.
+	// Learning enables the Phase 3 learning loop (§5.1/§7); nil turns it
+	// off, including the private twin episode.
 	Learning LearningStore
-	// LearningCfg carries the D-18 quiz parameters (QUIZ_* env). Only
-	// ItemsPerDay and BackpressureThreshold are read here.
+	// LearningCfg carries the D-17/D-18 quiz parameters (QUIZ_* env).
 	LearningCfg learning.Config
 	Config      Config
 	Logger      *slog.Logger
@@ -120,8 +131,9 @@ type Pipeline struct {
 }
 
 // Run executes one episode generation. It returns ErrNoArticles on an
-// empty day (D-1: skip); any other error means the day is skipped as a
-// failure and launchd retries tomorrow (§8).
+// empty day (D-1: skip, unless quiz items are due — then a private-only
+// episode ships, Phase 3 §7.1); any other error means the day is skipped
+// as a failure and launchd retries tomorrow (§8).
 func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	logger := p.Logger
 	if logger == nil {
@@ -154,7 +166,11 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 		return fmt.Errorf("radio: select articles: %w", err)
 	}
 	if len(articles) == 0 {
-		return ErrNoArticles
+		// The public skip contract stays byte-identical (D-1 → ErrNoArticles
+		// → exit 0). Phase 3 §7.1/§12-8: the due-item check lives strictly
+		// BEHIND this early return so it can never resurrect a public
+		// episode — it may only add a private-only one.
+		return p.runQuizOnlyDay(ctx, opts, now, since, logger)
 	}
 	featured, overflow := script.Plan(articles, p.Config.MaxArticles)
 	logger.Info("articles selected",
@@ -164,19 +180,18 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 
 	// --- U-13 VOICEVOX クレジット ---
 	// Resolved before the LLM stage so a dead engine fails fast instead of
-	// burning free-tier quota on a script that cannot be voiced anyway. A
-	// resolution failure aborts the run: shipping an episode without its
-	// 「VOICEVOX:話者名」 credit would violate the VOICEVOX terms of use.
-	// Dry-run keeps going with a placeholder — it never distributes audio
-	// and must stay usable on machines without the engine (D-2).
-	speakerName, err := p.TTS.SpeakerName(ctx)
+	// burning free-tier quota on a script that cannot be voiced anyway.
+	speakerName, err := p.resolveSpeakerName(ctx, opts.DryRun, logger)
 	if err != nil {
-		if !opts.DryRun {
-			return fmt.Errorf("radio: resolve VOICEVOX speaker name for credit (U-13): %w", err)
-		}
-		logger.Warn("VOICEVOX speaker name unresolved, dry-run uses a placeholder", slog.Any("error", err))
-		speakerName = "(話者名未解決)"
+		return err
 	}
+
+	// --- Phase 3 §3 手順1: 未採点ログの自動解決(48h、D-17) ---
+	// Deliberately BEFORE the quota decision and the due selection (§6.1:
+	// 自動解決の実行タイミングは選定直前): resolving stale logs both drains
+	// the overdue backlog the backpressure check reads and re-schedules the
+	// affected items past today.
+	p.autoResolve(ctx, now, opts.DryRun, logger)
 
 	// --- §6-2 台本生成(Phase 3 §5.1: 学習項目の相乗り、D-19) ---
 	// quizCount is decided BEFORE the LLM call so that backpressure and the
@@ -192,16 +207,25 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	if err != nil {
 		return fmt.Errorf("radio: generate script: %w", err)
 	}
-	showNotes := script.AppendVoicevoxCredit(script.BuildShowNotes(featured, overflow), speakerName)
+
+	// --- Phase 3 §6.3 出題選定 ---
+	// Read-only, so it runs in dry-run too and is printed for inspection.
+	// A selection failure degrades the private twin to news-only (§9) —
+	// the public side is untouched by construction.
+	dueItems := p.listDueItems(ctx, now, logger)
+	corner := script.BuildQuizCorner(dueItems)
+
+	baseNotes := script.BuildShowNotes(featured, overflow)
+	showNotes := script.AppendVoicevoxCredit(baseNotes, speakerName)
 
 	// --- §6-6 冪等性: 同日再実行は rev 付き新規版 ---
-	title, filename, err := p.episodeNaming(ctx, now)
+	title, filename, err := p.episodeNaming(ctx, now, entity.FeedKindPublic)
 	if err != nil {
 		return err
 	}
 
 	if opts.DryRun {
-		return p.printDryRun(title, since, showNotes, segments, quizDrafts)
+		return p.printDryRun(title, since, showNotes, segments, quizDrafts, dueItems)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "radio-episode-")
@@ -211,12 +235,15 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// --- §6-3 TTS ---
-	wavPaths, totalDuration, err := p.synthesize(ctx, tmpDir, segments)
+	segWavs, totalDuration, err := p.synthesize(ctx, tmpDir, segments)
 	if err != nil {
 		return err // VOICEVOX 障害→当日スキップ (§8)
 	}
 
 	// --- §6-4 結合 ---
+	// The public concat list is exactly the synthesized segments, in order
+	// — no quiz material can appear here by construction (§12-1: 公開
+	// エピソードの構成・尺は完全不変).
 	mp3Path := filepath.Join(tmpDir, filename)
 	tags := tts.ID3{
 		Title:  title,
@@ -224,7 +251,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 		Album:  p.Config.ShowName,
 		Date:   now.Format("2006-01-02"),
 	}
-	if err := p.Encoder.ConcatToMP3(ctx, wavPaths, mp3Path, tags); err != nil {
+	if err := p.Encoder.ConcatToMP3(ctx, flattenWavs(segWavs), mp3Path, tags); err != nil {
 		return fmt.Errorf("radio: encode: %w", err)
 	}
 	stat, err := os.Stat(mp3Path)
@@ -255,6 +282,11 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	if _, err := p.Jobs.Enqueue(ctx, entity.JobKindRegenerateFeed, nil, time.Time{}); err != nil {
 		return fmt.Errorf("radio: enqueue regenerate_feed: %w", err)
 	}
+	// 契約 (Phase 3 §12-7): notify_episode は公開エピソードに対して**のみ**
+	// 積む。私的版は「積んで無視」ではなく「積まない」— NotifyEpisodeHandler
+	// は feed_kind に依らず管理チャネル(Discord/Slack)へ show_notes を送る
+	// ため、学習コンテンツ(復習 concept 一覧)を含む私的版のジョブが存在
+	// した時点で §10(学習コンテンツを外部サービスに流さない)に違反する。
 	notifyPayload, err := json.Marshal(map[string]int64{"episode_id": episode.ID})
 	if err != nil {
 		return fmt.Errorf("radio: marshal notify payload: %w", err)
@@ -278,7 +310,399 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 		slog.Int64("audio_bytes", episode.AudioBytes),
 		slog.Int("duration_sec", episode.DurationSec),
 		slog.Int("segments", len(segments)))
+
+	// --- Phase 3 §7.1 私的エピソード(二本立て、best-effort) ---
+	// Strictly AFTER the public episode is committed: a private-side
+	// failure logs and gives up the twin only — 縮退方向は「公開版は出す、
+	// 私的版のみ諦める」. The reverse needs no code: any public failure
+	// returns above, so a private episode can never outlive a failed
+	// public one (news wav 共用).
+	p.publishPrivateEpisode(ctx, logger, privateEpisodeInput{
+		tmpDir:       tmpDir,
+		now:          now,
+		segments:     segments,
+		segWavs:      segWavs,
+		newsDuration: totalDuration,
+		dueItems:     dueItems,
+		corner:       corner,
+		baseNotes:    baseNotes,
+		speakerName:  speakerName,
+	})
 	return nil
+}
+
+// runQuizOnlyDay handles the no-articles morning (Phase 3 §7.1/§12-8): the
+// public episode is skipped exactly as before (D-1), but when quiz items
+// are due a private-only episode ships — fixed intro → quiz corner → fixed
+// outro, no news, no LLM call (テンプレート台本: クオータ消費ゼロ、かつ
+// §10 によりクイズ内容はクラウドに送れない). Unlike the news-day twin this
+// episode IS the run's whole product, so failures return an error and the
+// admin gets the notify_error notice (§8).
+func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, since time.Time, logger *slog.Logger) error {
+	if p.Learning == nil {
+		return ErrNoArticles
+	}
+	p.autoResolve(ctx, now, opts.DryRun, logger)
+	dueItems := p.listDueItems(ctx, now, logger)
+	if len(dueItems) == 0 {
+		return ErrNoArticles
+	}
+	logger.Info("no new articles but quiz items are due — generating the private episode only (§7.1)",
+		slog.Int("due_items", len(dueItems)))
+
+	speakerName, err := p.resolveSpeakerName(ctx, opts.DryRun, logger)
+	if err != nil {
+		return err
+	}
+
+	corner := script.BuildQuizCorner(dueItems)
+	intro := &entity.Segment{Position: 1, Kind: entity.SegmentKindIntro,
+		Script: script.QuizOnlyIntro(p.Config.ShowName, now)}
+	cornerSegs := corner.Segments(2)
+	// (手順6) book_review セグメントは quiz の後・outro の前のここに挿入する。
+	outro := &entity.Segment{Position: 2 + len(cornerSegs), Kind: entity.SegmentKindOutro,
+		Script: script.QuizOnlyOutro(p.Config.ShowName)}
+	segments := make([]*entity.Segment, 0, len(cornerSegs)+2)
+	segments = append(segments, intro)
+	segments = append(segments, cornerSegs...)
+	segments = append(segments, outro)
+
+	showNotes := script.AppendVoicevoxCredit(
+		script.AppendQuizShowNotes(script.QuizOnlyShowNotesBase(), dueItems, p.Config.LearningURL),
+		speakerName)
+	title, filename, err := p.episodeNaming(ctx, now, entity.FeedKindPrivate)
+	if err != nil {
+		return err
+	}
+
+	if opts.DryRun {
+		return p.printDryRun(title, since, showNotes, segments, nil, dueItems)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "radio-episode-")
+	if err != nil {
+		return fmt.Errorf("radio: create temp dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	segWavs, speechDuration, err := p.synthesize(ctx, tmpDir, []*entity.Segment{intro, outro})
+	if err != nil {
+		return err
+	}
+	cornerWavs, cornerDuration, err := p.synthesizeQuizCorner(ctx, tmpDir, corner)
+	if err != nil {
+		return err
+	}
+	wavs := make([]string, 0, len(segWavs[0])+len(cornerWavs)+len(segWavs[1]))
+	wavs = append(wavs, segWavs[0]...) // intro
+	wavs = append(wavs, cornerWavs...) // quiz corner
+	wavs = append(wavs, segWavs[1]...) // outro
+
+	mp3Path := filepath.Join(tmpDir, filename)
+	tags := tts.ID3{Title: title, Artist: p.Config.ShowName, Album: p.Config.ShowName,
+		Date: now.Format("2006-01-02")}
+	if err := p.Encoder.ConcatToMP3(ctx, wavs, mp3Path, tags); err != nil {
+		return fmt.Errorf("radio: encode private episode: %w", err)
+	}
+	stat, err := os.Stat(mp3Path)
+	if err != nil {
+		return fmt.Errorf("radio: stat private mp3: %w", err)
+	}
+	audioPath, err := p.Transfer.Transfer(ctx, mp3Path, filename)
+	if err != nil {
+		return err
+	}
+	episode := &entity.Episode{
+		FeedKind:    entity.FeedKindPrivate,
+		Title:       title,
+		ShowNotes:   showNotes,
+		AudioPath:   audioPath,
+		AudioBytes:  stat.Size(),
+		DurationSec: int(math.Round((speechDuration + cornerDuration).Seconds())),
+		PublishedAt: now,
+	}
+	if err := p.Episodes.Create(ctx, episode, segments); err != nil {
+		return fmt.Errorf("radio: insert private episode: %w", err)
+	}
+	// ジョブは積まない: notify_episode は §12-7 の契約(Run 内のコメント
+	// 参照)により私的版では存在させない。regenerate_feed は no-op ハンドラ
+	// (feed.xml はリクエスト毎に描画)なので省略する。
+	p.recordAsked(ctx, logger, corner, episode.ID, now)
+
+	logger.Info("private-only episode generated (§7.1 記事ゼロ日)",
+		slog.Int64("episode_id", episode.ID),
+		slog.String("title", title),
+		slog.String("audio_path", audioPath),
+		slog.Int("duration_sec", episode.DurationSec),
+		slog.Int("quiz_items", len(corner.Items)))
+	return nil
+}
+
+// privateEpisodeInput carries everything publishPrivateEpisode reuses from
+// the public run — news wavs and segment scripts are shared, never
+// re-synthesized (§7.1).
+type privateEpisodeInput struct {
+	tmpDir       string
+	now          time.Time
+	segments     []*entity.Segment // public segments: intro, news×N, outro
+	segWavs      [][]string        // wav groups aligned with segments
+	newsDuration time.Duration     // summed playing time of segWavs
+	dueItems     []learning.Item
+	corner       script.QuizCorner
+	baseNotes    string // show notes before quiz section / credit
+	speakerName  string
+}
+
+// publishPrivateEpisode assembles and ships the §7.1 private twin: intro →
+// news×N (public wavs re-used) → quiz corner → outro. Best-effort by
+// contract: every failure logs a warning and abandons the private episode
+// only — the public one is already on the Pi and registered. With no due
+// items the twin still ships (news-only): the admin's podcast app follows
+// the private feed and expects a daily episode there.
+//
+// 手順6 への申し送り: the private episode's total length is available here
+// as in.newsDuration + cornerDuration (before encoding) — the §7.1 18-minute
+// guard should gate the book_review insertion on it.
+func (p *Pipeline) publishPrivateEpisode(ctx context.Context, logger *slog.Logger, in privateEpisodeInput) {
+	if p.Learning == nil {
+		return // Phase 3 disabled: pre-Phase 3 behavior, public only
+	}
+	title, filename, err := p.episodeNaming(ctx, in.now, entity.FeedKindPrivate)
+	if err != nil {
+		logger.Warn("private episode skipped: naming failed (§9: 公開版は出荷済み)", slog.Any("error", err))
+		return
+	}
+	cornerWavs, cornerDuration, err := p.synthesizeQuizCorner(ctx, in.tmpDir, in.corner)
+	if err != nil {
+		logger.Warn("private episode skipped: quiz corner TTS failed (§9)", slog.Any("error", err))
+		return
+	}
+
+	// 私的版の並び: intro → news×N → quiz → (手順6: book_review はここ、
+	// quiz の後・outro の前に挿入) → outro。news の wav は公開版と共用 (§7.1)。
+	outroIdx := len(in.segWavs) - 1
+	wavs := flattenWavs(in.segWavs[:outroIdx])
+	wavs = append(wavs, cornerWavs...)
+	wavs = append(wavs, in.segWavs[outroIdx]...)
+
+	mp3Path := filepath.Join(in.tmpDir, filename)
+	tags := tts.ID3{Title: title, Artist: p.Config.ShowName, Album: p.Config.ShowName,
+		Date: in.now.Format("2006-01-02")}
+	if err := p.Encoder.ConcatToMP3(ctx, wavs, mp3Path, tags); err != nil {
+		logger.Warn("private episode skipped: encode failed (§9)", slog.Any("error", err))
+		return
+	}
+	stat, err := os.Stat(mp3Path)
+	if err != nil {
+		logger.Warn("private episode skipped: stat failed (§9)", slog.Any("error", err))
+		return
+	}
+	// A transfer that succeeds while a later step fails leaves an
+	// unreferenced mp3 on the Pi; cleanup_old_media's orphan sweep collects
+	// it after 48h (same window as a public rsync/INSERT failure).
+	audioPath, err := p.Transfer.Transfer(ctx, mp3Path, filename)
+	if err != nil {
+		logger.Warn("private episode skipped: transfer failed (§9)", slog.Any("error", err))
+		return
+	}
+
+	// U-13: the VOICEVOX credit is appended through the exact same helper as
+	// the public path — クレジット無し配信のパスは feed_kind に依らず存在
+	// しない (§7.5)。学習セクション(concept 一覧+採点リンク)は私的版の
+	// show notes 限定 (§10)。
+	showNotes := script.AppendVoicevoxCredit(
+		script.AppendQuizShowNotes(in.baseNotes, in.dueItems, p.Config.LearningURL),
+		in.speakerName)
+
+	episode := &entity.Episode{
+		FeedKind:   entity.FeedKindPrivate,
+		Title:      title,
+		ShowNotes:  showNotes,
+		AudioPath:  audioPath,
+		AudioBytes: stat.Size(),
+		// 手順6 申し送り: この DurationSec(news+quiz 合算)が §7.1 の
+		// 18分ガードの判定素材になる。
+		DurationSec: int(math.Round((in.newsDuration + cornerDuration).Seconds())),
+		// The same selection timestamp as the public twin — deliberately:
+		// the private feed folds the day's public/private pair by equal
+		// published_at (feed.collapsePrivatePairs), and the public cursor
+		// reads public rows only, so this can never move article selection.
+		PublishedAt: in.now,
+	}
+	if err := p.Episodes.Create(ctx, episode, privateSegments(in.segments, in.corner)); err != nil {
+		logger.Warn("private episode skipped: insert failed (§9)", slog.Any("error", err))
+		return
+	}
+	// ジョブは積まない: notify_episode は §12-7 の契約(Run 内のコメント
+	// 参照)により私的版では存在させない。regenerate_feed は公開版の分が
+	// 既に積まれている(かつ no-op ハンドラ)。
+	p.recordAsked(ctx, logger, in.corner, episode.ID, in.now)
+
+	logger.Info("private episode generated (§7.1 二本立て)",
+		slog.Int64("episode_id", episode.ID),
+		slog.String("title", title),
+		slog.String("audio_path", audioPath),
+		slog.Int("duration_sec", episode.DurationSec),
+		slog.Int("quiz_items", len(in.corner.Items)))
+}
+
+// privateSegments builds the private episode's own segment rows: the public
+// intro/news scripts copied verbatim (私的版は公開版の上位集合, §7.1), the
+// quiz corner (1 項目 = 1 行, §7.2-4), then the outro. Fresh copies are
+// mandatory — Create mutates ID/EpisodeID, and the passed-in rows are
+// already committed under the public episode.
+func privateSegments(public []*entity.Segment, corner script.QuizCorner) []*entity.Segment {
+	cornerSegs := corner.Segments(len(public)) // outro の位置から採番
+	out := make([]*entity.Segment, 0, len(public)+len(cornerSegs))
+	copySegment := func(s *entity.Segment, position int) *entity.Segment {
+		return &entity.Segment{Position: position, Kind: s.Kind, ArticleID: s.ArticleID, Script: s.Script}
+	}
+	for _, s := range public[:len(public)-1] {
+		out = append(out, copySegment(s, s.Position))
+	}
+	out = append(out, cornerSegs...)
+	// (手順6) book_review セグメントはここ(quiz の後・outro の前)に挿入。
+	out = append(out, copySegment(public[len(public)-1], len(public)+len(cornerSegs)))
+	return out
+}
+
+// synthesizeQuizCorner renders the §7.2 corner as wav files: the lead, then
+// per item question → 3秒無音 → answer. The silence wav is fabricated once
+// per run from the exact format of this run's first synthesized corner wav
+// (§12-5: VOICEVOX 出力とサンプリングレート・チャンネル数・ビット深度が
+// 一致しない無音は concat を壊す — deriving it from a real output makes the
+// match structural) and its single file is referenced repeatedly from the
+// concat list. An empty corner yields no wavs and no error.
+func (p *Pipeline) synthesizeQuizCorner(ctx context.Context, dir string, corner script.QuizCorner) ([]string, time.Duration, error) {
+	if len(corner.Items) == 0 {
+		return nil, 0, nil
+	}
+	var wavs []string
+	var total time.Duration
+	write := func(prefix string, audios []tts.Audio) error {
+		for j, audio := range audios {
+			path := filepath.Join(dir, fmt.Sprintf("%s_%03d.wav", prefix, j))
+			if err := os.WriteFile(path, audio.Data, 0o600); err != nil {
+				return fmt.Errorf("radio: write quiz wav: %w", err)
+			}
+			wavs = append(wavs, path)
+			total += audio.Duration
+		}
+		return nil
+	}
+
+	leadAudios, err := p.TTS.SynthesizeScript(ctx, corner.Lead)
+	if err != nil {
+		return nil, 0, fmt.Errorf("radio: tts quiz lead: %w", err)
+	}
+	format, err := tts.ParseWavFormat(leadAudios[0].Data)
+	if err != nil {
+		return nil, 0, fmt.Errorf("radio: read VOICEVOX wav format for silence: %w", err)
+	}
+	silence, err := tts.SilenceWav(format, quizPause)
+	if err != nil {
+		return nil, 0, fmt.Errorf("radio: build silence wav: %w", err)
+	}
+	silencePath := filepath.Join(dir, "quiz_silence.wav")
+	if err := os.WriteFile(silencePath, silence, 0o600); err != nil {
+		return nil, 0, fmt.Errorf("radio: write silence wav: %w", err)
+	}
+	if err := write("quiz_lead", leadAudios); err != nil {
+		return nil, 0, err
+	}
+
+	for i, item := range corner.Items {
+		questionAudios, err := p.TTS.SynthesizeScript(ctx, item.Question)
+		if err != nil {
+			return nil, 0, fmt.Errorf("radio: tts quiz question %d: %w", i+1, err)
+		}
+		if err := write(fmt.Sprintf("quiz_%03d_q", i), questionAudios); err != nil {
+			return nil, 0, err
+		}
+		wavs = append(wavs, silencePath)
+		total += quizPause
+		answerAudios, err := p.TTS.SynthesizeScript(ctx, item.Answer)
+		if err != nil {
+			return nil, 0, fmt.Errorf("radio: tts quiz answer %d: %w", i+1, err)
+		}
+		if err := write(fmt.Sprintf("quiz_%03d_a", i), answerAudios); err != nil {
+			return nil, 0, err
+		}
+	}
+	return wavs, total, nil
+}
+
+// autoResolve applies the D-17 auto-advance (result='auto' after 48h) at
+// the §3-mandated moment: right before the day's selection. Failures only
+// warn (§9): ListDue excludes items with stale ungraded logs, so a skipped
+// resolution can never double-ask — the items simply wait for tomorrow.
+// Dry-run skips it entirely (a dry-run makes no DB writes), accepting that
+// the printed selection may differ slightly from the real run's.
+func (p *Pipeline) autoResolve(ctx context.Context, now time.Time, dryRun bool, logger *slog.Logger) {
+	if p.Learning == nil {
+		return
+	}
+	if dryRun {
+		logger.Info("dry-run: auto-resolve skipped (DB write)")
+		return
+	}
+	if p.LearningCfg.AutoResolveAfter <= 0 || len(p.LearningCfg.Ladder) == 0 {
+		// Unreachable via LoadConfig; guards direct construction, where a
+		// zero AutoResolveAfter would silently resolve TODAY's fresh logs.
+		logger.Warn("learning config incomplete, skipping auto-resolve")
+		return
+	}
+	cutoffDay := learning.BroadcastDay(now.Add(-p.LearningCfg.AutoResolveAfter))
+	resolveDay := learning.BroadcastDay(now)
+	resolved, err := p.Learning.AutoResolve(ctx, cutoffDay, resolveDay, p.LearningCfg.Ladder)
+	if err != nil {
+		logger.Warn("auto-resolve failed, continuing — asking goes on (§9)", slog.Any("error", err))
+		return
+	}
+	if resolved > 0 {
+		logger.Info("ungraded review logs auto-resolved (D-17)",
+			slog.Int("resolved", resolved),
+			slog.String("cutoff_day", learning.FormatDay(cutoffDay)))
+	}
+}
+
+// listDueItems selects the day's quiz candidates (§6.3: due_on ASC, id ASC,
+// 最大 S 件). Read-only. A failure degrades to an empty selection with a
+// warning: the private episode then ships news-only, and the items — whose
+// state never changes on asking (§12-2) — are naturally retried tomorrow.
+func (p *Pipeline) listDueItems(ctx context.Context, now time.Time, logger *slog.Logger) []learning.Item {
+	if p.Learning == nil || p.LearningCfg.Slots <= 0 {
+		return nil
+	}
+	items, err := p.Learning.ListDue(ctx, learning.BroadcastDay(now), p.LearningCfg.Slots)
+	if err != nil {
+		logger.Warn("quiz selection failed, private episode degrades to news-only (§9)",
+			slog.Any("error", err))
+		return nil
+	}
+	return items
+}
+
+// recordAsked writes the day's review logs (§6.3: 選定後 INSERT、result
+// NULL)— episode_id is the PRIVATE episode that actually carried the
+// corner. ON CONFLICT (item_id, asked_on) DO NOTHING makes a same-day rev
+// re-run keep the first rev's rows (§12-2). Best-effort: the episode is
+// already shipped, and an unrecorded ask self-heals — the item stays due
+// and is re-asked tomorrow, which D-17 tolerates by design.
+func (p *Pipeline) recordAsked(ctx context.Context, logger *slog.Logger, corner script.QuizCorner, episodeID int64, now time.Time) {
+	if p.Learning == nil || len(corner.Items) == 0 {
+		return
+	}
+	askedOn := learning.BroadcastDay(now)
+	if err := p.Learning.RecordAsked(ctx, corner.ItemIDs(), episodeID, askedOn); err != nil {
+		logger.Warn("failed to record asked review logs — items stay due and re-ask tomorrow (§9)",
+			slog.Int64("episode_id", episodeID), slog.Any("error", err))
+		return
+	}
+	logger.Info("review logs recorded (§6.3)",
+		slog.Int("items", len(corner.Items)),
+		slog.Int64("episode_id", episodeID),
+		slog.String("asked_on", learning.FormatDay(askedOn)))
 }
 
 // newItemQuota decides M for this run (Phase 3 §5.1/§5.2): the configured
@@ -358,9 +782,27 @@ func (p *Pipeline) insertLearningItems(ctx context.Context, logger *slog.Logger,
 	}
 }
 
+// resolveSpeakerName resolves the U-13 credit speaker. A resolution failure
+// aborts a real run — shipping an episode without its 「VOICEVOX:話者名」
+// credit would violate the VOICEVOX terms of use. Dry-run keeps going with
+// a placeholder: it never distributes audio and must stay usable on
+// machines without the engine (D-2).
+func (p *Pipeline) resolveSpeakerName(ctx context.Context, dryRun bool, logger *slog.Logger) (string, error) {
+	speakerName, err := p.TTS.SpeakerName(ctx)
+	if err != nil {
+		if !dryRun {
+			return "", fmt.Errorf("radio: resolve VOICEVOX speaker name for credit (U-13): %w", err)
+		}
+		logger.Warn("VOICEVOX speaker name unresolved, dry-run uses a placeholder", slog.Any("error", err))
+		speakerName = "(話者名未解決)"
+	}
+	return speakerName, nil
+}
+
 // selectionCursor returns the article-selection cursor: an explicit
 // override, or the previous public episode's published_at, or the zero time
-// on the very first run (§6-1: 前回 public エピソード以降).
+// on the very first run (§6-1: 前回 public エピソード以降). Private episodes
+// never move the cursor.
 func (p *Pipeline) selectionCursor(ctx context.Context, opts RunOptions) (time.Time, error) {
 	if opts.Since != nil {
 		return *opts.Since, nil
@@ -377,53 +819,72 @@ func (p *Pipeline) selectionCursor(ctx context.Context, opts RunOptions) (time.T
 
 // episodeNaming derives the episode title and mp3 filename from the
 // broadcast day. A same-day re-run never overwrites: the n-th run of the
-// day becomes "…revN" with a distinct filename (§6-6).
-func (p *Pipeline) episodeNaming(ctx context.Context, now time.Time) (title, filename string, err error) {
+// day becomes "…revN" with a distinct filename (§6-6). Rev counting is per
+// feed kind, and private filenames take a "-private" suffix (§7.1): the two
+// name families can never collide — not even when one kind's rev count ran
+// ahead of the other's (e.g. 私的版だけ落ちた日の再実行).
+func (p *Pipeline) episodeNaming(ctx context.Context, now time.Time, feedKind string) (title, filename string, err error) {
 	day := now.Format("2006-01-02")
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
-	count, err := p.Episodes.CountByKindSince(ctx, entity.FeedKindPublic, startOfDay)
+	count, err := p.Episodes.CountByKindSince(ctx, feedKind, startOfDay)
 	if err != nil {
-		return "", "", fmt.Errorf("radio: count today's episodes: %w", err)
+		return "", "", fmt.Errorf("radio: count today's %s episodes: %w", feedKind, err)
 	}
 	title = fmt.Sprintf("%s %s", p.Config.ShowName, day)
-	filename = day + ".mp3"
+	base := day
 	if count > 0 {
 		rev := count + 1
 		title = fmt.Sprintf("%s rev%d", title, rev)
-		filename = fmt.Sprintf("%s-rev%d.mp3", day, rev)
+		base = fmt.Sprintf("%s-rev%d", day, rev)
 	}
-	return title, filename, nil
+	if feedKind == entity.FeedKindPrivate {
+		base += "-private"
+	}
+	return title, base + ".mp3", nil
 }
 
 // synthesize renders every segment through TTS into wav files inside dir,
-// returning the ordered paths and the summed playing time.
-func (p *Pipeline) synthesize(ctx context.Context, dir string, segments []*entity.Segment) ([]string, time.Duration, error) {
-	var wavPaths []string
+// returning the wav paths grouped per segment (concat リストを公開/私的の
+// 2通り組み立てるため) and the summed playing time.
+func (p *Pipeline) synthesize(ctx context.Context, dir string, segments []*entity.Segment) ([][]string, time.Duration, error) {
+	groups := make([][]string, 0, len(segments))
 	var total time.Duration
 	for i, segment := range segments {
 		audios, err := p.TTS.SynthesizeScript(ctx, segment.Script)
 		if err != nil {
 			return nil, 0, fmt.Errorf("radio: tts segment %d (%s): %w", i+1, segment.Kind, err)
 		}
+		group := make([]string, 0, len(audios))
 		for j, audio := range audios {
 			path := filepath.Join(dir, fmt.Sprintf("seg_%03d_%03d.wav", i, j))
 			if err := os.WriteFile(path, audio.Data, 0o600); err != nil {
 				return nil, 0, fmt.Errorf("radio: write wav: %w", err)
 			}
-			wavPaths = append(wavPaths, path)
+			group = append(group, path)
 			total += audio.Duration
 		}
+		groups = append(groups, group)
 	}
-	return wavPaths, total, nil
+	return groups, total, nil
+}
+
+// flattenWavs joins per-segment wav groups into one concat-list order.
+func flattenWavs(groups [][]string) []string {
+	var out []string
+	for _, group := range groups {
+		out = append(out, group...)
+	}
+	return out
 }
 
 // printDryRun writes the would-be episode to Out (D-2: 台本を目視で調整).
 // The report is the sole product of a dry-run, so it is rendered in memory
 // and written once, with the write error surfaced to the caller. Learning
-// item drafts are printed for prompt tuning but never inserted — dry-run
-// makes no DB writes (Phase 3 手順2).
-func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, segments []*entity.Segment, drafts []script.QuizDraft) error {
+// item drafts and the quiz selection are printed for inspection but nothing
+// is written — no InsertItem, no AutoResolve, no RecordAsked (dry-run makes
+// no DB writes).
+func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, segments []*entity.Segment, drafts []script.QuizDraft, dueItems []learning.Item) error {
 	out := p.Out
 	if out == nil {
 		out = os.Stdout
@@ -438,6 +899,14 @@ func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, 
 	for i, draft := range drafts {
 		fmt.Fprintf(&sb, "--- learning item %d (dry-run, not inserted) [article %d, %s] ---\n概念: %s\n問題: %s\n答え: %s\n\n",
 			i+1, draft.ArticleID, draft.Provider, draft.Concept, draft.Question, draft.Answer)
+	}
+	if len(dueItems) > 0 {
+		fmt.Fprintf(&sb, "--- quiz selection: %d item(s) due (dry-run: AutoResolve/RecordAsked skipped) ---\n", len(dueItems))
+		for i, item := range dueItems {
+			fmt.Fprintf(&sb, "%d. item %d [stage %d, due %s] %s\n",
+				i+1, item.ID, item.Stage, learning.FormatDay(item.DueOn), item.Concept)
+		}
+		sb.WriteString("\n")
 	}
 	if _, err := io.WriteString(out, sb.String()); err != nil {
 		return fmt.Errorf("radio: write dry-run report: %w", err)

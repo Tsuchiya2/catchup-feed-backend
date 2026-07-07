@@ -86,6 +86,42 @@ func TestStripQuizLeak(t *testing.T) {
 			wantLeaked: true,
 		},
 		{
+			// 変異マーカー単独残留: アンダースコアが空白に化けたマーカー
+			// だけが残るケース。正規化照合(非英数字を除去して
+			// LEARNINGITEMS を含むか)で捕まえる。
+			name:       "marker with space instead of underscore caught by normalized match",
+			body:       "アウトロ。\n===LEARNING ITEMS===",
+			want:       "アウトロ。\n",
+			wantLeaked: true,
+		},
+		{
+			name:       "lowercased mangled marker caught by normalized match",
+			body:       "アウトロ。\n=== learning items ===",
+			want:       "アウトロ。\n",
+			wantLeaked: true,
+		},
+		{
+			// ラベル欠落直書き: 記事番号行を省いて 概念/問題/答え から
+			// 直書きするモデルの逸脱。4ラベルいずれの cutLabel 一致でも
+			// 切断する(切りすぎに倒す)。
+			name:       "bare item starting at 概念 (記事番号 omitted) cut there",
+			body:       "アウトロ。\n概念: コンテキスト伝播\n問題: q\n答え: a",
+			want:       "アウトロ。\n",
+			wantLeaked: true,
+		},
+		{
+			name:       "bare 問題 line cut",
+			body:       "アウトロ。\n問題: 昨日の件ですが?",
+			want:       "アウトロ。\n",
+			wantLeaked: true,
+		},
+		{
+			name:       "bare 答え line with full-width colon cut",
+			body:       "アウトロ。\n答え:こうです。",
+			want:       "アウトロ。\n",
+			wantLeaked: true,
+		},
+		{
 			name:       "bare item lines cut at the 記事番号 line start",
 			body:       "アウトロ。\n記事番号: 1\n概念: c",
 			want:       "アウトロ。\n",
@@ -113,6 +149,12 @@ func TestStripQuizLeak(t *testing.T) {
 			name:       "記事番号 without a colon is prose, not a leak",
 			body:       "アウトロで記事番号という言葉に触れる。\n記事番号 はただの語。",
 			want:       "アウトロで記事番号という言葉に触れる。\n記事番号 はただの語。",
+			wantLeaked: false,
+		},
+		{
+			name:       "labels mid-sentence are prose, not a leak",
+			body:       "この問題は答えが概念的で難しい、という話でした。",
+			want:       "この問題は答えが概念的で難しい、という話でした。",
 			wantLeaked: false,
 		},
 		{
