@@ -13,6 +13,7 @@ import (
 
 	pgRepo "catchup-feed/internal/infra/adapter/persistence/postgres"
 	"catchup-feed/internal/learning"
+	"catchup-feed/internal/repository"
 )
 
 // learningFixture creates the FK targets a learning test needs (source →
@@ -535,15 +536,17 @@ func TestLearningRepo_AutoResolve_CrossRunSingleAdvance_RealPostgres(t *testing.
 }
 
 // TestLearningRepo_AutoVsManualGrade_RealPostgres pins §12-9: the 48h
-// auto-resolve (radio) and a manual grade (server API, 後続タスク — its
-// UPDATE shape is exercised raw here) contend for the same pending log,
-// and exactly one side may win. The claim is an atomic UPDATE whose WHERE
-// carries the not-yet-set checks; SELECT-then-UPDATE would lose this.
+// auto-resolve (radio) and a manual grade (the real §8.1 grade
+// transaction, LearningAdminRepo.GradeReview) contend for the same pending
+// log, and exactly one side may win. Both claims are atomic UPDATEs whose
+// WHERE carries the not-yet-set checks; SELECT-then-UPDATE would lose
+// this.
 func TestLearningRepo_AutoVsManualGrade_RealPostgres(t *testing.T) {
 	conn := openTestDB(t)
 	require.NoError(t, MigrateUp(conn))
 	f := newLearningFixture(t, conn)
 	repo := pgRepo.NewLearningRepo(conn)
+	admin := pgRepo.NewLearningAdminRepo(conn)
 	ctx := context.Background()
 
 	ladder := []int{1, 7, 30}
@@ -557,18 +560,16 @@ func TestLearningRepo_AutoVsManualGrade_RealPostgres(t *testing.T) {
 	require.NoError(t, err)
 
 	// --- sequential both orders: the loser must see zero rows ---
-	// manual first, then auto: auto must not claim or advance.
+	// manual first, then auto: auto must not claim the log or advance the
+	// item a second time.
 	itemA := insertLearningItem(t, conn, f.articleID, 0, "2026-07-04", false)
 	var logA int64
 	require.NoError(t, conn.QueryRow(
 		`INSERT INTO review_logs (item_id, episode_id, asked_on) VALUES ($1, $2, '2026-07-04') RETURNING id`,
 		itemA, f.episodeID).Scan(&logA))
-	res, err := conn.Exec(
-		`UPDATE review_logs SET result = 'good', graded_at = now()
-		 WHERE id = $1 AND result IS NULL AND graded_at IS NULL`, logA)
+	out, err := admin.GradeReview(ctx, logA, learning.ResultGood, resolveDay, ladder)
 	require.NoError(t, err)
-	n, _ := res.RowsAffected()
-	require.EqualValues(t, 1, n)
+	assert.Equal(t, 1, out.Stage, "the manual grade advances the item (§6.1)")
 
 	resolved, err := repo.AutoResolve(ctx, cutoffDay, resolveDay, ladder)
 	require.NoError(t, err)
@@ -576,9 +577,9 @@ func TestLearningRepo_AutoVsManualGrade_RealPostgres(t *testing.T) {
 	var stage int
 	require.NoError(t, conn.QueryRow(
 		`SELECT stage FROM learning_items WHERE id = $1`, itemA).Scan(&stage))
-	assert.Equal(t, 0, stage, "auto-resolve must not advance a manually graded item")
+	assert.Equal(t, 1, stage, "auto-resolve must not advance a manually graded item again")
 
-	// auto first, then manual: the grade UPDATE must match nothing.
+	// auto first, then manual: the grade claim must match nothing → 409.
 	itemB := insertLearningItem(t, conn, f.articleID, 0, "2026-07-04", false)
 	var logB int64
 	require.NoError(t, conn.QueryRow(
@@ -587,12 +588,12 @@ func TestLearningRepo_AutoVsManualGrade_RealPostgres(t *testing.T) {
 	resolved, err = repo.AutoResolve(ctx, cutoffDay, resolveDay, ladder)
 	require.NoError(t, err)
 	assert.Equal(t, 1, resolved)
-	res, err = conn.Exec(
-		`UPDATE review_logs SET result = 'good', graded_at = now()
-		 WHERE id = $1 AND result IS NULL AND graded_at IS NULL`, logB)
-	require.NoError(t, err)
-	n, _ = res.RowsAffected()
-	assert.Zero(t, n, "manual grade after auto resolution matches nothing (409 の素材)")
+	_, err = admin.GradeReview(ctx, logB, learning.ResultGood, resolveDay, ladder)
+	assert.ErrorIs(t, err, repository.ErrReviewLogGraded,
+		"manual grade after auto resolution is the 409 (§8.1 一発確定: auto も採点済み)")
+	require.NoError(t, conn.QueryRow(
+		`SELECT stage FROM learning_items WHERE id = $1`, itemB).Scan(&stage))
+	assert.Equal(t, 1, stage, "the rejected grade must not advance the item a second time")
 
 	// --- truly concurrent: one winner, whoever it is ---
 	itemC := insertLearningItem(t, conn, f.articleID, 0, "2026-07-04", false)
@@ -603,7 +604,6 @@ func TestLearningRepo_AutoVsManualGrade_RealPostgres(t *testing.T) {
 
 	var wg sync.WaitGroup
 	var autoErr, manualErr error
-	var manualWon int64
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -611,18 +611,10 @@ func TestLearningRepo_AutoVsManualGrade_RealPostgres(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		res, err := conn.Exec(
-			`UPDATE review_logs SET result = 'good', graded_at = now()
-			 WHERE id = $1 AND result IS NULL AND graded_at IS NULL`, logC)
-		if err != nil {
-			manualErr = err
-			return
-		}
-		manualWon, _ = res.RowsAffected()
+		_, manualErr = admin.GradeReview(ctx, logC, learning.ResultGood, resolveDay, ladder)
 	}()
 	wg.Wait()
 	require.NoError(t, autoErr)
-	require.NoError(t, manualErr)
 
 	var result string
 	var gradedAt *time.Time
@@ -631,15 +623,18 @@ func TestLearningRepo_AutoVsManualGrade_RealPostgres(t *testing.T) {
 	require.NoError(t, conn.QueryRow(
 		`SELECT stage FROM learning_items WHERE id = $1`, itemC).Scan(&stage))
 
+	// Either way the item advanced exactly once (stage 0 → 1): good and
+	// auto share the same transition (D-17), so a double application would
+	// show as stage 2.
+	assert.Equal(t, 1, stage, "exactly one advance regardless of the winner (二重適用なし)")
 	switch result {
 	case "good":
-		assert.EqualValues(t, 1, manualWon)
-		assert.NotNil(t, gradedAt)
-		assert.Equal(t, 0, stage, "manual won: auto must not have advanced the item (二重適用なし)")
+		require.NoError(t, manualErr, "manual won: the grade must have succeeded")
+		assert.NotNil(t, gradedAt, "manual grades record graded_at")
 	case learning.ResultAuto:
-		assert.Zero(t, manualWon, "auto won: the manual UPDATE must have matched nothing")
-		assert.Nil(t, gradedAt)
-		assert.Equal(t, 1, stage, "auto won: exactly one advance")
+		assert.ErrorIs(t, manualErr, repository.ErrReviewLogGraded,
+			"auto won: the concurrent manual grade falls into the same 409")
+		assert.Nil(t, gradedAt, "auto resolutions keep graded_at NULL (§4)")
 	default:
 		t.Fatalf("log resolved to unexpected result %q", result)
 	}
