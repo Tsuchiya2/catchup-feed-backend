@@ -39,6 +39,26 @@ func FirstDueDay(now time.Time) time.Time {
 	return BroadcastDay(now).AddDate(0, 0, 1)
 }
 
+// weeklyReviewWindowDays is the §7.4 look-back: the review summarizes the 7
+// broadcast days ending on (and including) the review day. Weekly cadence and
+// a 7-day window tile the calendar exactly — no week is summarized twice.
+const weeklyReviewWindowDays = 7
+
+// BroadcastWeekday is the JST weekday of the broadcast day (§7.4/D-21 gating).
+// Derived from BroadcastDay so it is immune to the host/DB timezone the same
+// way asked_on / due_on are (§12-10).
+func BroadcastWeekday(now time.Time) time.Weekday {
+	return BroadcastDay(now).Weekday()
+}
+
+// WeeklyReviewWindowStart is the inclusive first day of the §7.4 look-back for
+// a review broadcast on now: BroadcastDay(now) minus 6 days, so the window is
+// the 7 days [start, broadcastDay]. Returned as a BroadcastDay-shaped value
+// (midnight UTC) for FormatDay binding.
+func WeeklyReviewWindowStart(now time.Time) time.Time {
+	return BroadcastDay(now).AddDate(0, 0, -(weeklyReviewWindowDays - 1))
+}
+
 // FormatDay renders a day (as returned by BroadcastDay) for SQL binding.
 // Repositories pass this string and cast with ::date, which is immune to
 // driver-side timezone interpretation.

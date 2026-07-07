@@ -275,3 +275,65 @@ WHERE retired_at IS NULL AND due_on < $1::date`
 	}
 	return n, nil
 }
+
+// WeeklyReviewMaterial gathers the §7.4 review material — see
+// repository.LearningRepository for the full contract. Three read-only
+// queries; the segment runs once a week, so the extra round trips are
+// immaterial. All in-window filters compare a timestamptz column against the
+// JST day boundary of fromDay: ($1::date)::timestamp AT TIME ZONE 'Asia/Tokyo'
+// is JST-wall-clock midnight reinterpreted as a timestamptz, the same
+// technique HasArticleItemCreatedOn uses so a naive UTC comparison cannot
+// misfile rows created between 00:00 and 09:00 JST (§12-10).
+func (r *LearningRepo) WeeklyReviewMaterial(ctx context.Context, fromDay time.Time, ladderLen int) (learning.WeeklyReview, error) {
+	from := learning.FormatDay(fromDay)
+	var m learning.WeeklyReview
+
+	const conceptsQuery = `
+SELECT concept FROM learning_items
+WHERE created_at >= ($1::date)::timestamp AT TIME ZONE 'Asia/Tokyo'
+ORDER BY created_at ASC, id ASC`
+	rows, err := r.db.QueryContext(ctx, conceptsQuery, from)
+	if err != nil {
+		return learning.WeeklyReview{}, fmt.Errorf("WeeklyReviewMaterial: concepts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var concept string
+		if err := rows.Scan(&concept); err != nil {
+			return learning.WeeklyReview{}, fmt.Errorf("WeeklyReviewMaterial: scan concept: %w", err)
+		}
+		m.Concepts = append(m.Concepts, concept)
+	}
+	if err := rows.Err(); err != nil {
+		return learning.WeeklyReview{}, fmt.Errorf("WeeklyReviewMaterial: concepts: %w", err)
+	}
+
+	// Ladder completion only (§7.4「学びの成果」): Transition sets stage to
+	// len(ladder) exactly when it retires an item, and a manual RetireItem
+	// never touches stage, so stage >= ladderLen selects graduations and
+	// excludes manual archives.
+	const gradQuery = `
+SELECT count(*) FROM learning_items
+WHERE retired_at >= ($1::date)::timestamp AT TIME ZONE 'Asia/Tokyo'
+  AND stage >= $2`
+	if err := r.db.QueryRowContext(ctx, gradQuery, from, ladderLen).Scan(&m.GraduatedCount); err != nil {
+		return learning.WeeklyReview{}, fmt.Errorf("WeeklyReviewMaterial: graduated: %w", err)
+	}
+
+	// One item pulled back by a 'forgot' grade in-window (most recent). A
+	// forgot always has graded_at set (manual grade), so the window filter is
+	// on graded_at.
+	const reintroQuery = `
+SELECT li.concept
+FROM review_logs rl
+JOIN learning_items li ON li.id = rl.item_id
+WHERE rl.result = $1
+  AND rl.graded_at >= ($2::date)::timestamp AT TIME ZONE 'Asia/Tokyo'
+ORDER BY rl.graded_at DESC, rl.id DESC
+LIMIT 1`
+	err = r.db.QueryRowContext(ctx, reintroQuery, learning.ResultForgot, from).Scan(&m.Reintroduced)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return learning.WeeklyReview{}, fmt.Errorf("WeeklyReviewMaterial: reintroduced: %w", err)
+	}
+	return m, nil
+}

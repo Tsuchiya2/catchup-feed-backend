@@ -15,6 +15,31 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	assert.Equal(t, 4, cfg.Slots)
 	assert.Equal(t, 30, cfg.BackpressureThreshold)
 	assert.Equal(t, 48*time.Hour, cfg.AutoResolveAfter)
+	assert.Equal(t, time.Saturday, cfg.WeeklyReviewDOW, "D-21: 週次振り返りは土曜")
+}
+
+func TestLoadConfig_WeeklyReviewDOW(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  time.Weekday
+	}{
+		{"english name", "monday", time.Monday},
+		{"english name mixed case", "Sunday", time.Sunday},
+		{"name with spaces", "  Friday ", time.Friday},
+		{"go weekday number 0", "0", time.Sunday},
+		{"go weekday number 6", "6", time.Saturday},
+		{"invalid name falls back to Saturday", "someday", time.Saturday},
+		{"out-of-range number falls back", "7", time.Saturday},
+		{"negative number falls back", "-1", time.Saturday},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("QUIZ_WEEKLY_REVIEW_DOW", tt.value)
+			cfg := LoadConfig(nil)
+			assert.Equal(t, tt.want, cfg.WeeklyReviewDOW)
+		})
+	}
 }
 
 func TestLoadConfig_EnvOverrides(t *testing.T) {

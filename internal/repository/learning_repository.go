@@ -92,4 +92,22 @@ type LearningRepository interface {
 	// The caller compares against Config.BackpressureThreshold and stops
 	// NEW item generation only; asking always continues (§9).
 	CountOverdueActive(ctx context.Context, day time.Time) (int, error)
+
+	// WeeklyReviewMaterial gathers the §7.4 週次振り返り material for a review
+	// broadcast, read-only and without any LLM call:
+	//
+	//   - Concepts: concept headings of learning_items created on or after
+	//     fromDay (learning.WeeklyReviewWindowStart), oldest first, any kind.
+	//   - GraduatedCount: items retired inside the window via LADDER
+	//     COMPLETION only. Ladder completion is the sole path that sets
+	//     stage to len(ladder) (learning.Transition), so retired_at in-window
+	//     AND stage >= ladderLen distinguishes it from a manual archive,
+	//     which never touches stage (§8.1 RetireItem). Pass ladderLen =
+	//     len(Config.Ladder).
+	//   - Reintroduced: the concept of one item pulled back to stage 0 by a
+	//     'forgot' grade inside the window (most recent), or "" when none.
+	//
+	// fromDay is a JST broadcast day (learning.WeeklyReviewWindowStart);
+	// all in-window comparisons use the JST day boundary (§12-10).
+	WeeklyReviewMaterial(ctx context.Context, fromDay time.Time, ladderLen int) (learning.WeeklyReview, error)
 }

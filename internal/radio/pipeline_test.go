@@ -173,6 +173,11 @@ type fakeLearning struct {
 	autoResolveErr error
 	autoResolveN   int
 
+	weekly       learning.WeeklyReview
+	weeklyErr    error
+	weeklyFroms  []time.Time
+	weeklyLadder []int
+
 	countDays    []time.Time
 	hasDays      []time.Time
 	inserted     []learning.NewItem
@@ -222,6 +227,12 @@ func (f *fakeLearning) RecordAsked(_ context.Context, itemIDs []int64, episodeID
 	}
 	f.asked = append(f.asked, recordAskedCall{itemIDs: itemIDs, episodeID: episodeID, askedOn: askedOn})
 	return nil
+}
+
+func (f *fakeLearning) WeeklyReviewMaterial(_ context.Context, fromDay time.Time, ladderLen int) (learning.WeeklyReview, error) {
+	f.weeklyFroms = append(f.weeklyFroms, fromDay)
+	f.weeklyLadder = append(f.weeklyLadder, ladderLen)
+	return f.weekly, f.weeklyErr
 }
 
 // validWav is a syntactically valid PCM wav for the fake synthesizer — the
@@ -644,6 +655,10 @@ func defaultLearningCfg() learning.Config {
 		Slots:                 4,
 		BackpressureThreshold: 30,
 		AutoResolveAfter:      48 * time.Hour,
+		// D-21 default. fixedNow (2026-07-05) is a Sunday, so the weekly
+		// review stays OFF for every existing test; the §7.4 tests override
+		// Now to a Saturday.
+		WeeklyReviewDOW: time.Saturday,
 	}
 }
 

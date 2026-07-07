@@ -59,3 +59,23 @@ func TestFirstDueDay(t *testing.T) {
 func TestFormatDay(t *testing.T) {
 	assert.Equal(t, "2026-07-07", FormatDay(time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)))
 }
+
+func TestBroadcastWeekday(t *testing.T) {
+	// 2026-07-11 は土曜。UTC 深夜でも JST の放送日で曜日を判定する (§12-10)。
+	sat := time.Date(2026, 7, 11, 4, 30, 0, 0, time.UTC) // JST 13:30 土曜
+	assert.Equal(t, time.Saturday, BroadcastWeekday(sat))
+
+	// UTC 金曜夜 = JST 土曜早朝。曜日が JST 側に落ちること。
+	utcFriEve := time.Date(2026, 7, 10, 19, 0, 0, 0, time.UTC) // = 2026-07-11 04:00 JST
+	assert.Equal(t, time.Saturday, BroadcastWeekday(utcFriEve))
+}
+
+func TestWeeklyReviewWindowStart(t *testing.T) {
+	// 放送日 2026-07-11(土)基準の直近7日は 07-05..07-11。開始は 07-05。
+	sat := time.Date(2026, 7, 11, 4, 30, 0, 0, time.UTC)
+	got := WeeklyReviewWindowStart(sat)
+	assert.Equal(t, time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC), got)
+	assert.Equal(t, time.UTC, got.Location())
+	// 週次の窓は 7 日でカレンダーをちょうど敷き詰める(前週と重複なし)。
+	assert.Equal(t, 6*24*time.Hour, BroadcastDay(sat).Sub(got))
+}

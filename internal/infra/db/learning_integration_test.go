@@ -639,3 +639,75 @@ func TestLearningRepo_AutoVsManualGrade_RealPostgres(t *testing.T) {
 		t.Fatalf("log resolved to unexpected result %q", result)
 	}
 }
+
+// TestLearningRepo_WeeklyReviewMaterial_RealPostgres proves the §7.4 material
+// query against a real database: the created-in-window concept list (any
+// kind), the ladder-completion graduation count (stage >= ladderLen, manual
+// archives excluded), the JST-day window boundaries, and the forgot-in-window
+// reintroduction pick.
+func TestLearningRepo_WeeklyReviewMaterial_RealPostgres(t *testing.T) {
+	conn := openTestDB(t)
+	require.NoError(t, MigrateUp(conn))
+	f := newLearningFixture(t, conn)
+	repo := pgRepo.NewLearningRepo(conn)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	fromDay := learning.WeeklyReviewWindowStart(now)
+	const ladderLen = 3
+	today := learning.FormatDay(learning.BroadcastDay(now))
+
+	exec := func(q string, args ...any) {
+		_, err := conn.Exec(q, args...)
+		require.NoError(t, err)
+	}
+
+	// --- concepts: created in-window, any kind, oldest first ---
+	exec(`INSERT INTO learning_items (kind, article_id, concept, question, answer, provider, stage, due_on, created_at)
+	      VALUES ('article',$1,'CONCEPT-A','q','a','gemini',0,$2::date, now())`, f.articleID, today)
+	exec(`INSERT INTO learning_items (kind, article_id, concept, question, answer, provider, stage, due_on, created_at)
+	      VALUES ('article',$1,'CONCEPT-B','q','a','groq',0,$2::date, now())`, f.articleID, today)
+	// book item is kind-agnostic in the concept list (private-only, §10).
+	exec(`INSERT INTO learning_items (kind, book_id, concept, question, answer, provider, stage, due_on, created_at)
+	      VALUES ('book',$1,'BOOK-CONCEPT','q','a','ollama',0,$2::date, now())`, f.bookID, today)
+	// created before the window → excluded from concepts.
+	exec(`INSERT INTO learning_items (kind, article_id, concept, question, answer, provider, stage, due_on, created_at)
+	      VALUES ('article',$1,'OLD-CONCEPT','q','a','gemini',0,$2::date, now() - interval '10 days')`, f.articleID, today)
+
+	// --- graduation: retired in-window at stage == ladderLen → counted ---
+	exec(`INSERT INTO learning_items (kind, article_id, concept, question, answer, provider, stage, due_on, created_at, retired_at)
+	      VALUES ('article',$1,'GRADUATED','q','a','gemini',3,$2::date, now() - interval '20 days', now())`, f.articleID, today)
+	// manual archive in-window at stage < ladderLen → NOT counted.
+	exec(`INSERT INTO learning_items (kind, article_id, concept, question, answer, provider, stage, due_on, created_at, retired_at)
+	      VALUES ('article',$1,'MANUAL','q','a','gemini',1,$2::date, now() - interval '20 days', now())`, f.articleID, today)
+	// graduation retired before the window → NOT counted.
+	exec(`INSERT INTO learning_items (kind, article_id, concept, question, answer, provider, stage, due_on, created_at, retired_at)
+	      VALUES ('article',$1,'OLD-GRAD','q','a','gemini',3,$2::date, now() - interval '40 days', now() - interval '10 days')`, f.articleID, today)
+
+	// --- reintroduction: a forgot grade in-window (item created out of window
+	// so it does not also appear in the concept list) ---
+	var forgotItem int64
+	require.NoError(t, conn.QueryRow(
+		`INSERT INTO learning_items (kind, article_id, concept, question, answer, provider, stage, due_on, created_at)
+		 VALUES ('article',$1,'FORGOTTEN','q','a','gemini',0,$2::date, now() - interval '20 days') RETURNING id`,
+		f.articleID, today).Scan(&forgotItem))
+	exec(`INSERT INTO review_logs (item_id, episode_id, asked_on, result, graded_at)
+	      VALUES ($1,$2,$3::date,'forgot', now())`, forgotItem, f.episodeID, today)
+
+	m, err := repo.WeeklyReviewMaterial(ctx, fromDay, ladderLen)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"CONCEPT-A", "CONCEPT-B", "BOOK-CONCEPT"}, m.Concepts,
+		"created-in-window concepts, any kind, oldest first")
+	assert.NotContains(t, m.Concepts, "OLD-CONCEPT", "created before the window is excluded")
+	assert.NotContains(t, m.Concepts, "FORGOTTEN", "reintroduced item was created out of window")
+	assert.Equal(t, 1, m.GraduatedCount,
+		"only ladder completion counts (GRADUATED); MANUAL (stage<len) and OLD-GRAD (out of window) excluded")
+	assert.Equal(t, "FORGOTTEN", m.Reintroduced, "the in-window forgot item's concept")
+
+	// --- empty window (future start) → nothing to say ---
+	future := learning.BroadcastDay(now).AddDate(0, 0, 1)
+	empty, err := repo.WeeklyReviewMaterial(ctx, future, ladderLen)
+	require.NoError(t, err)
+	assert.True(t, empty.IsEmpty(), "a window with no rows yields empty material")
+}

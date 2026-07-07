@@ -79,6 +79,7 @@ type LearningStore interface {
 	AutoResolve(ctx context.Context, cutoffDay, resolveDay time.Time, ladder []int) (int, error)
 	ListDue(ctx context.Context, day time.Time, limit int) ([]learning.Item, error)
 	RecordAsked(ctx context.Context, itemIDs []int64, episodeID int64, askedOn time.Time) error
+	WeeklyReviewMaterial(ctx context.Context, fromDay time.Time, ladderLen int) (learning.WeeklyReview, error)
 }
 
 // Synthesizer renders one segment script as sentence WAVs (§6-3) and names
@@ -233,7 +234,8 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 
 	if opts.DryRun {
 		brSel := p.selectBookReview(ctx, logger, now, true)
-		return p.printDryRun(title, since, showNotes, segments, quizDrafts, dueItems, brSel)
+		reviewMat := p.previewWeeklyReview(ctx, logger, now)
+		return p.printDryRun(title, since, showNotes, segments, quizDrafts, dueItems, brSel, reviewMat)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "radio-episode-")
@@ -373,19 +375,25 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 	outroSeg := &entity.Segment{Kind: entity.SegmentKindOutro,
 		Script: script.QuizOnlyOutro(p.Config.ShowName)}
 
-	showNotes := script.AppendVoicevoxCredit(
-		script.AppendQuizShowNotes(script.QuizOnlyShowNotesBase(), dueItems, p.Config.LearningURL),
-		speakerName)
+	// クレジットは review 素材確定後に末尾へ付ける(§7.5)。base はここで組む。
+	baseNotes := script.AppendQuizShowNotes(script.QuizOnlyShowNotesBase(), dueItems, p.Config.LearningURL)
 	title, filename, err := p.episodeNaming(ctx, now, entity.FeedKindPrivate)
 	if err != nil {
 		return err
 	}
 
 	if opts.DryRun {
-		// book_review は dry-run では生成しないので、プレビューのセグメントは
-		// intro → quiz → outro のみ。book_review 対象は brSel から印字する。
-		segments := quizOnlySegments(introSeg, corner, nil, outroSeg)
-		return p.printDryRun(title, since, showNotes, segments, nil, dueItems, brSel)
+		// book_review / review は dry-run では生成しないので、プレビューの
+		// セグメントは intro → quiz → outro のみ。book_review 対象は brSel、
+		// 週次振り返りは素材(読み取りのみ)を印字する。
+		reviewMat := p.previewWeeklyReview(ctx, logger, now)
+		notes := baseNotes
+		if reviewMat != nil {
+			notes = script.AppendWeeklyReviewShowNotes(notes, *reviewMat)
+		}
+		notes = script.AppendVoicevoxCredit(notes, speakerName)
+		segments := quizOnlySegments(introSeg, corner, nil, nil, outroSeg)
+		return p.printDryRun(title, since, notes, segments, nil, dueItems, brSel, reviewMat)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "radio-episode-")
@@ -401,11 +409,18 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 	if len(dueItems) == 0 && bookReview == nil {
 		// クイズがなく book_review 生成も失敗 → 中身のない私的版は作らない。
 		// カーソルは進めていない(生成失敗)ので翌日同じ箇所から (§7.1/§7.3)。
+		// 週次振り返りだけのためにエピソードを起こすことはしない(D-1 スキップ
+		// 契約を維持。手順7 の裁量判断: review は news/quiz/book が成立する日に
+		// 相乗りする)。
 		logger.Info("book_review generation failed on an articles-and-quiz-less day, skipping today (§7.1)")
 		return ErrNoArticles
 	}
 
-	segments := quizOnlySegments(introSeg, corner, bookReview, outroSeg)
+	// §7.4 週次振り返り: エピソードが成立する日にのみ相乗り(上の skip 後)。
+	// news なしのため book_review 尺ガードは無し(§7.1)— review は単純に加算。
+	review := p.prepareWeeklyReview(ctx, logger, tmpDir, now)
+
+	segments := quizOnlySegments(introSeg, corner, review, bookReview, outroSeg)
 
 	segWavs, speechDuration, err := p.synthesize(ctx, tmpDir, []*entity.Segment{introSeg, outroSeg})
 	if err != nil {
@@ -415,9 +430,12 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 	if err != nil {
 		return err
 	}
-	wavs := make([]string, 0, len(segWavs[0])+len(cornerWavs)+len(segWavs[1]))
+	wavs := make([]string, 0, len(segWavs[0])+len(cornerWavs)+len(segWavs[1])+1)
 	wavs = append(wavs, segWavs[0]...) // intro
 	wavs = append(wavs, cornerWavs...) // quiz corner
+	if review != nil {
+		wavs = append(wavs, review.wavs...) // 週次振り返り
+	}
 	if bookReview != nil {
 		wavs = append(wavs, bookReview.wavs...) // book_review
 	}
@@ -437,13 +455,20 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 	if err != nil {
 		return err
 	}
+	// クレジットは末尾。週次振り返りセクションは private 限定 (§10)。
+	showNotes := baseNotes
+	if review != nil {
+		showNotes = script.AppendWeeklyReviewShowNotes(showNotes, review.material)
+	}
+	showNotes = script.AppendVoicevoxCredit(showNotes, speakerName)
+
 	episode := &entity.Episode{
 		FeedKind:    entity.FeedKindPrivate,
 		Title:       title,
 		ShowNotes:   showNotes,
 		AudioPath:   audioPath,
 		AudioBytes:  stat.Size(),
-		DurationSec: int(math.Round((speechDuration + cornerDuration + bookReviewDuration(bookReview)).Seconds())),
+		DurationSec: int(math.Round((speechDuration + cornerDuration + weeklyReviewDuration(review) + bookReviewDuration(bookReview)).Seconds())),
 		PublishedAt: now,
 	}
 	if err := p.Episodes.Create(ctx, episode, segments); err != nil {
@@ -463,20 +488,26 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 		slog.String("audio_path", audioPath),
 		slog.Int("duration_sec", episode.DurationSec),
 		slog.Int("quiz_items", len(corner.Items)),
+		slog.Bool("weekly_review", review != nil),
 		slog.Bool("book_review", bookReview != nil))
 	return nil
 }
 
 // quizOnlySegments assembles the no-articles private episode's segment rows:
-// intro → quiz corner → book_review (§7.3, nil to omit) → outro, positions
-// contiguous from 1. The outro's position is set here (it depends on how many
-// quiz/book_review rows precede it).
-func quizOnlySegments(intro *entity.Segment, corner script.QuizCorner, bookReview *bookReviewPlan, outro *entity.Segment) []*entity.Segment {
+// intro → quiz corner → review (§7.4, nil to omit) → book_review (§7.3, nil to
+// omit) → outro, positions contiguous from 1. The outro's position is set here
+// (it depends on how many quiz/review/book_review rows precede it).
+func quizOnlySegments(intro *entity.Segment, corner script.QuizCorner, review *weeklyReviewPlan, bookReview *bookReviewPlan, outro *entity.Segment) []*entity.Segment {
 	cornerSegs := corner.Segments(2) // intro=1, corner starts at 2
-	segments := make([]*entity.Segment, 0, len(cornerSegs)+3)
+	segments := make([]*entity.Segment, 0, len(cornerSegs)+4)
 	segments = append(segments, intro)
 	segments = append(segments, cornerSegs...)
 	pos := 2 + len(cornerSegs)
+	if review != nil {
+		segments = append(segments, &entity.Segment{
+			Position: pos, Kind: entity.SegmentKindReview, Script: review.segment.Script})
+		pos++
+	}
 	if bookReview != nil {
 		segments = append(segments, &entity.Segment{
 			Position: pos, Kind: entity.SegmentKindBookReview, Script: bookReview.segment.Script})
@@ -527,17 +558,26 @@ func (p *Pipeline) publishPrivateEpisode(ctx context.Context, logger *slog.Logge
 		return
 	}
 
-	// §7.3 book_review: selection → §7.1 尺ガード(news+quiz が18分に迫るなら
-	// 翌日回し)→ Ollama 生成 + TTS。nil = 当日 book_review なし(private は
-	// news+quiz、翌日カーソル位置から再開)。生成は quiz corner の後・outro の
-	// 前に挟む。
-	bookReview := p.prepareBookReview(ctx, logger, in.tmpDir, in.now, in.newsDuration+cornerDuration)
+	// §7.4 週次振り返り: quiz の後・book_review の前に挿入(私的版のみ、土曜=
+	// D-21)。テンプレート台本 (LLM 不使用) を先に TTS するので、その実測尺を
+	// 下の book_review 尺ガードに加算できる(手順6 申し送り: review 分を算入)。
+	review := p.prepareWeeklyReview(ctx, logger, in.tmpDir, in.now)
 
-	// 私的版の並び: intro → news×N → quiz → book_review → outro。news の wav は
-	// 公開版と共用 (§7.1)。
+	// §7.3 book_review: selection → §7.1 尺ガード(news+quiz+review が18分に
+	// 迫るなら翌日回し)→ Ollama 生成 + TTS。nil = 当日 book_review なし(private
+	// は news+quiz(+review)、翌日カーソル位置から再開)。生成は review の後・
+	// outro の前に挟む。
+	bookReview := p.prepareBookReview(ctx, logger, in.tmpDir, in.now,
+		in.newsDuration+cornerDuration+weeklyReviewDuration(review))
+
+	// 私的版の並び: intro → news×N → quiz → review → book_review → outro。news の
+	// wav は公開版と共用 (§7.1)。
 	outroIdx := len(in.segWavs) - 1
 	wavs := flattenWavs(in.segWavs[:outroIdx])
 	wavs = append(wavs, cornerWavs...)
+	if review != nil {
+		wavs = append(wavs, review.wavs...)
+	}
 	if bookReview != nil {
 		wavs = append(wavs, bookReview.wavs...)
 	}
@@ -566,11 +606,13 @@ func (p *Pipeline) publishPrivateEpisode(ctx context.Context, logger *slog.Logge
 
 	// U-13: the VOICEVOX credit is appended through the exact same helper as
 	// the public path — クレジット無し配信のパスは feed_kind に依らず存在
-	// しない (§7.5)。学習セクション(concept 一覧+採点リンク)は私的版の
-	// show notes 限定 (§10)。
-	showNotes := script.AppendVoicevoxCredit(
-		script.AppendQuizShowNotes(in.baseNotes, in.dueItems, p.Config.LearningURL),
-		in.speakerName)
+	// しない (§7.5)。学習セクション(concept 一覧+採点リンク+週次振り返り)は
+	// 私的版の show notes 限定 (§10)。クレジットは必ず末尾。
+	showNotes := script.AppendQuizShowNotes(in.baseNotes, in.dueItems, p.Config.LearningURL)
+	if review != nil {
+		showNotes = script.AppendWeeklyReviewShowNotes(showNotes, review.material)
+	}
+	showNotes = script.AppendVoicevoxCredit(showNotes, in.speakerName)
 
 	episode := &entity.Episode{
 		FeedKind:    entity.FeedKindPrivate,
@@ -578,14 +620,14 @@ func (p *Pipeline) publishPrivateEpisode(ctx context.Context, logger *slog.Logge
 		ShowNotes:   showNotes,
 		AudioPath:   audioPath,
 		AudioBytes:  stat.Size(),
-		DurationSec: int(math.Round((in.newsDuration + cornerDuration + bookReviewDuration(bookReview)).Seconds())),
+		DurationSec: int(math.Round((in.newsDuration + cornerDuration + weeklyReviewDuration(review) + bookReviewDuration(bookReview)).Seconds())),
 		// The same selection timestamp as the public twin — deliberately:
 		// the private feed folds the day's public/private pair by equal
 		// published_at (feed.collapsePrivatePairs), and the public cursor
 		// reads public rows only, so this can never move article selection.
 		PublishedAt: in.now,
 	}
-	if err := p.Episodes.Create(ctx, episode, privateSegments(in.segments, in.corner, bookReview)); err != nil {
+	if err := p.Episodes.Create(ctx, episode, privateSegments(in.segments, in.corner, review, bookReview)); err != nil {
 		logger.Warn("private episode skipped: insert failed (§9)", slog.Any("error", err))
 		return
 	}
@@ -606,6 +648,7 @@ func (p *Pipeline) publishPrivateEpisode(ctx context.Context, logger *slog.Logge
 		slog.String("audio_path", audioPath),
 		slog.Int("duration_sec", episode.DurationSec),
 		slog.Int("quiz_items", len(in.corner.Items)),
+		slog.Bool("weekly_review", review != nil),
 		slog.Bool("book_review", bookReview != nil))
 }
 
@@ -620,14 +663,15 @@ func bookReviewDuration(plan *bookReviewPlan) time.Duration {
 
 // privateSegments builds the private episode's own segment rows: the public
 // intro/news scripts copied verbatim (私的版は公開版の上位集合, §7.1), the
-// quiz corner (1 項目 = 1 行, §7.2-4), the §7.3 book_review (kind constant via
-// entity, §12-6), then the outro. Positions stay contiguous and unique. Fresh
-// copies are mandatory — Create mutates ID/EpisodeID, and the passed-in rows
-// are already committed under the public episode. bookReview may be nil (no
-// book_review this episode).
-func privateSegments(public []*entity.Segment, corner script.QuizCorner, bookReview *bookReviewPlan) []*entity.Segment {
+// quiz corner (1 項目 = 1 行, §7.2-4), the §7.4 週次振り返り (kind='review'),
+// the §7.3 book_review (kind constant via entity, §12-6), then the outro —
+// intro → news → quiz → review → book_review → outro (§7.4 の配置). Positions
+// stay contiguous and unique. Fresh copies are mandatory — Create mutates
+// ID/EpisodeID, and the passed-in rows are already committed under the public
+// episode. review / bookReview may each be nil (segment omitted).
+func privateSegments(public []*entity.Segment, corner script.QuizCorner, review *weeklyReviewPlan, bookReview *bookReviewPlan) []*entity.Segment {
 	cornerSegs := corner.Segments(len(public)) // outro の位置から採番
-	out := make([]*entity.Segment, 0, len(public)+len(cornerSegs)+1)
+	out := make([]*entity.Segment, 0, len(public)+len(cornerSegs)+2)
 	copySegment := func(s *entity.Segment, position int) *entity.Segment {
 		return &entity.Segment{Position: position, Kind: s.Kind, ArticleID: s.ArticleID, Script: s.Script}
 	}
@@ -636,7 +680,13 @@ func privateSegments(public []*entity.Segment, corner script.QuizCorner, bookRev
 	}
 	out = append(out, cornerSegs...)
 	pos := len(public) + len(cornerSegs)
-	// (手順6) book_review セグメントはここ(quiz の後・outro の前)に挿入。
+	// (手順7) 週次振り返りは quiz の後・book_review の前 (§7.4)。
+	if review != nil {
+		out = append(out, &entity.Segment{
+			Position: pos, Kind: entity.SegmentKindReview, Script: review.segment.Script})
+		pos++
+	}
+	// (手順6) book_review セグメントは review の後・outro の前に挿入。
 	if bookReview != nil {
 		out = append(out, &entity.Segment{
 			Position: pos, Kind: entity.SegmentKindBookReview, Script: bookReview.segment.Script})
@@ -964,7 +1014,7 @@ func flattenWavs(groups [][]string) []string {
 // item drafts and the quiz selection are printed for inspection but nothing
 // is written — no InsertItem, no AutoResolve, no RecordAsked (dry-run makes
 // no DB writes).
-func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, segments []*entity.Segment, drafts []script.QuizDraft, dueItems []learning.Item, bookReview *bookReviewSelection) error {
+func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, segments []*entity.Segment, drafts []script.QuizDraft, dueItems []learning.Item, bookReview *bookReviewSelection, weekly *learning.WeeklyReview) error {
 	out := p.Out
 	if out == nil {
 		out = os.Stdout
@@ -997,6 +1047,14 @@ func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, 
 			bookReview.book.Title, bookReview.book.ID,
 			bookReview.chunks[0].Position, last, len(bookReview.chunks),
 			bookReview.book.Cursor, bookReview.newCursor, finishedNote(bookReview.finished))
+	}
+	// §7.4 週次振り返り(dry-run: TTS なし)。素材のみ印字する。曜日でない/
+	// 素材ゼロの週は weekly==nil でここには出ない。
+	if weekly != nil {
+		if body, ok := script.BuildWeeklyReview(*weekly); ok {
+			fmt.Fprintf(&sb, "--- weekly review (dry-run: 週次振り返り、卒業 %d件, 再紹介 %q) ---\n%s\n\n",
+				weekly.GraduatedCount, weekly.Reintroduced, body)
+		}
 	}
 	if _, err := io.WriteString(out, sb.String()); err != nil {
 		return fmt.Errorf("radio: write dry-run report: %w", err)
