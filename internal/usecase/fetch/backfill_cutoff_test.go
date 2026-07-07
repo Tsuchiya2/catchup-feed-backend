@@ -3,6 +3,7 @@ package fetch_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,27 +14,40 @@ import (
 	fetchUC "catchup-feed/internal/usecase/fetch"
 )
 
-/* ───────── D-15: transcribe 経路のバックログカットオフ ───────── */
+/* ───────── D-15/D-15b: 全 kind のバックログカットオフ ───────── */
 
-// TestService_CrawlAllSources_TranscribeBackfillCutoff fixes the D-15
-// contract (Phase 2 §5.2): transcribe-path items (youtube/podcast) whose
-// published_at is older than TranscribeBackfillCutoff (14 days) are skipped
-// entirely — no articles INSERT, no transcribe job — and counted in
-// SkippedBackfill. Unknown published_at (zero value) is treated as new.
-func TestService_CrawlAllSources_TranscribeBackfillCutoff(t *testing.T) {
+// longContent exceeds the content-fetch threshold (1500) so rss-path
+// ingest cases never invoke the ContentFetcher — keeping the failing
+// fetcher installed for every case proves skipped items reach neither
+// go-readability nor the summarizer.
+var longContent = strings.Repeat("本", 1500)
+
+// TestService_CrawlAllSources_BackfillCutoff fixes the D-15/D-15b contract
+// (Phase 2 §5): feed items of ANY kind (rss included — D-15b, Vercel Blog
+// 794記事の本番実障害) whose published_at is older than BackfillCutoff
+// (14 days) are skipped entirely — no articles INSERT, no content fetch,
+// no summarization, no transcribe job — and counted in SkippedBackfill.
+// Unknown published_at (zero value) is treated as new (判定不能を落とさない).
+func TestService_CrawlAllSources_BackfillCutoff(t *testing.T) {
 	now := time.Now()
 	old15d := now.Add(-15 * 24 * time.Hour)
 	new13d := now.Add(-13 * 24 * time.Hour)
 
 	tests := []struct {
-		name                string
-		kind                string
+		name string
+		kind string
+		// summarizeOK: rss の取り込みケースのみ true(stubSummarizer を
+		// 使う)。false は failingSummarizer — 要約が一切呼ばれないことの
+		// 検証を兼ねる(transcribe kind と、全 item スキップのケース)。
+		summarizeOK         bool
 		items               []fetchUC.FeedItem
 		wantInserted        int64
 		wantEnqueued        int64
+		wantSummaries       int
 		wantSkippedBackfill int64
 		// wantArticleURLs は保存された articles.url の期待値(挿入順)。
-		// nil なら検証しない。
+		// nil なら検証しない。rss 経路は並列挿入で順序が不定なので、
+		// rss ケースでは取り込み1件までに留めること。
 		wantArticleURLs []string
 	}{
 		{
@@ -105,6 +119,64 @@ func TestService_CrawlAllSources_TranscribeBackfillCutoff(t *testing.T) {
 			wantSkippedBackfill: 210,
 			wantArticleURLs:     []string{"https://example.com/fresh-1", "https://example.com/fresh-2"},
 		},
+		{
+			name: "rss: 15日前の item はスキップ(D-15b: content 取得も要約も呼ばれない)",
+			kind: entity.SourceKindRSS,
+			items: []fetchUC.FeedItem{
+				// Content は閾値未満: カットオフより後に処理されるバグが
+				// あれば failingContentFetcher が test を落とす。
+				{Title: "Old article", URL: "https://example.com/old-article", Content: "本文", PublishedAt: old15d},
+			},
+			wantSkippedBackfill: 1,
+		},
+		{
+			name:        "rss: 13日前の item は従来どおり取り込む",
+			kind:        entity.SourceKindRSS,
+			summarizeOK: true,
+			items: []fetchUC.FeedItem{
+				{Title: "Recent article", URL: "https://example.com/recent-article", Content: longContent, PublishedAt: new13d},
+			},
+			wantInserted:    1,
+			wantSummaries:   1,
+			wantArticleURLs: []string{"https://example.com/recent-article"},
+		},
+		{
+			name:        "rss: published_at 不明(zero value)は新着扱い(D-15b: 判定不能を落とさない)",
+			kind:        entity.SourceKindRSS,
+			summarizeOK: true,
+			items: []fetchUC.FeedItem{
+				{Title: "No date", URL: "https://example.com/no-date", Content: longContent},
+			},
+			wantInserted:  1,
+			wantSummaries: 1,
+		},
+		{
+			name:        "rss: 巨大アーカイブフィード(Vercel Blog 相当)は新着のみ取り込む",
+			kind:        entity.SourceKindRSS,
+			summarizeOK: true,
+			items: func() []fetchUC.FeedItem {
+				// 793 本の過去記事 + 1 本の直近記事 = 794(実障害の規模)。
+				items := make([]fetchUC.FeedItem, 0, 794)
+				for i := 0; i < 793; i++ {
+					items = append(items, fetchUC.FeedItem{
+						Title:       fmt.Sprintf("Archive %d", i),
+						URL:         fmt.Sprintf("https://example.com/archive-%d", i),
+						Content:     "本文",
+						PublishedAt: now.Add(-time.Duration(15+i) * 24 * time.Hour),
+					})
+				}
+				return append(items, fetchUC.FeedItem{
+					Title:       "Fresh post",
+					URL:         "https://example.com/fresh-post",
+					Content:     longContent,
+					PublishedAt: now.Add(-24 * time.Hour),
+				})
+			}(),
+			wantInserted:        1,
+			wantSummaries:       1,
+			wantSkippedBackfill: 793,
+			wantArticleURLs:     []string{"https://example.com/fresh-post"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -117,10 +189,15 @@ func TestService_CrawlAllSources_TranscribeBackfillCutoff(t *testing.T) {
 			artRepo := &stubArticleRepo{}
 			fetcher := &stubFeedFetcher{items: tt.items}
 
+			var summarizer fetchUC.Summarizer = &failingSummarizer{t: t}
+			if tt.summarizeOK {
+				summarizer = &stubSummarizer{}
+			}
+
 			svc := fetchUC.NewService(
 				srcRepo,
 				artRepo,
-				&failingSummarizer{t: t},
+				summarizer,
 				fetcher,
 				&failingContentFetcher{t: t},
 				fetchUC.ContentFetchConfig{Parallelism: 10, Threshold: 1500},
@@ -133,11 +210,13 @@ func TestService_CrawlAllSources_TranscribeBackfillCutoff(t *testing.T) {
 			assert.Equal(t, tt.wantInserted, stats.Inserted, "Inserted")
 			assert.Equal(t, tt.wantEnqueued, stats.TranscribeEnqueued, "TranscribeEnqueued")
 			assert.Equal(t, tt.wantSkippedBackfill, stats.SkippedBackfill, "SkippedBackfill")
+			assert.Zero(t, stats.SummarizeError, "SummarizeError")
 			assert.Zero(t, stats.SkippedNoMedia, "SkippedNoMedia")
 			assert.Zero(t, stats.Duplicated, "Duplicated")
 
 			assert.Len(t, artRepo.articles, int(tt.wantInserted), "persisted articles")
 			assert.Len(t, artRepo.transcribeJobs, int(tt.wantEnqueued), "transcribe jobs")
+			assert.Len(t, artRepo.summaries, tt.wantSummaries, "persisted summaries")
 			if tt.wantArticleURLs != nil {
 				gotURLs := make([]string, 0, len(artRepo.articles))
 				for _, art := range artRepo.articles {
@@ -149,11 +228,11 @@ func TestService_CrawlAllSources_TranscribeBackfillCutoff(t *testing.T) {
 	}
 }
 
-// TestService_CrawlAllSources_TranscribeBackfillCutoff_BeforeYouTubeDirectCap:
+// TestService_CrawlAllSources_BackfillCutoff_BeforeYouTubeDirectCap:
 // the cutoff check sits BEFORE the §5.1 stage-1 cap, so old items never
 // consume the per-cycle Gemini budget (YouTubeDirectMaxPerCycle) — the one
 // fresh item in a backlog-heavy feed still gets its stage-1 attempt.
-func TestService_CrawlAllSources_TranscribeBackfillCutoff_BeforeYouTubeDirectCap(t *testing.T) {
+func TestService_CrawlAllSources_BackfillCutoff_BeforeYouTubeDirectCap(t *testing.T) {
 	now := time.Now()
 
 	// 古い動画を cap(3)より多く並べ、新しい動画を末尾に1本置く。
@@ -189,10 +268,12 @@ func TestService_CrawlAllSources_TranscribeBackfillCutoff_BeforeYouTubeDirectCap
 	assert.Equal(t, []string{"https://www.youtube.com/watch?v=fresh"}, describer.calls, "describer must only see the fresh item")
 }
 
-// TestService_CrawlAllSources_TranscribeBackfillCutoff_RSSUnaffected: the
-// rss path (processFeedItems) ingests items regardless of published_at —
-// D-15 scopes the cutoff to the transcribe path only.
-func TestService_CrawlAllSources_TranscribeBackfillCutoff_RSSUnaffected(t *testing.T) {
+// TestService_CrawlAllSources_BackfillCutoff_ExistingRowsUntouched: skipped
+// backlog items that already exist in the DB (旧障害で取り込み済みの記事)
+// are left alone — the cutoff only suppresses new INSERTs, it never deletes
+// or updates, and it doesn't even hit the dedupe lookup for them (the filter
+// runs before ExistsByURLBatch key collection).
+func TestService_CrawlAllSources_BackfillCutoff_ExistingRowsUntouched(t *testing.T) {
 	old15d := time.Now().Add(-15 * 24 * time.Hour)
 
 	srcRepo := &stubSourceRepo{
@@ -200,24 +281,26 @@ func TestService_CrawlAllSources_TranscribeBackfillCutoff_RSSUnaffected(t *testi
 			{ID: 7, FeedURL: "https://example.com/feed", Kind: entity.SourceKindRSS, Active: true},
 		},
 	}
-	artRepo := &stubArticleRepo{}
+	// 既に DB にある旧記事(実障害で流入済み)がフィードに残っているケース。
+	artRepo := &stubArticleRepo{
+		existsMap: map[string]bool{"https://example.com/already-ingested": true},
+	}
 	fetcher := &stubFeedFetcher{
 		items: []fetchUC.FeedItem{
-			{Title: "Old article", URL: "https://example.com/old-article", Content: "本文", PublishedAt: old15d},
+			{Title: "Already ingested", URL: "https://example.com/already-ingested", Content: "本文", PublishedAt: old15d},
 		},
 	}
 
 	svc := fetchUC.NewService(
-		srcRepo, artRepo, &stubSummarizer{}, fetcher, nil,
+		srcRepo, artRepo, &failingSummarizer{t: t}, fetcher, &failingContentFetcher{t: t},
 		fetchUC.ContentFetchConfig{Parallelism: 10, Threshold: 1500},
 	)
 
 	stats, err := svc.CrawlAllSources(context.Background())
 	require.NoError(t, err)
 
-	assert.Equal(t, int64(1), stats.Inserted, "Inserted (rss path must ignore the cutoff)")
-	assert.Zero(t, stats.SkippedBackfill, "SkippedBackfill")
-	require.Len(t, artRepo.articles, 1)
-	assert.Equal(t, "https://example.com/old-article", artRepo.articles[0].URL)
-	assert.Len(t, artRepo.summaries, 1, "rss path persists a summary as usual")
+	assert.Equal(t, int64(1), stats.SkippedBackfill, "SkippedBackfill (cutoff wins over dedupe: counted as backfill, not Duplicated)")
+	assert.Zero(t, stats.Duplicated, "Duplicated")
+	assert.Zero(t, stats.Inserted, "Inserted")
+	assert.Empty(t, artRepo.articles, "no writes of any kind against existing rows")
 }
