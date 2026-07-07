@@ -183,7 +183,10 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	// same-day dedupe suppress the prompt section itself — no tokens spent,
 	// no output discarded (§5.2). The decision inputs (overdue counts,
 	// existing items) stay on this side of the call and never reach the
-	// prompt (§10: 理解状態をクラウドに漏らさない).
+	// prompt (§10: 理解状態をクラウドに漏らさない). The two DB reads behind
+	// the decision run in dry-run too — deliberately: both are read-only,
+	// and a dry-run must render the outro prompt exactly as the real run
+	// would (D-2: プロンプト調整用), backpressure state included.
 	quizCount := p.newItemQuota(ctx, now, logger)
 	segments, quizDrafts, err := p.Script.GenerateEpisode(ctx, now, featured, quizCount)
 	if err != nil {

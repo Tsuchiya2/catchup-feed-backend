@@ -63,6 +63,74 @@ func TestCutQuizSection(t *testing.T) {
 	}
 }
 
+// TestStripQuizLeak pins the §12-1 safety net for marker-mangling models
+// (レビュー差し戻し B-1): item traces that survive the exact-marker split
+// are truncated out of the broadcast body.
+func TestStripQuizLeak(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		want       string
+		wantLeaked bool
+	}{
+		{
+			name:       "clean outro untouched",
+			body:       "今日の振り返りでした。また明日。",
+			want:       "今日の振り返りでした。また明日。",
+			wantLeaked: false,
+		},
+		{
+			name:       "whitespace-mangled marker cut at its line start (no === residue)",
+			body:       "アウトロ。\n=== LEARNING_ITEMS ===\n記事番号: 1",
+			want:       "アウトロ。\n",
+			wantLeaked: true,
+		},
+		{
+			name:       "bare item lines cut at the 記事番号 line start",
+			body:       "アウトロ。\n記事番号: 1\n概念: c",
+			want:       "アウトロ。\n",
+			wantLeaked: true,
+		},
+		{
+			name:       "full-width colon variant caught",
+			body:       "アウトロ。\n記事番号:2\n概念:c",
+			want:       "アウトロ。\n",
+			wantLeaked: true,
+		},
+		{
+			name:       "indented item line caught",
+			body:       "アウトロ。\n  記事番号: 1\n概念: c",
+			want:       "アウトロ。\n",
+			wantLeaked: true,
+		},
+		{
+			name:       "earlier of the two traces wins",
+			body:       "アウトロ。\n記事番号: 1\n=== LEARNING_ITEMS ===",
+			want:       "アウトロ。\n",
+			wantLeaked: true,
+		},
+		{
+			name:       "記事番号 without a colon is prose, not a leak",
+			body:       "アウトロで記事番号という言葉に触れる。\n記事番号 はただの語。",
+			want:       "アウトロで記事番号という言葉に触れる。\n記事番号 はただの語。",
+			wantLeaked: false,
+		},
+		{
+			name:       "whole body is item lines — truncates to empty",
+			body:       "記事番号: 1\n概念: c\n問題: q\n答え: a",
+			want:       "",
+			wantLeaked: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, leaked := stripQuizLeak(tt.body)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantLeaked, leaked)
+		})
+	}
+}
+
 func TestParseQuizItems(t *testing.T) {
 	tests := []struct {
 		name    string

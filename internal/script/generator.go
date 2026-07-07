@@ -152,10 +152,12 @@ func quizPrompt(articles []repository.RadioArticle, count int) *quizPromptData {
 // generateOutro runs the (possibly piggybacked) outro call and separates
 // the broadcast script from the learning-item section. Quiz-side failures
 // — missing marker, unparseable blocks — degrade to nil drafts with a
-// warning (§5.1). An empty outro body, however, is a script generation
-// failure exactly like an empty response today: without a closing script
-// there is no episode to ship, so the day is skipped (§8) rather than
-// broadcasting a truncated show.
+// warning (§5.1), and stripQuizLeak additionally truncates any item text
+// that a marker-mangling model left inside the body (§12-1: 公開台本への
+// 混入の構造的遮断). An empty outro body — natively empty or emptied by
+// the truncation — is a script generation failure exactly like an empty
+// response today: without a closing script there is no episode to ship,
+// so the day is skipped (§8) rather than broadcasting a truncated show.
 func (g *Generator) generateOutro(ctx context.Context, prompt string, articles []repository.RadioArticle, quizCount int) (string, []QuizDraft, error) {
 	raw, provider, err := g.llm.Generate(ctx, prompt)
 	if err != nil {
@@ -178,6 +180,19 @@ func (g *Generator) generateOutro(ctx context.Context, prompt string, articles [
 				g.logger.WarnContext(ctx, "learning-item section yielded no valid item, skipping today's item generation (§5.1)",
 					slog.String("provider", provider))
 			}
+		}
+		// §12-1 の安全ネット: マーカー表記を崩したモデル(空白入り
+		// マーカー、マーカー省略で項目直書き)が残した学習項目の痕跡を
+		// 放送原稿から切り落とす。マーカー分割の found に依らず必ず通す —
+		// found=true でもマーカー前に項目が書かれる逸脱はあり得る。項目
+		// 側は上の縮退のまま(クイズなしで放送継続)とし、公開台本への
+		// 混入だけを構造的に遮断する。切断後が空なら下の empty-script
+		// エラー = 当日スキップ (§8)。
+		if clean, leaked := stripQuizLeak(body); leaked {
+			g.logger.WarnContext(ctx, "learning-item text leaked into the outro body, truncated (§12-1)",
+				slog.String("provider", provider),
+				slog.Int("removed_chars", len([]rune(body))-len([]rune(clean))))
+			body = clean
 		}
 	}
 

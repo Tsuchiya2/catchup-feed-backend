@@ -261,6 +261,26 @@ func TestGenerator_QuizDegradation(t *testing.T) {
 			outro:     "アウトロ。\n===LEARNING_ITEMS===\n記事番号: 9\n概念: c\n問題: q\n答え: a",
 			wantOutro: "アウトロ。",
 		},
+		{
+			// レビュー差し戻し B-1: マーカー表記崩れ(空白入り)。分割は
+			// found=false に倒れるが、クイズ本文が公開 outro に残っては
+			// ならない — stripQuizLeak が切り落とす。
+			name:      "marker mangled with whitespace, items present — body truncated",
+			outro:     "アウトロ。\n=== LEARNING_ITEMS ===\n記事番号: 1\n概念: c\n問題: q\n答え: a",
+			wantOutro: "アウトロ。",
+		},
+		{
+			// レビュー差し戻し B-1: マーカー省略で項目直書き(フォール
+			// バック末端の Ollama で最も起きやすい逸脱)。
+			name:      "marker omitted, items written directly — body truncated",
+			outro:     "アウトロ。\n記事番号: 1\n概念: c\n問題: q\n答え: a",
+			wantOutro: "アウトロ。",
+		},
+		{
+			name:      "marker omitted, items with full-width colon — body truncated",
+			outro:     "アウトロ。\n記事番号:1\n概念:c\n問題:q\n答え:a",
+			wantOutro: "アウトロ。",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -276,18 +296,53 @@ func TestGenerator_QuizDegradation(t *testing.T) {
 	}
 }
 
-// TestGenerator_QuizEmptyOutroBodyFails: a response that starts with the
-// marker has no closing script at all. That is a script generation failure
-// (empty script と同類), not a quiz degradation — the day is skipped
-// rather than shipping a truncated show.
+// TestGenerator_QuizEmptyOutroBodyFails: a response with no closing script
+// at all — it starts with the marker, or the §12-1 leak truncation removed
+// everything. That is a script generation failure (empty script と同類),
+// not a quiz degradation — the day is skipped rather than shipping a
+// truncated show.
 func TestGenerator_QuizEmptyOutroBodyFails(t *testing.T) {
+	tests := []struct {
+		name  string
+		outro string
+	}{
+		{
+			name:  "response starts with the marker",
+			outro: "===LEARNING_ITEMS===\n記事番号: 1\n概念: c\n問題: q\n答え: a",
+		},
+		{
+			name:  "marker omitted and the whole response is item lines",
+			outro: "記事番号: 1\n概念: c\n問題: q\n答え: a",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			llm := &fakeLLM{responses: []string{"イントロ。", "ニュース1。", "ニュース2。", tt.outro}}
+			gen := script.NewGenerator(llm, "pulse", nil)
+
+			segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "empty script")
+			assert.Nil(t, segments)
+			assert.Nil(t, drafts)
+		})
+	}
+}
+
+// TestGenerator_QuizLeakBeforeValidMarker: a model that writes item lines
+// BEFORE a well-formed marker section. The section still parses (items are
+// kept), but the leaked copy is truncated out of the broadcast body — the
+// two nets operate independently (§12-1).
+func TestGenerator_QuizLeakBeforeValidMarker(t *testing.T) {
 	llm := &fakeLLM{responses: []string{"イントロ。", "ニュース1。", "ニュース2。",
-		"===LEARNING_ITEMS===\n記事番号: 1\n概念: c\n問題: q\n答え: a"}}
+		"アウトロ。\n記事番号: 1\n概念: c1\n問題: q1\n答え: a1\n" +
+			"===LEARNING_ITEMS===\n記事番号: 2\n概念: c2\n問題: q2\n答え: a2"}}
 	gen := script.NewGenerator(llm, "pulse", nil)
 
 	segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "empty script")
-	assert.Nil(t, segments)
-	assert.Nil(t, drafts)
+	require.NoError(t, err)
+	require.Len(t, segments, 4)
+	assert.Equal(t, "アウトロ。", segments[3].Script, "leaked item lines must not reach the broadcast")
+	require.Len(t, drafts, 1, "the marker section itself still yields the item")
+	assert.Equal(t, int64(20), drafts[0].ArticleID)
 }

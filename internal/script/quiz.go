@@ -13,9 +13,15 @@ import (
 // follows the Phase 2 gemini_video precedent: JSON was rejected there
 // because models routinely break string escaping, while a unique marker
 // line fails loudly and lets the caller degrade (progress 2026-07-06).
-// Everything before the FIRST occurrence is the broadcast outro; the
-// public episode therefore can never contain the marker or anything after
-// it (Phase 3 §12-1).
+//
+// Everything before the FIRST exact occurrence is the broadcast outro —
+// but this split alone does not keep quiz text out of the public episode:
+// a model may deviate from the exact marker (whitespace inside it, or
+// omitting it and writing the item lines directly — フォールバック末端の
+// Ollama で最も起きやすい逸脱). stripQuizLeak is the mandatory second net
+// that truncates the body at any surviving learning-item trace; the §12-1
+// guarantee (公開エピソードにクイズを載せない) holds only through the two
+// combined.
 const quizSectionMarker = "===LEARNING_ITEMS==="
 
 // QuizDraft is one learning-item candidate recovered from the outro
@@ -41,6 +47,36 @@ func cutQuizSection(out string) (body, section string, found bool) {
 		return out, "", false
 	}
 	return out[:i], out[i+len(quizSectionMarker):], true
+}
+
+// quizLeakToken is the marker's distinctive core, matched as a bare
+// substring by stripQuizLeak so whitespace-mangled marker variants
+// ("=== LEARNING_ITEMS ===" 等) are still caught.
+const quizLeakToken = "LEARNING_ITEMS"
+
+// stripQuizLeak truncates the broadcast body at the start of the first
+// LINE carrying a trace of a learning-item section that survived the
+// marker split (§12-1 の安全ネット): (1) the quizLeakToken substring
+// anywhere in the line — a whitespace-mangled marker — or (2) a line that,
+// after trimming, is a 記事番号 label line, detected with the same
+// cutLabel match the parser uses (パーサが項目と読める行を放送原稿が
+// 読み上げることはない). Cutting at the line start (not the token index)
+// keeps mangled-marker fragments like a leading "===" out of the body.
+//
+// A false positive costs at most a truncated outro plus a warning; a false
+// negative would read quiz text on the public feed (友人にも配信) — so
+// this errs toward cutting. Truncating to nothing is the caller's problem:
+// it becomes the empty-script error, i.e. 当日スキップ (§8).
+func stripQuizLeak(body string) (string, bool) {
+	offset := 0
+	for _, line := range strings.Split(body, "\n") {
+		if _, isItem := cutLabel(strings.TrimSpace(line), "記事番号"); isItem ||
+			strings.Contains(line, quizLeakToken) {
+			return body[:offset], true
+		}
+		offset += len(line) + 1
+	}
+	return body, false
 }
 
 // parseQuizItems extracts up to max drafts from the learning-item section.
