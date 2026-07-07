@@ -128,8 +128,9 @@ type LearningAdminRepository interface {
 	// demote the OLD active row and then both promote their own (a row
 	// that turns active after a READ COMMITTED statement took its snapshot
 	// is invisible to that statement's re-check). Activating a 'finished'
-	// book is allowed (再読); the cursor is left where it was — resetting
-	// it is not this endpoint's business. Idempotent for the already
+	// book is allowed and means 再読 (親裁定 2026-07-07): the cursor is
+	// reset to 0 so the book starts over. An idle→active activation is
+	// 一時停止からの再開 and keeps the cursor. Idempotent for the already
 	// active book. ErrBookNotFound when the id does not exist.
 	ActivateBook(ctx context.Context, bookID int64) (ReviewBook, error)
 

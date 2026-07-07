@@ -281,8 +281,17 @@ func (r *LearningAdminRepo) ActivateBook(ctx context.Context, bookID int64) (rep
 		return repository.ReviewBook{}, fmt.Errorf("ActivateBook: lock: %w", err)
 	}
 
-	res, err := tx.ExecContext(ctx,
-		`UPDATE books SET review_status = 'active' WHERE id = $1`, bookID)
+	// Promote to active. finished→active means 再読(親裁定 2026-07-07):
+	// reset the cursor to 0 so the book starts over — otherwise the
+	// end-of-book cursor would make radio flip it straight back to
+	// 'finished'. idle→active is 一時停止からの再開: keep the cursor. The
+	// CASE keys the reset off the CURRENT status inside the same statement,
+	// so no extra read is needed.
+	res, err := tx.ExecContext(ctx, `
+UPDATE books
+SET review_status = 'active',
+    review_cursor = CASE WHEN review_status = 'finished' THEN 0 ELSE review_cursor END
+WHERE id = $1`, bookID)
 	if err != nil {
 		return repository.ReviewBook{}, fmt.Errorf("ActivateBook: promote book %d: %w", bookID, err)
 	}

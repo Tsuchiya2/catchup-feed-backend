@@ -244,7 +244,7 @@ func TestLearningAdminRepo_Books_RealPostgres(t *testing.T) {
 	ctx := context.Background()
 
 	bookA := insertTestBook(t, conn, "A", "active", 5, 3)
-	bookB := insertTestBook(t, conn, "B", "idle", 0, 2)
+	bookB := insertTestBook(t, conn, "B", "idle", 3, 2) // paused mid-read: cursor 3
 	bookF := insertTestBook(t, conn, "F", "finished", 4, 4)
 
 	// --- list: §7.3 state + total chunks(進捗率の素材) ---
@@ -255,7 +255,7 @@ func TestLearningAdminRepo_Books_RealPostgres(t *testing.T) {
 		byID[b.ID] = b
 	}
 	assert.Equal(t, repository.ReviewBook{ID: bookA, Title: "A", ReviewStatus: "active", ReviewCursor: 5, TotalChunks: 3}, byID[bookA])
-	assert.Equal(t, repository.ReviewBook{ID: bookB, Title: "B", ReviewStatus: "idle", ReviewCursor: 0, TotalChunks: 2}, byID[bookB])
+	assert.Equal(t, repository.ReviewBook{ID: bookB, Title: "B", ReviewStatus: "idle", ReviewCursor: 3, TotalChunks: 2}, byID[bookB])
 	assert.Equal(t, repository.ReviewBook{ID: bookF, Title: "F", ReviewStatus: "finished", ReviewCursor: 4, TotalChunks: 4}, byID[bookF])
 
 	status := func(id int64) string {
@@ -264,24 +264,29 @@ func TestLearningAdminRepo_Books_RealPostgres(t *testing.T) {
 		return s
 	}
 
-	// --- activate B: A(既存 active)は同一操作で idle に落ちる ---
+	// --- activate B(idle→active): A(既存 active)は同一操作で idle に
+	// 落ち、B は一時停止からの再開なのでカーソルを保持する ---
 	got, err := admin.ActivateBook(ctx, bookB)
 	require.NoError(t, err)
 	assert.Equal(t, "active", got.ReviewStatus)
+	assert.Equal(t, 3, got.ReviewCursor, "idle→activate keeps the cursor (一時停止からの再開, D-20)")
 	assert.Equal(t, "idle", status(bookA), "the previous active book is demoted (入れ替えを1操作で)")
 
-	// --- activate finished: 再読を許可、カーソルは動かさない ---
+	// --- activate finished(finished→active): 再読開始なのでカーソルを
+	// 0 にリセットする(親裁定 2026-07-07)。末尾カーソルのまま active に
+	// すると radio が即 finished に戻す ---
 	got, err = admin.ActivateBook(ctx, bookF)
 	require.NoError(t, err)
 	assert.Equal(t, "active", got.ReviewStatus)
-	assert.Equal(t, 4, got.ReviewCursor, "activate never touches the cursor")
+	assert.Equal(t, 0, got.ReviewCursor, "finished→activate resets the cursor to 0 (再読開始)")
 	assert.Equal(t, "idle", status(bookB))
 
 	// --- deactivate: active→idle、カーソル保持、冪等 ---
+	// bookF は直前の finished→activate で cursor 0 にリセット済み。
 	got, err = admin.DeactivateBook(ctx, bookF)
 	require.NoError(t, err)
 	assert.Equal(t, "idle", got.ReviewStatus)
-	assert.Equal(t, 4, got.ReviewCursor, "pause keeps the cursor (D-20)")
+	assert.Equal(t, 0, got.ReviewCursor, "pause keeps the cursor (D-20)")
 	got, err = admin.DeactivateBook(ctx, bookF)
 	require.NoError(t, err)
 	assert.Equal(t, "idle", got.ReviewStatus, "deactivate is idempotent")

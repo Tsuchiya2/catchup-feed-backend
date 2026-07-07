@@ -36,7 +36,7 @@ type ActivateBookHandler struct{ Svc learnUC.Service }
 
 // ServeHTTP 書籍を進行中に指定
 // @Summary      書籍を進行中に指定
-// @Description  書籍を review_status='active'(book_review コーナーの対象、§7.3)にします。既存の active 書籍があれば同一トランザクションで idle に落とします — 入れ替えが1操作で完結し、active は常に最大1冊です(D-20)。finished の書籍にも実行できます(再読。カーソルは動かしません)。冪等
+// @Description  書籍を review_status='active'(book_review コーナーの対象、§7.3)にします。既存の active 書籍があれば同一トランザクションで idle に落とします — 入れ替えが1操作で完結し、active は常に最大1冊です(D-20)。idle からの activate はカーソル保持(一時停止からの再開)、finished からの activate は review_cursor を 0 にリセット(再読開始)。冪等
 // @Tags         learning
 // @Security     BearerAuth
 // @Produce      json
