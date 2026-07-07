@@ -31,6 +31,7 @@ import (
 	"catchup-feed/internal/infra/db"
 	"catchup-feed/internal/infra/summarizer"
 	"catchup-feed/internal/jobs"
+	"catchup-feed/internal/learning"
 	"catchup-feed/internal/radio"
 	"catchup-feed/internal/repository"
 	"catchup-feed/internal/script"
@@ -78,24 +79,28 @@ func main() {
 	}()
 
 	voicevoxCfg := tts.LoadVoicevoxConfig()
+	learningCfg := learning.LoadConfig(logger)
 	logger.Info("radio batch starting",
 		slog.String("show", cfg.ShowName),
 		slog.Int("max_articles", cfg.MaxArticles),
 		slog.Int("voicevox_speaker", voicevoxCfg.Speaker),
 		slog.Float64("voicevox_speed", voicevoxCfg.SpeedScale),
 		slog.Bool("rsync_mode", cfg.RsyncDest != ""),
+		slog.Int("quiz_items_per_day", learningCfg.ItemsPerDay),
 		slog.Bool("dry_run", *dryRun))
 
 	pipeline := &radio.Pipeline{
-		Articles: pgRepo.NewRadioArticleRepo(database),
-		Episodes: pgRepo.NewEpisodeRepo(database),
-		Jobs:     pgRepo.NewJobRepo(database),
-		Script:   script.NewGenerator(chain, cfg.ShowName, logger),
-		TTS:      tts.NewVoicevox(voicevoxCfg),
-		Encoder:  tts.NewFFmpeg(),
-		Transfer: radio.NewTransferer(cfg),
-		Config:   cfg,
-		Logger:   logger,
+		Articles:    pgRepo.NewRadioArticleRepo(database),
+		Episodes:    pgRepo.NewEpisodeRepo(database),
+		Jobs:        pgRepo.NewJobRepo(database),
+		Script:      script.NewGenerator(chain, cfg.ShowName, logger),
+		TTS:         tts.NewVoicevox(voicevoxCfg),
+		Encoder:     tts.NewFFmpeg(),
+		Transfer:    radio.NewTransferer(cfg),
+		Learning:    pgRepo.NewLearningRepo(database),
+		LearningCfg: learningCfg,
+		Config:      cfg,
+		Logger:      logger,
 	}
 
 	// Whole-run ceiling (RADIO_TIMEOUT, default 1h): the batch must never

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"catchup-feed/internal/domain/entity"
+	"catchup-feed/internal/learning"
 	"catchup-feed/internal/repository"
 	"catchup-feed/internal/script"
 	"catchup-feed/internal/tts"
@@ -50,9 +51,23 @@ type JobQueue interface {
 }
 
 // ScriptGenerator turns planned articles into segments (§6-2). Satisfied
-// by script.Generator.
+// by script.Generator. quizCount > 0 additionally piggybacks the Phase 3
+// learning-item request on the same LLM calls (D-19) and returns the
+// parsed drafts; quiz-side failures degrade to nil drafts, never to an
+// error (Phase 3 §5.1).
 type ScriptGenerator interface {
-	GenerateEpisode(ctx context.Context, date time.Time, articles []repository.RadioArticle) ([]*entity.Segment, error)
+	GenerateEpisode(ctx context.Context, date time.Time, articles []repository.RadioArticle, quizCount int) ([]*entity.Segment, []script.QuizDraft, error)
+}
+
+// LearningStore is the Phase 3 learning-item side of the batch (§5.1/
+// §5.2): the backpressure input, the same-day dedupe and the insert sink.
+// Satisfied by repository.LearningRepository. A nil LearningStore disables
+// item generation entirely — the broadcast pipeline itself never depends
+// on it (§12-1: 公開エピソードの完全不変).
+type LearningStore interface {
+	CountOverdueActive(ctx context.Context, day time.Time) (int, error)
+	HasArticleItemCreatedOn(ctx context.Context, day time.Time) (bool, error)
+	InsertItem(ctx context.Context, item learning.NewItem, dueOn time.Time) (int64, error)
 }
 
 // Synthesizer renders one segment script as sentence WAVs (§6-3) and names
@@ -93,10 +108,15 @@ type Pipeline struct {
 	TTS      Synthesizer
 	Encoder  Encoder
 	Transfer Transferer
-	Config   Config
-	Logger   *slog.Logger
-	Now      func() time.Time // nil = time.Now
-	Out      io.Writer        // dry-run output; nil = os.Stdout
+	// Learning enables Phase 3 item generation (§5.1); nil turns it off.
+	Learning LearningStore
+	// LearningCfg carries the D-18 quiz parameters (QUIZ_* env). Only
+	// ItemsPerDay and BackpressureThreshold are read here.
+	LearningCfg learning.Config
+	Config      Config
+	Logger      *slog.Logger
+	Now         func() time.Time // nil = time.Now
+	Out         io.Writer        // dry-run output; nil = os.Stdout
 }
 
 // Run executes one episode generation. It returns ErrNoArticles on an
@@ -158,8 +178,14 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 		speakerName = "(話者名未解決)"
 	}
 
-	// --- §6-2 台本生成 ---
-	segments, err := p.Script.GenerateEpisode(ctx, now, featured)
+	// --- §6-2 台本生成(Phase 3 §5.1: 学習項目の相乗り、D-19) ---
+	// quizCount is decided BEFORE the LLM call so that backpressure and the
+	// same-day dedupe suppress the prompt section itself — no tokens spent,
+	// no output discarded (§5.2). The decision inputs (overdue counts,
+	// existing items) stay on this side of the call and never reach the
+	// prompt (§10: 理解状態をクラウドに漏らさない).
+	quizCount := p.newItemQuota(ctx, now, logger)
+	segments, quizDrafts, err := p.Script.GenerateEpisode(ctx, now, featured, quizCount)
 	if err != nil {
 		return fmt.Errorf("radio: generate script: %w", err)
 	}
@@ -172,7 +198,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	}
 
 	if opts.DryRun {
-		return p.printDryRun(title, since, showNotes, segments)
+		return p.printDryRun(title, since, showNotes, segments, quizDrafts)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "radio-episode-")
@@ -234,6 +260,14 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 		return fmt.Errorf("radio: enqueue notify_episode: %w", err)
 	}
 
+	// --- Phase 3 §5.1 学習項目の登録(best-effort) ---
+	// Runs only after the broadcast is fully committed: an aborted run must
+	// leave no items (放送されなかった記事は学習対象にしない), and an
+	// insert failure must never fail the run (§9). A same-day rev after a
+	// partial failure regenerates the drafts; HasArticleItemCreatedOn keeps
+	// that from double-inserting.
+	p.insertLearningItems(ctx, logger, quizDrafts, now)
+
 	logger.Info("episode generated",
 		slog.Int64("episode_id", episode.ID),
 		slog.String("title", title),
@@ -242,6 +276,83 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 		slog.Int("duration_sec", episode.DurationSec),
 		slog.Int("segments", len(segments)))
 	return nil
+}
+
+// newItemQuota decides M for this run (Phase 3 §5.1/§5.2): the configured
+// ItemsPerDay, or 0 when generation must be suppressed — no LearningStore,
+// backpressure over the threshold (strictly greater: 閾値ちょうどは継続),
+// or the day's items already exist (same-day rev re-run, §12-2). Zero
+// means the outro prompt carries no learning-item section at all.
+//
+// Every check failure also degrades to 0 with a warning: item generation
+// must never stop or delay the broadcast (§9), and the day is simply
+// item-less (遡り生成はしない、§5.2).
+func (p *Pipeline) newItemQuota(ctx context.Context, now time.Time, logger *slog.Logger) int {
+	if p.Learning == nil || p.LearningCfg.ItemsPerDay <= 0 {
+		return 0
+	}
+	day := learning.BroadcastDay(now)
+
+	overdue, err := p.Learning.CountOverdueActive(ctx, day)
+	if err != nil {
+		logger.Warn("learning backpressure check failed, skipping item generation (§9)",
+			slog.Any("error", err))
+		return 0
+	}
+	if overdue > p.LearningCfg.BackpressureThreshold {
+		logger.Warn("learning backlog over threshold, suspending new item generation (§5.2 バックプレッシャ)",
+			slog.Int("overdue", overdue),
+			slog.Int("threshold", p.LearningCfg.BackpressureThreshold))
+		return 0
+	}
+
+	exists, err := p.Learning.HasArticleItemCreatedOn(ctx, day)
+	if err != nil {
+		logger.Warn("learning same-day dedupe check failed, skipping item generation (§9)",
+			slog.Any("error", err))
+		return 0
+	}
+	if exists {
+		logger.Info("learning items already generated today, skipping (same-day rev re-run, §12-2)",
+			slog.String("day", learning.FormatDay(day)))
+		return 0
+	}
+	return p.LearningCfg.ItemsPerDay
+}
+
+// insertLearningItems persists the day's parsed drafts (§5.1): kind
+// 'article', stage 0, due_on = 翌放送日 — 当日のクイズコーナーには出さない
+// (初回想起は翌日). Strictly best-effort: the episode is already on the Pi
+// and registered, so a DB error here loses today's items but never the
+// broadcast (§9); each failure is logged and the loop continues.
+func (p *Pipeline) insertLearningItems(ctx context.Context, logger *slog.Logger, drafts []script.QuizDraft, now time.Time) {
+	if p.Learning == nil || len(drafts) == 0 {
+		return
+	}
+	dueOn := learning.FirstDueDay(now)
+	for _, draft := range drafts {
+		articleID := draft.ArticleID
+		item := learning.NewItem{
+			Kind:      learning.KindArticle,
+			ArticleID: &articleID,
+			Concept:   draft.Concept,
+			Question:  draft.Question,
+			Answer:    draft.Answer,
+			Provider:  draft.Provider,
+		}
+		id, err := p.Learning.InsertItem(ctx, item, dueOn)
+		if err != nil {
+			logger.Warn("failed to insert learning item, continuing (§5.1: 放送は止めない)",
+				slog.Int64("article_id", draft.ArticleID),
+				slog.Any("error", err))
+			continue
+		}
+		logger.Info("learning item created",
+			slog.Int64("item_id", id),
+			slog.Int64("article_id", draft.ArticleID),
+			slog.String("provider", draft.Provider),
+			slog.String("due_on", learning.FormatDay(dueOn)))
+	}
 }
 
 // selectionCursor returns the article-selection cursor: an explicit
@@ -306,8 +417,10 @@ func (p *Pipeline) synthesize(ctx context.Context, dir string, segments []*entit
 
 // printDryRun writes the would-be episode to Out (D-2: 台本を目視で調整).
 // The report is the sole product of a dry-run, so it is rendered in memory
-// and written once, with the write error surfaced to the caller.
-func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, segments []*entity.Segment) error {
+// and written once, with the write error surfaced to the caller. Learning
+// item drafts are printed for prompt tuning but never inserted — dry-run
+// makes no DB writes (Phase 3 手順2).
+func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, segments []*entity.Segment, drafts []script.QuizDraft) error {
 	out := p.Out
 	if out == nil {
 		out = os.Stdout
@@ -318,6 +431,10 @@ func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, 
 	fmt.Fprintf(&sb, "--- show notes ---\n%s\n\n", showNotes)
 	for _, segment := range segments {
 		fmt.Fprintf(&sb, "--- segment %d [%s] ---\n%s\n\n", segment.Position, segment.Kind, segment.Script)
+	}
+	for i, draft := range drafts {
+		fmt.Fprintf(&sb, "--- learning item %d (dry-run, not inserted) [article %d, %s] ---\n概念: %s\n問題: %s\n答え: %s\n\n",
+			i+1, draft.ArticleID, draft.Provider, draft.Concept, draft.Question, draft.Answer)
 	}
 	if _, err := io.WriteString(out, sb.String()); err != nil {
 		return fmt.Errorf("radio: write dry-run report: %w", err)

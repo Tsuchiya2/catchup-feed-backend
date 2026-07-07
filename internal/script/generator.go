@@ -41,9 +41,18 @@ func NewGenerator(llm LLM, showName string, logger *slog.Logger) *Generator {
 // one news segment per featured article (with a transition referencing the
 // previous corner — つなぎ文), and outro. Positions are 1-based. Any LLM
 // failure aborts the whole episode (§8: 縮退はエピソード単位 — 当日スキップ).
-func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, articles []repository.RadioArticle) ([]*entity.Segment, error) {
+//
+// quizCount > 0 piggybacks the Phase 3 learning-item request onto the
+// outro call (D-19: 相乗り、LLM 呼び出し回数の増分ゼロ — Phase 3 §12-3):
+// the model picks the quizCount articles with the largest technical
+// takeaway and drafts one quiz each, returned as QuizDrafts. The section
+// is split off by marker before the outro reaches the broadcast script;
+// any parse failure degrades to zero drafts and never errors (Phase 3
+// §5.1: 縮退の方向は「クイズなし」、放送は止めない). quizCount <= 0
+// renders the exact pre-Phase 3 outro prompt and returns nil drafts.
+func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, articles []repository.RadioArticle, quizCount int) ([]*entity.Segment, []QuizDraft, error) {
 	if len(articles) == 0 {
-		return nil, fmt.Errorf("script: no articles to script")
+		return nil, nil, fmt.Errorf("script: no articles to script")
 	}
 
 	dateStr := formatDate(date)
@@ -56,11 +65,11 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 		ArticleCount: len(articles),
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	introScript, err := g.generate(ctx, entity.SegmentKindIntro, introPrompt)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	segments = append(segments, &entity.Segment{
 		Position: 1,
@@ -84,11 +93,11 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 			Total:     len(articles),
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		newsScript, err := g.generate(ctx, entity.SegmentKindNews, newsPrompt)
 		if err != nil {
-			return nil, fmt.Errorf("article %d (%s): %w", article.ID, article.Title, err)
+			return nil, nil, fmt.Errorf("article %d (%s): %w", article.ID, article.Title, err)
 		}
 		articleID := article.ID
 		segments = append(segments, &entity.Segment{
@@ -107,13 +116,14 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 		ShowName: g.showName,
 		Date:     dateStr,
 		Titles:   titles,
+		Quiz:     quizPrompt(articles, quizCount),
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	outroScript, err := g.generate(ctx, entity.SegmentKindOutro, outroPrompt)
+	outroScript, drafts, err := g.generateOutro(ctx, outroPrompt, articles, quizCount)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	segments = append(segments, &entity.Segment{
 		Position: len(articles) + 2,
@@ -121,7 +131,66 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 		Script:   outroScript,
 	})
 
-	return segments, nil
+	return segments, drafts, nil
+}
+
+// quizPrompt builds the learning-item section data for the outro prompt.
+// count <= 0 returns nil, which renders outro.tmpl exactly as before the
+// Phase 3 extension — this nil is the backpressure/duplicate-guard switch
+// (§5.2: プロンプト側で抑止、トークンも消費しない).
+func quizPrompt(articles []repository.RadioArticle, count int) *quizPromptData {
+	if count <= 0 {
+		return nil
+	}
+	entries := make([]quizPromptArticle, len(articles))
+	for i, a := range articles {
+		entries[i] = quizPromptArticle{Number: i + 1, Title: a.Title, Summary: a.Summary}
+	}
+	return &quizPromptData{Count: count, Marker: quizSectionMarker, Articles: entries}
+}
+
+// generateOutro runs the (possibly piggybacked) outro call and separates
+// the broadcast script from the learning-item section. Quiz-side failures
+// — missing marker, unparseable blocks — degrade to nil drafts with a
+// warning (§5.1). An empty outro body, however, is a script generation
+// failure exactly like an empty response today: without a closing script
+// there is no episode to ship, so the day is skipped (§8) rather than
+// broadcasting a truncated show.
+func (g *Generator) generateOutro(ctx context.Context, prompt string, articles []repository.RadioArticle, quizCount int) (string, []QuizDraft, error) {
+	raw, provider, err := g.llm.Generate(ctx, prompt)
+	if err != nil {
+		return "", nil, fmt.Errorf("script: generate outro segment: %w", err)
+	}
+
+	body := raw
+	var drafts []QuizDraft
+	if quizCount > 0 {
+		var section string
+		var found bool
+		body, section, found = cutQuizSection(raw)
+		switch {
+		case !found:
+			g.logger.WarnContext(ctx, "learning-item section missing from outro output, skipping today's item generation (§5.1)",
+				slog.String("provider", provider))
+		default:
+			drafts = parseQuizItems(section, articles, quizCount, provider, g.logger)
+			if len(drafts) == 0 {
+				g.logger.WarnContext(ctx, "learning-item section yielded no valid item, skipping today's item generation (§5.1)",
+					slog.String("provider", provider))
+			}
+		}
+	}
+
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return "", nil, fmt.Errorf("script: generate outro segment: empty script")
+	}
+	g.logger.InfoContext(ctx, "segment script generated",
+		slog.String("kind", entity.SegmentKindOutro),
+		slog.String("provider", provider),
+		slog.Int("script_chars", len([]rune(body))),
+		slog.Int("learning_items", len(drafts)))
+	return body, drafts, nil
 }
 
 func (g *Generator) generate(ctx context.Context, kind, prompt string) (string, error) {

@@ -75,6 +75,25 @@ func TestLearningRepo_InsertItem_BookProviderEnforced(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet(), "no SQL may be issued for an invalid item")
 }
 
+// TestLearningRepo_HasArticleItemCreatedOn pins the same-day dedupe query
+// shape (§12-2): kind='article' only, and the JST day boundaries derived
+// in SQL via AT TIME ZONE (created_at は UTC の timestamptz、§12-10).
+func TestLearningRepo_HasArticleItemCreatedOn(t *testing.T) {
+	repo, mock, closeFn := newLearningRepo(t)
+	defer closeFn()
+
+	mock.ExpectQuery(
+		regexp.QuoteMeta("created_at >= ($2::date)::timestamp AT TIME ZONE 'Asia/Tokyo'")+
+			`[\s\S]*`+regexp.QuoteMeta("created_at <  ($2::date + 1)::timestamp AT TIME ZONE 'Asia/Tokyo'")).
+		WithArgs(learning.KindArticle, "2026-07-05").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+
+	exists, err := repo.HasArticleItemCreatedOn(context.Background(), testDay(2026, 7, 5))
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestLearningRepo_ListDue(t *testing.T) {
 	repo, mock, closeFn := newLearningRepo(t)
 	defer closeFn()

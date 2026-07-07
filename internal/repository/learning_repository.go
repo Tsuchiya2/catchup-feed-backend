@@ -25,6 +25,17 @@ type LearningRepository interface {
 	// (§12-4).
 	InsertItem(ctx context.Context, item learning.NewItem, dueOn time.Time) (int64, error)
 
+	// HasArticleItemCreatedOn reports whether any kind='article' item was
+	// created on the given JST broadcast day. learning_items has no UNIQUE
+	// key for generation, so this existence check is the radio batch's
+	// same-day rev re-run dedupe (§12-2): rev2 sees rev1's items and skips
+	// generation entirely, keeping the daily quota M per DAY, not per rev.
+	// The check compares created_at (timestamptz) against the JST day
+	// boundaries; due_on cannot serve as the discriminator because a
+	// same-day 'forgot' grade also leaves an old item at stage 0 with
+	// due_on = 翌日.
+	HasArticleItemCreatedOn(ctx context.Context, day time.Time) (bool, error)
+
 	// ListDue selects the quiz candidates for a broadcast day (§6.3):
 	// active items (retired_at IS NULL) with due_on <= day, oldest first
 	// (due_on ASC, id ASC), up to limit (出題枠 S, must be >= 1). It reads

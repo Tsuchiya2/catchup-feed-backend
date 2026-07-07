@@ -48,6 +48,29 @@ RETURNING id`
 	return id, nil
 }
 
+// HasArticleItemCreatedOn is the same-day rev re-run dedupe for item
+// generation (§12-2) — see repository.LearningRepository. created_at is
+// UTC (timestamptz on a UTC-運用 Postgres, §12-10), so the JST broadcast
+// day is converted to its two UTC boundary instants in SQL:
+// ($1::date)::timestamp is JST-wall-clock midnight, and AT TIME ZONE
+// 'Asia/Tokyo' reinterprets it as a timestamptz. A naive UTC date
+// comparison would misfile items created between 00:00 and 09:00 JST.
+func (r *LearningRepo) HasArticleItemCreatedOn(ctx context.Context, day time.Time) (bool, error) {
+	const query = `
+SELECT EXISTS (
+    SELECT 1 FROM learning_items
+    WHERE kind = $1
+      AND created_at >= ($2::date)::timestamp AT TIME ZONE 'Asia/Tokyo'
+      AND created_at <  ($2::date + 1)::timestamp AT TIME ZONE 'Asia/Tokyo'
+)`
+	var exists bool
+	err := r.db.QueryRowContext(ctx, query, learning.KindArticle, learning.FormatDay(day)).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("HasArticleItemCreatedOn: %w", err)
+	}
+	return exists, nil
+}
+
 // ListDue implements the §6.3 selection: active items due on or before the
 // broadcast day, oldest first, capped at the quiz slots. Read-only by
 // contract — asking must not move due_on (§12-2).

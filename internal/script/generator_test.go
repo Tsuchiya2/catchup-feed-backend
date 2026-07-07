@@ -49,7 +49,7 @@ func TestGenerator_GenerateEpisode_SegmentStructure(t *testing.T) {
 	llm := &fakeLLM{}
 	gen := script.NewGenerator(llm, "pulse", nil)
 
-	segments, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles())
+	segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 	require.NoError(t, err)
 	require.Len(t, segments, 4, "intro + 2 news + outro")
 
@@ -73,6 +73,7 @@ func TestGenerator_GenerateEpisode_SegmentStructure(t *testing.T) {
 	// LLM output is the script verbatim (parse-free design).
 	assert.Equal(t, "原稿1", segments[0].Script)
 	assert.Equal(t, "原稿2", segments[1].Script)
+	assert.Nil(t, drafts, "quizCount=0 must never produce learning items")
 }
 
 // TestGenerator_PromptContainsSummaryOnly pins C-12: the news prompt embeds
@@ -83,7 +84,7 @@ func TestGenerator_PromptContainsSummaryOnly(t *testing.T) {
 	llm := &fakeLLM{}
 	gen := script.NewGenerator(llm, "pulse", nil)
 
-	_, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles())
+	_, _, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 	require.NoError(t, err)
 	require.Len(t, llm.prompts, 4)
 
@@ -104,7 +105,7 @@ func TestGenerator_TransitionReferencesPreviousCorner(t *testing.T) {
 	llm := &fakeLLM{}
 	gen := script.NewGenerator(llm, "pulse", nil)
 
-	_, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles())
+	_, _, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 	require.NoError(t, err)
 
 	assert.NotContains(t, llm.prompts[1], "直前のコーナー",
@@ -117,7 +118,7 @@ func TestGenerator_IntroAndOutroPrompts(t *testing.T) {
 	llm := &fakeLLM{}
 	gen := script.NewGenerator(llm, "pulse", nil)
 
-	_, err := gen.GenerateEpisode(context.Background(), time.Date(2026, 7, 5, 4, 30, 0, 0, time.UTC), radioArticles())
+	_, _, err := gen.GenerateEpisode(context.Background(), time.Date(2026, 7, 5, 4, 30, 0, 0, time.UTC), radioArticles(), 0)
 	require.NoError(t, err)
 
 	intro := llm.prompts[0]
@@ -147,16 +148,146 @@ func TestGenerator_Errors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gen := script.NewGenerator(tt.llm, "pulse", nil)
-			segments, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles())
+			segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantSub)
 			assert.Nil(t, segments)
+			assert.Nil(t, drafts)
 		})
 	}
 }
 
 func TestGenerator_NoArticles(t *testing.T) {
 	gen := script.NewGenerator(&fakeLLM{}, "pulse", nil)
-	_, err := gen.GenerateEpisode(context.Background(), day(4), nil)
+	_, _, err := gen.GenerateEpisode(context.Background(), day(4), nil, 0)
 	assert.Error(t, err)
+}
+
+// TestGenerator_OutroPromptUnchangedWithoutQuiz pins Phase 3 §12-1(公開
+// 版の回帰なし): with quizCount=0 — the only mode the public pipeline used
+// before Phase 3, and every backpressure/dedupe/disabled day after — the
+// outro prompt renders byte-identically to the pre-Phase 3 template. A
+// golden string, not Contains: any drift in the shared template shows up
+// here first.
+func TestGenerator_OutroPromptUnchangedWithoutQuiz(t *testing.T) {
+	llm := &fakeLLM{}
+	gen := script.NewGenerator(llm, "pulse", nil)
+
+	_, _, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
+	require.NoError(t, err)
+	require.Len(t, llm.prompts, 4)
+
+	const golden = `あなたは技術ニュースを毎朝届けるラジオ番組「pulse」のパーソナリティです。
+2026年7月4日放送分のクロージング原稿を書いてください。
+
+今日紹介した記事:
+- Go 1.26 リリース
+- 新しい推論モデル
+
+条件:
+- 今日の内容の短い振り返りと締めの挨拶を100文字程度で。次回への一言も添える。
+- 出力は読み上げ原稿の本文のみ。見出し・箇条書き・記号・注釈は書かない。
+- 音声合成でそのまま読み上げるため、URL や英数字の羅列を避け、自然な日本語にする。
+`
+	assert.Equal(t, golden, llm.prompts[3],
+		"quizCount=0 must render the exact pre-Phase 3 outro prompt (§12-1)")
+}
+
+// TestGenerator_QuizPiggyback covers the D-19 happy path: one extra
+// section on the outro call (LLM 呼び出し回数は不変), the marker split
+// keeping the broadcast outro clean, and the 記事番号 → article_id
+// recovery with the actually-responding provider attached.
+func TestGenerator_QuizPiggyback(t *testing.T) {
+	llm := &fakeLLM{responses: []string{
+		"イントロ。", "ニュース1。", "ニュース2。",
+		"アウトロ本文。\n\n===LEARNING_ITEMS===\n" +
+			"記事番号: 2\n概念: 蒸留による推論モデルの小型化\n" +
+			"問題: 昨日のニュースで触れた新しい推論モデルですが、小型化の鍵は何だったでしょうか。\n" +
+			"答え: 蒸留です。大きなモデルの知識を小さなモデルに移して計算資源を節約するのがポイントでした。",
+	}}
+	gen := script.NewGenerator(llm, "pulse", nil)
+
+	segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
+	require.NoError(t, err)
+	require.Len(t, segments, 4, "学習項目セクションはセグメントを増やさない")
+	assert.Equal(t, 4, llm.calls, "D-19: 相乗り — no extra LLM call (§12-3)")
+
+	// The broadcast outro carries neither the marker nor the quiz text.
+	outro := segments[3]
+	assert.Equal(t, entity.SegmentKindOutro, outro.Kind)
+	assert.Equal(t, "アウトロ本文。", outro.Script)
+
+	require.Len(t, drafts, 1)
+	assert.Equal(t, int64(20), drafts[0].ArticleID, "記事番号2 → 2件目の article_id")
+	assert.Equal(t, "gemini", drafts[0].Provider, "provider is the LLM that actually answered")
+	assert.Equal(t, "蒸留による推論モデルの小型化", drafts[0].Concept)
+	assert.Contains(t, drafts[0].Question, "昨日のニュースで触れた")
+	assert.Contains(t, drafts[0].Answer, "蒸留です")
+
+	// The section rides on the outro prompt only; intro/news are untouched.
+	outroPrompt := llm.prompts[3]
+	assert.Contains(t, outroPrompt, "===LEARNING_ITEMS===")
+	assert.Contains(t, outroPrompt, "記事1: Go 1.26 リリース")
+	assert.Contains(t, outroPrompt, "要約: Go 1.26 の要約テキスト。")
+	assert.Contains(t, outroPrompt, "記事2: 新しい推論モデル")
+	assert.Contains(t, outroPrompt, "1件選び")
+	assert.Contains(t, outroPrompt, "放送済みであることを前提にしたラジオ口調")
+	for i, name := range []string{"intro", "news1", "news2"} {
+		assert.NotContains(t, llm.prompts[i], "学習項目", "%s prompt must stay unchanged (§12-1)", name)
+	}
+}
+
+// TestGenerator_QuizDegradation pins §5.1: every quiz-side deviation of
+// the model output degrades to "no items today" — never to an error, and
+// never into the broadcast script.
+func TestGenerator_QuizDegradation(t *testing.T) {
+	tests := []struct {
+		name      string
+		outro     string
+		wantOutro string
+	}{
+		{
+			name:      "marker missing — whole output is the outro",
+			outro:     "マーカーを忘れたアウトロ。",
+			wantOutro: "マーカーを忘れたアウトロ。",
+		},
+		{
+			name:      "section present but unparseable",
+			outro:     "アウトロ。\n===LEARNING_ITEMS===\nろくでもない自由文だけが続く。",
+			wantOutro: "アウトロ。",
+		},
+		{
+			name:      "section with out-of-range article number",
+			outro:     "アウトロ。\n===LEARNING_ITEMS===\n記事番号: 9\n概念: c\n問題: q\n答え: a",
+			wantOutro: "アウトロ。",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			llm := &fakeLLM{responses: []string{"イントロ。", "ニュース1。", "ニュース2。", tt.outro}}
+			gen := script.NewGenerator(llm, "pulse", nil)
+
+			segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
+			require.NoError(t, err, "quiz-side failures must not abort the episode (§5.1)")
+			require.Len(t, segments, 4)
+			assert.Equal(t, tt.wantOutro, segments[3].Script)
+			assert.Empty(t, drafts)
+		})
+	}
+}
+
+// TestGenerator_QuizEmptyOutroBodyFails: a response that starts with the
+// marker has no closing script at all. That is a script generation failure
+// (empty script と同類), not a quiz degradation — the day is skipped
+// rather than shipping a truncated show.
+func TestGenerator_QuizEmptyOutroBodyFails(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"イントロ。", "ニュース1。", "ニュース2。",
+		"===LEARNING_ITEMS===\n記事番号: 1\n概念: c\n問題: q\n答え: a"}}
+	gen := script.NewGenerator(llm, "pulse", nil)
+
+	segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty script")
+	assert.Nil(t, segments)
+	assert.Nil(t, drafts)
 }

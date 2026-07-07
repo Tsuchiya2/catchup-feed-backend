@@ -15,8 +15,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"catchup-feed/internal/domain/entity"
+	"catchup-feed/internal/learning"
 	"catchup-feed/internal/radio"
 	"catchup-feed/internal/repository"
+	"catchup-feed/internal/script"
 	"catchup-feed/internal/tts"
 )
 
@@ -90,15 +92,18 @@ func (f *fakeJobs) Enqueue(_ context.Context, kind string, payload json.RawMessa
 }
 
 type fakeScript struct {
-	err      error
-	articles []repository.RadioArticle // captured input (C-12 flow check)
+	err       error
+	articles  []repository.RadioArticle // captured input (C-12 flow check)
+	quizCount int                       // captured input (Phase 3 §5.1/§5.2)
+	drafts    []script.QuizDraft        // returned when quizCount > 0
 }
 
-func (f *fakeScript) GenerateEpisode(_ context.Context, _ time.Time, articles []repository.RadioArticle) ([]*entity.Segment, error) {
+func (f *fakeScript) GenerateEpisode(_ context.Context, _ time.Time, articles []repository.RadioArticle, quizCount int) ([]*entity.Segment, []script.QuizDraft, error) {
 	if f.err != nil {
-		return nil, f.err
+		return nil, nil, f.err
 	}
 	f.articles = articles
+	f.quizCount = quizCount
 	segments := []*entity.Segment{{Position: 1, Kind: entity.SegmentKindIntro, Script: "イントロ。"}}
 	for i, a := range articles {
 		id := a.ID
@@ -110,7 +115,44 @@ func (f *fakeScript) GenerateEpisode(_ context.Context, _ time.Time, articles []
 	segments = append(segments, &entity.Segment{
 		Position: len(articles) + 2, Kind: entity.SegmentKindOutro, Script: "アウトロ。",
 	})
-	return segments, nil
+	var drafts []script.QuizDraft
+	if quizCount > 0 {
+		drafts = f.drafts
+	}
+	return segments, drafts, nil
+}
+
+// fakeLearning implements radio.LearningStore and records every call.
+type fakeLearning struct {
+	overdue     int
+	overdueErr  error
+	hasToday    bool
+	hasTodayErr error
+	insertErr   error
+
+	countDays []time.Time
+	hasDays   []time.Time
+	inserted  []learning.NewItem
+	dueOns    []time.Time
+}
+
+func (f *fakeLearning) CountOverdueActive(_ context.Context, day time.Time) (int, error) {
+	f.countDays = append(f.countDays, day)
+	return f.overdue, f.overdueErr
+}
+
+func (f *fakeLearning) HasArticleItemCreatedOn(_ context.Context, day time.Time) (bool, error) {
+	f.hasDays = append(f.hasDays, day)
+	return f.hasToday, f.hasTodayErr
+}
+
+func (f *fakeLearning) InsertItem(_ context.Context, item learning.NewItem, dueOn time.Time) (int64, error) {
+	if f.insertErr != nil {
+		return 0, f.insertErr
+	}
+	f.inserted = append(f.inserted, item)
+	f.dueOns = append(f.dueOns, dueOn)
+	return int64(len(f.inserted)), nil
 }
 
 type fakeTTS struct {
@@ -480,4 +522,230 @@ func TestPipeline_Run_OverflowGoesToShowNotesOnly(t *testing.T) {
 	assert.Contains(t, d.episodes.created.ShowNotes, "https://example.com/a",
 		"overflow article still appears in the show notes (§6-1)")
 	assert.Contains(t, d.episodes.created.ShowNotes, "紹介しきれなかった記事")
+}
+
+// ---- Phase 3 手順2: 学習項目の相乗り生成 (§5.1/§5.2) ----
+
+func defaultLearningCfg() learning.Config {
+	return learning.Config{
+		ItemsPerDay:           1,
+		Ladder:                []int{1, 7, 30},
+		Slots:                 4,
+		BackpressureThreshold: 30,
+		AutoResolveAfter:      48 * time.Hour,
+	}
+}
+
+func sampleDrafts() []script.QuizDraft {
+	return []script.QuizDraft{{
+		ArticleID: 10, Concept: "見出し",
+		Question: "昨日のニュースで触れた件ですが。", Answer: "こうです。",
+		Provider: "groq",
+	}}
+}
+
+func learningPipeline(t *testing.T, d *deps, l *fakeLearning) *radio.Pipeline {
+	t.Helper()
+	p := newPipeline(t, d)
+	p.Learning = l
+	p.LearningCfg = defaultLearningCfg()
+	return p
+}
+
+// TestPipeline_Run_LearningItemInsert covers the §5.1 happy path: M rides
+// on the script call, and the parsed drafts land in learning_items only
+// AFTER the broadcast is committed — stage 0 / due_on = 翌放送日 is the
+// repository's job; the pipeline pins the JST due day and the passthrough
+// of the actually-responding provider. overdue == threshold pins the
+// strict comparison (§5.2: 閾値「超過」で停止、ちょうどは継続).
+func TestPipeline_Run_LearningItemInsert(t *testing.T) {
+	d := defaultDeps()
+	d.script.drafts = sampleDrafts()
+	l := &fakeLearning{overdue: 30}
+	p := learningPipeline(t, d, l)
+
+	require.NoError(t, p.Run(context.Background(), radio.RunOptions{}))
+
+	assert.Equal(t, 1, d.script.quizCount, "M=1 rides on the script call (D-19)")
+
+	// fixedNow (2026-07-05 04:30 UTC = 13:30 JST) → 放送日 7/5、翌日 7/6.
+	day := learning.BroadcastDay(fixedNow())
+	require.Len(t, l.countDays, 1)
+	assert.True(t, l.countDays[0].Equal(day), "backpressure input is the JST broadcast day (§12-10)")
+	require.Len(t, l.hasDays, 1)
+	assert.True(t, l.hasDays[0].Equal(day))
+
+	require.Len(t, l.inserted, 1)
+	item := l.inserted[0]
+	assert.Equal(t, learning.KindArticle, item.Kind)
+	require.NotNil(t, item.ArticleID)
+	assert.Equal(t, int64(10), *item.ArticleID)
+	assert.Nil(t, item.BookID)
+	assert.Equal(t, "groq", item.Provider, "provider is the LLM that actually answered, not the chain head")
+	assert.Equal(t, "見出し", item.Concept)
+	require.Len(t, l.dueOns, 1)
+	assert.True(t, l.dueOns[0].Equal(learning.FirstDueDay(fixedNow())),
+		"due_on = 翌放送日 — 当日のクイズコーナーには出さない (§5.1)")
+	assert.Equal(t, "2026-07-06", learning.FormatDay(l.dueOns[0]))
+
+	// 公開エピソード側は完全不変 (§12-1)。
+	require.NotNil(t, d.episodes.created)
+	assert.Equal(t, entity.FeedKindPublic, d.episodes.created.FeedKind)
+	require.Len(t, d.episodes.createdSegs, 4)
+	assert.Len(t, d.jobs.jobs, 2)
+}
+
+// TestPipeline_Run_LearningGenerationSuppressed pins every path that must
+// zero out M before the LLM call (§5.2: プロンプト側で抑止 — トークンも
+// 使わない), while the broadcast itself proceeds untouched.
+func TestPipeline_Run_LearningGenerationSuppressed(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*fakeLearning, *radio.Pipeline)
+	}{
+		{
+			name: "backpressure over threshold (§5.2)",
+			mutate: func(l *fakeLearning, _ *radio.Pipeline) {
+				l.overdue = 31
+			},
+		},
+		{
+			name: "backpressure check fails (§9: 縮退)",
+			mutate: func(l *fakeLearning, _ *radio.Pipeline) {
+				l.overdueErr = errors.New("pg down")
+			},
+		},
+		{
+			name: "items already generated today (same-day rev re-run, §12-2)",
+			mutate: func(l *fakeLearning, _ *radio.Pipeline) {
+				l.hasToday = true
+			},
+		},
+		{
+			name: "dedupe check fails (§9: 縮退)",
+			mutate: func(l *fakeLearning, _ *radio.Pipeline) {
+				l.hasTodayErr = errors.New("pg down")
+			},
+		},
+		{
+			name: "items per day configured to zero",
+			mutate: func(_ *fakeLearning, p *radio.Pipeline) {
+				p.LearningCfg.ItemsPerDay = 0
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := defaultDeps()
+			d.script.drafts = sampleDrafts()
+			l := &fakeLearning{}
+			p := learningPipeline(t, d, l)
+			tt.mutate(l, p)
+
+			require.NoError(t, p.Run(context.Background(), radio.RunOptions{}),
+				"item generation must never stop the broadcast (§9)")
+
+			assert.Equal(t, 0, d.script.quizCount,
+				"suppression must happen on the prompt side, before the LLM call")
+			assert.Empty(t, l.inserted)
+			require.NotNil(t, d.episodes.created, "the public episode ships regardless")
+			assert.Len(t, d.jobs.jobs, 2)
+		})
+	}
+}
+
+// TestPipeline_Run_LearningStoreAbsent: a pipeline without a LearningStore
+// (older callers, tests) behaves exactly as before Phase 3.
+func TestPipeline_Run_LearningStoreAbsent(t *testing.T) {
+	d := defaultDeps()
+	d.script.drafts = sampleDrafts()
+
+	require.NoError(t, newPipeline(t, d).Run(context.Background(), radio.RunOptions{}))
+
+	assert.Equal(t, 0, d.script.quizCount)
+	require.NotNil(t, d.episodes.created)
+}
+
+// TestPipeline_Run_LearningInsertFailureKeepsBroadcast pins §5.1/§9: the
+// INSERT is best-effort — a dead DB at the very end loses the day's items
+// (遡り生成はしない) but the run still reports success because the episode
+// is already on the Pi and registered.
+func TestPipeline_Run_LearningInsertFailureKeepsBroadcast(t *testing.T) {
+	d := defaultDeps()
+	d.script.drafts = sampleDrafts()
+	l := &fakeLearning{insertErr: errors.New("pg down")}
+	p := learningPipeline(t, d, l)
+
+	require.NoError(t, p.Run(context.Background(), radio.RunOptions{}))
+
+	assert.Empty(t, l.inserted)
+	require.NotNil(t, d.episodes.created)
+	assert.Len(t, d.jobs.jobs, 2, "regenerate_feed / notify_episode are unaffected")
+}
+
+// TestPipeline_Run_LearningNoDrafts: a quiz-side degradation inside the
+// generator (marker missing, unparseable section) surfaces as zero drafts
+// — the pipeline inserts nothing and the broadcast is untouched (§5.1).
+func TestPipeline_Run_LearningNoDrafts(t *testing.T) {
+	d := defaultDeps()
+	d.script.drafts = nil // generator degraded to "no items today"
+	l := &fakeLearning{}
+	p := learningPipeline(t, d, l)
+
+	require.NoError(t, p.Run(context.Background(), radio.RunOptions{}))
+
+	assert.Equal(t, 1, d.script.quizCount, "generation was requested")
+	assert.Empty(t, l.inserted)
+	require.NotNil(t, d.episodes.created)
+}
+
+// TestPipeline_Run_LearningNotInsertedOnBroadcastFailure pins the ordering
+// contract (§5.1): items exist only for articles that actually went on
+// air. Any failure before the episode row is committed must leave
+// learning_items untouched, no matter how far the drafts got.
+func TestPipeline_Run_LearningNotInsertedOnBroadcastFailure(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*deps)
+	}{
+		{"TTS failure", func(d *deps) { d.tts.err = errors.New("connection refused") }},
+		{"encode failure", func(d *deps) { d.encoder.err = errors.New("exit status 1") }},
+		{"transfer failure", func(d *deps) { d.transfer.err = errors.New("rsync down") }},
+		{"episode insert failure", func(d *deps) { d.episodes.createErr = errors.New("unique violation") }},
+		{"job enqueue failure", func(d *deps) { d.jobs.err = errors.New("pg down") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := defaultDeps()
+			d.script.drafts = sampleDrafts()
+			tt.mutate(d)
+			l := &fakeLearning{}
+			p := learningPipeline(t, d, l)
+
+			require.Error(t, p.Run(context.Background(), radio.RunOptions{}))
+			assert.Empty(t, l.inserted,
+				"放送されなかった記事を学習項目化してはならない (§5.1)")
+		})
+	}
+}
+
+// TestPipeline_Run_DryRunLearning: dry-run exercises the full prompt path
+// (D-2: プロンプト調整用) and prints the drafts, but writes nothing —
+// InsertItem included.
+func TestPipeline_Run_DryRunLearning(t *testing.T) {
+	d := defaultDeps()
+	d.script.drafts = sampleDrafts()
+	l := &fakeLearning{}
+	p := learningPipeline(t, d, l)
+
+	require.NoError(t, p.Run(context.Background(), radio.RunOptions{DryRun: true}))
+
+	assert.Equal(t, 1, d.script.quizCount, "dry-run still renders the quiz section for tuning")
+	assert.Empty(t, l.inserted, "dry-run writes nothing to the DB")
+	assert.Nil(t, d.episodes.created)
+
+	printed := d.out.String()
+	assert.Contains(t, printed, "learning item 1 (dry-run, not inserted)")
+	assert.Contains(t, printed, "見出し")
+	assert.Contains(t, printed, "昨日のニュースで触れた件ですが。")
 }
