@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"time"
 
 	"catchup-feed/internal/learning"
@@ -51,12 +51,31 @@ RETURNING id`
 // ListDue implements the §6.3 selection: active items due on or before the
 // broadcast day, oldest first, capped at the quiz slots. Read-only by
 // contract — asking must not move due_on (§12-2).
+//
+// Items with an ungraded log from a PREVIOUS day are excluded (§6.3,
+// 2026-07-07 親裁定): re-reading a question that is still awaiting its
+// verdict contradicts D-17 (未採点=good 前進) and double-spends the S
+// slots. The exclusion is limited to asked_on < day so that a same-day
+// rev re-run — whose own logs carry asked_on = day — still selects the
+// identical items (§4 設計メモの冪等). The pending log is closed by the
+// 48h auto-resolve, after which the item reappears at its post-transition
+// due date.
+//
+// limit must be >= 1 (出題枠 S; PostgreSQL rejects a negative LIMIT and
+// LIMIT 0 selects nothing). Callers pass Config.Slots, which LoadConfig
+// guarantees positive.
 func (r *LearningRepo) ListDue(ctx context.Context, day time.Time, limit int) ([]learning.Item, error) {
 	const query = `
 SELECT id, kind, article_id, book_id, concept, question, answer, provider,
        stage, due_on, retired_at, created_at
 FROM learning_items
 WHERE retired_at IS NULL AND due_on <= $1::date
+  AND NOT EXISTS (
+      SELECT 1 FROM review_logs rl
+      WHERE rl.item_id = learning_items.id
+        AND rl.result IS NULL
+        AND rl.asked_on < $1::date
+  )
 ORDER BY due_on ASC, id ASC
 LIMIT $2`
 	rows, err := r.db.QueryContext(ctx, query, learning.FormatDay(day), limit)
@@ -140,7 +159,6 @@ RETURNING item_id`
 		return 0, fmt.Errorf("AutoResolve: claim logs: %w", err)
 	}
 	resolved := 0
-	seen := map[int64]bool{}
 	var itemIDs []int64
 	for rows.Next() {
 		var itemID int64
@@ -149,12 +167,7 @@ RETURNING item_id`
 			return 0, fmt.Errorf("AutoResolve: scan: %w", err)
 		}
 		resolved++
-		// Dedupe: an item re-asked daily while ungraded owns several stale
-		// logs, but they are one unanswered question — one auto advance.
-		if !seen[itemID] {
-			seen[itemID] = true
-			itemIDs = append(itemIDs, itemID)
-		}
+		itemIDs = append(itemIDs, itemID)
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -163,7 +176,12 @@ RETURNING item_id`
 	_ = rows.Close()
 
 	// Deterministic lock order across concurrent graders (deadlock 回避).
-	sort.Slice(itemIDs, func(i, j int) bool { return itemIDs[i] < itemIDs[j] })
+	// Compact is a query-saving optimization only: the once-per-item
+	// guarantee lives in advanceItem's due guard, which also covers logs
+	// of the same item claimed by DIFFERENT runs (§6.3) — an in-memory
+	// dedupe cannot see those.
+	slices.Sort(itemIDs)
+	itemIDs = slices.Compact(itemIDs)
 
 	for _, itemID := range itemIDs {
 		if err := r.advanceItem(ctx, tx, itemID, resolveDay, ladder); err != nil {
@@ -177,16 +195,27 @@ RETURNING item_id`
 }
 
 // advanceItem applies one ResultAuto transition to an active item inside
-// the AutoResolve transaction. A retired item (graduated or manually
-// archived while its log sat ungraded) is skipped: its log is still closed
-// but its terminal state stays untouched.
+// the AutoResolve transaction. The claim SELECT carries the §6.3 guards,
+// so an ineligible item is skipped (its log is still closed, its state
+// stays untouched):
+//
+//   - retired_at IS NULL: graduated or manually archived items are
+//     terminal.
+//   - due_on <= resolveDay: the item must still be due. A transition
+//     driven by ANOTHER log — an earlier run's auto-resolve, or a manual
+//     grade — has already pushed due_on past the resolve day; advancing
+//     again here would double-step the ladder (e.g. [1,7,30] degrading to
+//     [1,1,30] for never-graded items). This guard is what makes the
+//     advance once-per-item across runs, not just within one run.
 func (r *LearningRepo) advanceItem(ctx context.Context, tx *sql.Tx, itemID int64, resolveDay time.Time, ladder []int) error {
 	var stage int
 	err := tx.QueryRowContext(ctx,
-		`SELECT stage FROM learning_items WHERE id = $1 AND retired_at IS NULL FOR UPDATE`,
-		itemID).Scan(&stage)
+		`SELECT stage FROM learning_items
+		 WHERE id = $1 AND retired_at IS NULL AND due_on <= $2::date
+		 FOR UPDATE`,
+		itemID, learning.FormatDay(resolveDay)).Scan(&stage)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil // already retired — log closed, state untouched
+		return nil // retired or already advanced past resolveDay — log closed, state untouched
 	}
 	if err != nil {
 		return fmt.Errorf("AutoResolve: lock item %d: %w", itemID, err)

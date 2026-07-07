@@ -81,7 +81,12 @@ func TestLearningRepo_ListDue(t *testing.T) {
 
 	articleID := int64(42)
 	created := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-	mock.ExpectQuery(regexp.QuoteMeta("WHERE retired_at IS NULL AND due_on <= $1::date")).
+	// §6.3 親裁定: 前日以前の未採点ログ(rl.asked_on < day)を持つ項目は
+	// 選定から除外。同日ログは除外しない = 同日 rev の冪等を保つ。
+	mock.ExpectQuery(
+		regexp.QuoteMeta("WHERE retired_at IS NULL AND due_on <= $1::date")+
+			`[\s\S]*`+regexp.QuoteMeta("AND rl.result IS NULL")+
+			`[\s\S]*`+regexp.QuoteMeta("AND rl.asked_on < $1::date")).
 		WithArgs("2026-07-07", 4).
 		WillReturnRows(sqlmock.NewRows(learningItemCols).
 			AddRow(int64(1), "article", &articleID, nil, "c1", "q1", "a1", "gemini", 0, testDay(2026, 7, 6), nil, created).
@@ -129,8 +134,9 @@ func TestLearningRepo_RecordAsked_Empty(t *testing.T) {
 
 // TestLearningRepo_AutoResolve covers the shape of the D-17 auto-advance:
 // the atomic claim UPDATE (not-yet-set checks in the WHERE, §12-9), the
-// per-item dedupe (item 5 has two stale logs but advances once), the
-// ascending lock order, and graduation for an item on the final rung.
+// due-guarded item lock (§6.3: retired_at IS NULL AND due_on <= resolveDay),
+// the ascending lock order with duplicates compacted (item 5 has two stale
+// logs but is locked once), and graduation for an item on the final rung.
 func TestLearningRepo_AutoResolve(t *testing.T) {
 	repo, mock, closeFn := newLearningRepo(t)
 	defer closeFn()
@@ -139,24 +145,24 @@ func TestLearningRepo_AutoResolve(t *testing.T) {
 	resolveDay := testDay(2026, 7, 7)
 
 	mock.ExpectBegin()
-	// Claim returns logs for items 7, 5, 5 — dedupe to {5, 7}, locked in
-	// ascending order.
+	// Claim returns logs for items 7, 5, 5 — compacted to {5, 7}, locked
+	// in ascending order.
 	mock.ExpectQuery(regexp.QuoteMeta("WHERE result IS NULL AND graded_at IS NULL AND asked_on <= $2::date")).
 		WithArgs(learning.ResultAuto, "2026-07-05").
 		WillReturnRows(sqlmock.NewRows([]string{"item_id"}).
 			AddRow(int64(7)).AddRow(int64(5)).AddRow(int64(5)))
 
 	// item 5: stage 0 -> 1, due = resolveDay + 7d.
-	mock.ExpectQuery(regexp.QuoteMeta("FOR UPDATE")).
-		WithArgs(int64(5)).
+	mock.ExpectQuery(regexp.QuoteMeta("AND due_on <= $2::date")).
+		WithArgs(int64(5), "2026-07-07").
 		WillReturnRows(sqlmock.NewRows([]string{"stage"}).AddRow(0))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE learning_items")).
 		WithArgs(int64(5), 1, "2026-07-14", false).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// item 7: stage 2 (最終段) -> 卒業。
-	mock.ExpectQuery(regexp.QuoteMeta("FOR UPDATE")).
-		WithArgs(int64(7)).
+	mock.ExpectQuery(regexp.QuoteMeta("AND due_on <= $2::date")).
+		WithArgs(int64(7), "2026-07-07").
 		WillReturnRows(sqlmock.NewRows([]string{"stage"}).AddRow(2))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE learning_items")).
 		WithArgs(int64(7), 3, "2026-07-07", true).
@@ -169,9 +175,12 @@ func TestLearningRepo_AutoResolve(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestLearningRepo_AutoResolve_RetiredItemSkipped: a stale log of an item
-// retired in the meantime is closed, but the item state stays terminal.
-func TestLearningRepo_AutoResolve_RetiredItemSkipped(t *testing.T) {
+// TestLearningRepo_AutoResolve_IneligibleItemSkipped: a stale log whose
+// item fails the §6.3 lock guards — retired in the meantime, or already
+// advanced past the resolve day by another log's resolution (クロス実行の
+// 二重前進防止) — is closed without touching the item state. The guarded
+// SELECT returning no row is the single skip path for both cases.
+func TestLearningRepo_AutoResolve_IneligibleItemSkipped(t *testing.T) {
 	repo, mock, closeFn := newLearningRepo(t)
 	defer closeFn()
 
@@ -179,9 +188,10 @@ func TestLearningRepo_AutoResolve_RetiredItemSkipped(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("RETURNING item_id")).
 		WithArgs(learning.ResultAuto, "2026-07-05").
 		WillReturnRows(sqlmock.NewRows([]string{"item_id"}).AddRow(int64(9)))
-	// retired_at IS NULL で絞るため行が返らない → 遷移スキップ。
-	mock.ExpectQuery(regexp.QuoteMeta("FOR UPDATE")).
-		WithArgs(int64(9)).
+	// retired_at IS NULL AND due_on <= resolveDay で絞るため行が返らない
+	// → 遷移スキップ(UPDATE learning_items は発行されない)。
+	mock.ExpectQuery(regexp.QuoteMeta("AND due_on <= $2::date")).
+		WithArgs(int64(9), "2026-07-07").
 		WillReturnRows(sqlmock.NewRows([]string{"stage"}))
 	mock.ExpectCommit()
 

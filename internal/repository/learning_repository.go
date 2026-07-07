@@ -27,8 +27,17 @@ type LearningRepository interface {
 
 	// ListDue selects the quiz candidates for a broadcast day (§6.3):
 	// active items (retired_at IS NULL) with due_on <= day, oldest first
-	// (due_on ASC, id ASC), up to limit (出題枠 S). It reads only — see the
-	// interface comment.
+	// (due_on ASC, id ASC), up to limit (出題枠 S, must be >= 1). It reads
+	// only — see the interface comment.
+	//
+	// Items with an ungraded log from a PREVIOUS day (result IS NULL,
+	// asked_on < day) are excluded (§6.3, 2026-07-07 親裁定): they are
+	// awaiting their verdict — manual grade or 48h auto-resolve — and
+	// re-asking them would contradict D-17 and double-spend the S slots
+	// against the §6.2 saturation arithmetic. Same-day logs do NOT
+	// exclude, so a same-day rev re-run still selects the identical items.
+	// Once auto-resolve closes the pending log, the item reappears at its
+	// post-transition due date.
 	ListDue(ctx context.Context, day time.Time, limit int) ([]learning.Item, error)
 
 	// RecordAsked inserts one review log (result NULL = 未採点) per item
@@ -41,10 +50,18 @@ type LearningRepository interface {
 	// AutoResolve applies the D-17 auto-advance: every ungraded log
 	// (result IS NULL AND graded_at IS NULL) asked on or before cutoffDay
 	// is closed with result='auto' (graded_at stays NULL, §4), and each
-	// affected item takes ONE ResultAuto transition (learning.Transition)
-	// dated resolveDay. Multiple stale logs of the same item collapse into
-	// a single advance — they are the same unanswered question re-asked
-	// while ungraded, not evidence of repeated recall.
+	// eligible item takes ONE ResultAuto transition (learning.Transition)
+	// dated resolveDay.
+	//
+	// "One" holds across runs, not just within a run (§6.3): the item-side
+	// transition is guarded by due_on <= resolveDay, so an item whose
+	// due_on was already pushed into the future by another log's
+	// resolution — an earlier run's auto-advance or a manual grade — only
+	// has its remaining stale logs closed, never a second advance.
+	// Multiple stale logs of one item are the same unanswered question
+	// re-asked while ungraded, not evidence of repeated recall; without
+	// the guard a never-graded item would double-step (ladder [1,7,30]
+	// degrading to [1,1,30]).
 	//
 	// The log claim is a single atomic UPDATE with the not-yet-set checks
 	// in its WHERE (§12-9, jobs の SKIP LOCKED と同じ流儀): a concurrent

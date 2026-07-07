@@ -143,9 +143,11 @@ func TestLearningSchema_RealPostgres(t *testing.T) {
 }
 
 // TestLearningRepo_AskFlow_RealPostgres proves the §6.3/§12-2 contract on a
-// real database: due selection order, and — the load-bearing part — that a
-// same-day rev re-run is fully idempotent because asking never mutates
-// learning_items and review_logs collapses on UNIQUE (item_id, asked_on).
+// real database: due selection order; the load-bearing idempotency — a
+// same-day rev re-run selects the same items (same-day pending logs do not
+// exclude) and review_logs collapses on UNIQUE (item_id, asked_on); and the
+// §6.3 exclusion — items with a pending log from a previous day disappear
+// from selection until auto-resolve closes the log.
 func TestLearningRepo_AskFlow_RealPostgres(t *testing.T) {
 	conn := openTestDB(t)
 	require.NoError(t, MigrateUp(conn))
@@ -215,6 +217,37 @@ func TestLearningRepo_AskFlow_RealPostgres(t *testing.T) {
 		`SELECT episode_id FROM review_logs WHERE item_id = $1 AND asked_on = $2::date`,
 		overdue, dayStr).Scan(&loggedEpisode))
 	assert.Equal(t, f.episodeID, loggedEpisode, "the first rev's episode_id is kept (DO NOTHING)")
+
+	// --- §6.3 親裁定: 未採点ログが残る項目は翌朝の選定に載らない ---
+	// (同日 rev では上の再選定のとおり除外されない — 除外条件は
+	// asked_on < day のみ。)
+	nextDay := day.AddDate(0, 0, 1) // 2026-07-08
+	tomorrow, err := repo.ListDue(ctx, nextDay, 50)
+	require.NoError(t, err)
+	for _, item := range tomorrow {
+		assert.NotContains(t, gotIDs, item.ID,
+			"an item with a pending (ungraded) log from a previous day must not be re-selected")
+	}
+
+	// --- 自動解決でログが閉じた後は、遷移後の期日で再び選定対象 ---
+	// 7/10 朝の自動解決(cutoff 7/08 ≧ asked_on 7/07)で両ログが閉じ、
+	// overdue: stage1→2 due 8/09、dueToday: stage0→1 due 7/17 に前進する。
+	resolveDay := day.AddDate(0, 0, 3) // 2026-07-10
+	_, err = repo.AutoResolve(ctx, day.AddDate(0, 0, 1), resolveDay, []int{1, 7, 30})
+	require.NoError(t, err)
+
+	reappeared, err := repo.ListDue(ctx, learning.BroadcastDay(time.Date(2026, 8, 9, 4, 30, 0, 0, time.UTC)), 50)
+	require.NoError(t, err)
+	byID := make(map[int64]learning.Item, len(reappeared))
+	for _, item := range reappeared {
+		byID[item.ID] = item
+	}
+	got, ok := byID[overdue]
+	require.True(t, ok, "once the pending log is auto-resolved the item is selectable again")
+	assert.Equal(t, 2, got.Stage)
+	assert.Equal(t, "2026-08-09", learning.FormatDay(got.DueOn))
+	_, ok = byID[dueToday]
+	assert.True(t, ok, "dueToday reappears at its post-transition due date (7/17 <= 8/09)")
 }
 
 // TestLearningRepo_InsertItem_RealPostgres exercises the item INSERT path
@@ -376,6 +409,70 @@ func TestLearningRepo_AutoResolve_RealPostgres(t *testing.T) {
 	resolved, err = repo.AutoResolve(ctx, cutoffDay, resolveDay, ladder)
 	require.NoError(t, err)
 	assert.Zero(t, resolved)
+}
+
+// TestLearningRepo_AutoResolve_CrossRunSingleAdvance_RealPostgres pins the
+// B-1 fix (§6.3): a never-graded item that was asked on two consecutive
+// days owns two pending logs whose 48h windows expire on DIFFERENT
+// mornings. Each morning's run claims one log, but only the first may
+// advance the item — without the due guard the ladder [1,7,30] would
+// degrade to [1,1,30] for ungraded items (stage2 on the second morning).
+func TestLearningRepo_AutoResolve_CrossRunSingleAdvance_RealPostgres(t *testing.T) {
+	conn := openTestDB(t)
+	require.NoError(t, MigrateUp(conn))
+	f := newLearningFixture(t, conn)
+	repo := pgRepo.NewLearningRepo(conn)
+	ctx := context.Background()
+	ladder := []int{1, 7, 30}
+
+	// stage0 item asked 7/05 and (re-asked, pre-B-2 data shape) 7/06,
+	// never graded.
+	item := insertLearningItem(t, conn, f.articleID, 0, "2026-07-05", false)
+	for _, askedOn := range []string{"2026-07-05", "2026-07-06"} {
+		_, err := conn.Exec(
+			`INSERT INTO review_logs (item_id, episode_id, asked_on) VALUES ($1, $2, $3::date)`,
+			item, f.episodeID, askedOn)
+		require.NoError(t, err)
+	}
+
+	itemState := func() (stage int, due string) {
+		require.NoError(t, conn.QueryRow(
+			`SELECT stage, due_on::text FROM learning_items WHERE id = $1`, item).Scan(&stage, &due))
+		return stage, due
+	}
+	logResult := func(askedOn string) *string {
+		var result *string
+		require.NoError(t, conn.QueryRow(
+			`SELECT result FROM review_logs WHERE item_id = $1 AND asked_on = $2::date`,
+			item, askedOn).Scan(&result))
+		return result
+	}
+
+	// Run A: 7/07 morning (cutoff 7/05) — claims the 7/05 log only,
+	// advances stage0→1, due 7/07+7 = 7/14.
+	_, err := repo.AutoResolve(ctx,
+		learning.BroadcastDay(time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC)),
+		learning.BroadcastDay(time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)), ladder)
+	require.NoError(t, err)
+	stage, due := itemState()
+	assert.Equal(t, 1, stage)
+	assert.Equal(t, "2026-07-14", due)
+	require.NotNil(t, logResult("2026-07-05"))
+	assert.Equal(t, learning.ResultAuto, *logResult("2026-07-05"))
+	assert.Nil(t, logResult("2026-07-06"), "the younger log is still inside its 48h window")
+
+	// Run B: 7/08 morning (cutoff 7/06) — claims the 7/06 log, but the
+	// item's due_on (7/14) is already past the resolve day: the log closes
+	// and the item must NOT advance again.
+	_, err = repo.AutoResolve(ctx,
+		learning.BroadcastDay(time.Date(2026, 7, 6, 0, 0, 0, 0, time.UTC)),
+		learning.BroadcastDay(time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)), ladder)
+	require.NoError(t, err)
+	require.NotNil(t, logResult("2026-07-06"))
+	assert.Equal(t, learning.ResultAuto, *logResult("2026-07-06"), "the second log is still closed")
+	stage, due = itemState()
+	assert.Equal(t, 1, stage, "cross-run: the second auto must not double-advance (7日段の想起を消さない)")
+	assert.Equal(t, "2026-07-14", due)
 }
 
 // TestLearningRepo_AutoVsManualGrade_RealPostgres pins §12-9: the 48h
