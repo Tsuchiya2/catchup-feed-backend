@@ -336,11 +336,13 @@ func fixedNow() time.Time {
 func newPipeline(t *testing.T, d *deps) *radio.Pipeline {
 	t.Helper()
 	cfg := radio.Config{
-		ShowName:    "pulse",
-		MaxArticles: 8,
-		Location:    time.UTC,
-		EpisodesDir: "/data/episodes",
-		LearningURL: "https://pulse.catchup-feed.com/learning",
+		ShowName:          "pulse",
+		MaxArticles:       8,
+		Location:          time.UTC,
+		EpisodesDir:       "/data/episodes",
+		LearningURL:       "https://pulse.catchup-feed.com/learning",
+		BookReviewChunks:  3,
+		PrivateEpisodeMax: 18 * time.Minute,
 	}
 	return &radio.Pipeline{
 		Articles: d.articles,

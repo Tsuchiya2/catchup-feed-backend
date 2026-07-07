@@ -122,6 +122,13 @@ type Pipeline struct {
 	// Learning enables the Phase 3 learning loop (§5.1/§7); nil turns it
 	// off, including the private twin episode.
 	Learning LearningStore
+	// BookReview enables the §7.3 book_review corner (active book, chunks,
+	// cursor); nil (or a nil BookReviewLLM) leaves the private episode
+	// news+quiz only. Requires Learning for the §5.3 book quiz.
+	BookReview BookReviewStore
+	// BookReviewLLM generates the book_review script + book quiz from a LOCAL
+	// model only (§12-4); nil disables book_review.
+	BookReviewLLM BookReviewer
 	// LearningCfg carries the D-17/D-18 quiz parameters (QUIZ_* env).
 	LearningCfg learning.Config
 	Config      Config
@@ -225,7 +232,8 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	}
 
 	if opts.DryRun {
-		return p.printDryRun(title, since, showNotes, segments, quizDrafts, dueItems)
+		brSel := p.selectBookReview(ctx, logger, now, true)
+		return p.printDryRun(title, since, showNotes, segments, quizDrafts, dueItems, brSel)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "radio-episode-")
@@ -332,23 +340,27 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 }
 
 // runQuizOnlyDay handles the no-articles morning (Phase 3 §7.1/§12-8): the
-// public episode is skipped exactly as before (D-1), but when quiz items
-// are due a private-only episode ships — fixed intro → quiz corner → fixed
-// outro, no news, no LLM call (テンプレート台本: クオータ消費ゼロ、かつ
-// §10 によりクイズ内容はクラウドに送れない). Unlike the news-day twin this
-// episode IS the run's whole product, so failures return an error and the
-// admin gets the notify_error notice (§8).
+// public episode is skipped exactly as before (D-1), but when quiz items are
+// due OR a book_review is in progress a private-only episode ships — fixed
+// intro → quiz corner → book_review → fixed outro, no news. The quiz corner is
+// template-only (クオータ消費ゼロ、§10 によりクイズ内容はクラウドに送れない);
+// the book_review rides on the local model only (§12-4). No news means no
+// length pressure, so the §7.1 18-minute guard does not apply here. Unlike the
+// news-day twin this episode IS the run's whole product, so failures return an
+// error and the admin gets the notify_error notice (§8).
 func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, since time.Time, logger *slog.Logger) error {
 	if p.Learning == nil {
 		return ErrNoArticles
 	}
 	p.autoResolve(ctx, now, opts.DryRun, logger)
 	dueItems := p.listDueItems(ctx, now, logger)
-	if len(dueItems) == 0 {
+	brSel := p.selectBookReview(ctx, logger, now, opts.DryRun)
+	if len(dueItems) == 0 && brSel == nil {
+		// 記事も期日到来項目もアクティブ書籍もない → 従来どおりスキップ (D-1)。
 		return ErrNoArticles
 	}
-	logger.Info("no new articles but quiz items are due — generating the private episode only (§7.1)",
-		slog.Int("due_items", len(dueItems)))
+	logger.Info("no new articles but quiz/book_review due — generating the private episode only (§7.1)",
+		slog.Int("due_items", len(dueItems)), slog.Bool("book_review", brSel != nil))
 
 	speakerName, err := p.resolveSpeakerName(ctx, opts.DryRun, logger)
 	if err != nil {
@@ -356,16 +368,10 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 	}
 
 	corner := script.BuildQuizCorner(dueItems)
-	intro := &entity.Segment{Position: 1, Kind: entity.SegmentKindIntro,
+	introSeg := &entity.Segment{Position: 1, Kind: entity.SegmentKindIntro,
 		Script: script.QuizOnlyIntro(p.Config.ShowName, now)}
-	cornerSegs := corner.Segments(2)
-	// (手順6) book_review セグメントは quiz の後・outro の前のここに挿入する。
-	outro := &entity.Segment{Position: 2 + len(cornerSegs), Kind: entity.SegmentKindOutro,
+	outroSeg := &entity.Segment{Kind: entity.SegmentKindOutro,
 		Script: script.QuizOnlyOutro(p.Config.ShowName)}
-	segments := make([]*entity.Segment, 0, len(cornerSegs)+2)
-	segments = append(segments, intro)
-	segments = append(segments, cornerSegs...)
-	segments = append(segments, outro)
 
 	showNotes := script.AppendVoicevoxCredit(
 		script.AppendQuizShowNotes(script.QuizOnlyShowNotesBase(), dueItems, p.Config.LearningURL),
@@ -376,7 +382,10 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 	}
 
 	if opts.DryRun {
-		return p.printDryRun(title, since, showNotes, segments, nil, dueItems)
+		// book_review は dry-run では生成しないので、プレビューのセグメントは
+		// intro → quiz → outro のみ。book_review 対象は brSel から印字する。
+		segments := quizOnlySegments(introSeg, corner, nil, outroSeg)
+		return p.printDryRun(title, since, showNotes, segments, nil, dueItems, brSel)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "radio-episode-")
@@ -385,7 +394,20 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	segWavs, speechDuration, err := p.synthesize(ctx, tmpDir, []*entity.Segment{intro, outro})
+	var bookReview *bookReviewPlan
+	if brSel != nil {
+		bookReview = p.generateBookReview(ctx, logger, tmpDir, brSel)
+	}
+	if len(dueItems) == 0 && bookReview == nil {
+		// クイズがなく book_review 生成も失敗 → 中身のない私的版は作らない。
+		// カーソルは進めていない(生成失敗)ので翌日同じ箇所から (§7.1/§7.3)。
+		logger.Info("book_review generation failed on an articles-and-quiz-less day, skipping today (§7.1)")
+		return ErrNoArticles
+	}
+
+	segments := quizOnlySegments(introSeg, corner, bookReview, outroSeg)
+
+	segWavs, speechDuration, err := p.synthesize(ctx, tmpDir, []*entity.Segment{introSeg, outroSeg})
 	if err != nil {
 		return err
 	}
@@ -396,6 +418,9 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 	wavs := make([]string, 0, len(segWavs[0])+len(cornerWavs)+len(segWavs[1]))
 	wavs = append(wavs, segWavs[0]...) // intro
 	wavs = append(wavs, cornerWavs...) // quiz corner
+	if bookReview != nil {
+		wavs = append(wavs, bookReview.wavs...) // book_review
+	}
 	wavs = append(wavs, segWavs[1]...) // outro
 
 	mp3Path := filepath.Join(tmpDir, filename)
@@ -418,7 +443,7 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 		ShowNotes:   showNotes,
 		AudioPath:   audioPath,
 		AudioBytes:  stat.Size(),
-		DurationSec: int(math.Round((speechDuration + cornerDuration).Seconds())),
+		DurationSec: int(math.Round((speechDuration + cornerDuration + bookReviewDuration(bookReview)).Seconds())),
 		PublishedAt: now,
 	}
 	if err := p.Episodes.Create(ctx, episode, segments); err != nil {
@@ -428,14 +453,38 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 	// 参照)により私的版では存在させない。regenerate_feed は no-op ハンドラ
 	// (feed.xml はリクエスト毎に描画)なので省略する。
 	p.recordAsked(ctx, logger, corner, episode.ID, now)
+	if bookReview != nil {
+		p.commitBookReviewProgress(ctx, logger, now, bookReview)
+	}
 
 	logger.Info("private-only episode generated (§7.1 記事ゼロ日)",
 		slog.Int64("episode_id", episode.ID),
 		slog.String("title", title),
 		slog.String("audio_path", audioPath),
 		slog.Int("duration_sec", episode.DurationSec),
-		slog.Int("quiz_items", len(corner.Items)))
+		slog.Int("quiz_items", len(corner.Items)),
+		slog.Bool("book_review", bookReview != nil))
 	return nil
+}
+
+// quizOnlySegments assembles the no-articles private episode's segment rows:
+// intro → quiz corner → book_review (§7.3, nil to omit) → outro, positions
+// contiguous from 1. The outro's position is set here (it depends on how many
+// quiz/book_review rows precede it).
+func quizOnlySegments(intro *entity.Segment, corner script.QuizCorner, bookReview *bookReviewPlan, outro *entity.Segment) []*entity.Segment {
+	cornerSegs := corner.Segments(2) // intro=1, corner starts at 2
+	segments := make([]*entity.Segment, 0, len(cornerSegs)+3)
+	segments = append(segments, intro)
+	segments = append(segments, cornerSegs...)
+	pos := 2 + len(cornerSegs)
+	if bookReview != nil {
+		segments = append(segments, &entity.Segment{
+			Position: pos, Kind: entity.SegmentKindBookReview, Script: bookReview.segment.Script})
+		pos++
+	}
+	outro.Position = pos
+	segments = append(segments, outro)
+	return segments
 }
 
 // privateEpisodeInput carries everything publishPrivateEpisode reuses from
@@ -478,11 +527,20 @@ func (p *Pipeline) publishPrivateEpisode(ctx context.Context, logger *slog.Logge
 		return
 	}
 
-	// 私的版の並び: intro → news×N → quiz → (手順6: book_review はここ、
-	// quiz の後・outro の前に挿入) → outro。news の wav は公開版と共用 (§7.1)。
+	// §7.3 book_review: selection → §7.1 尺ガード(news+quiz が18分に迫るなら
+	// 翌日回し)→ Ollama 生成 + TTS。nil = 当日 book_review なし(private は
+	// news+quiz、翌日カーソル位置から再開)。生成は quiz corner の後・outro の
+	// 前に挟む。
+	bookReview := p.prepareBookReview(ctx, logger, in.tmpDir, in.now, in.newsDuration+cornerDuration)
+
+	// 私的版の並び: intro → news×N → quiz → book_review → outro。news の wav は
+	// 公開版と共用 (§7.1)。
 	outroIdx := len(in.segWavs) - 1
 	wavs := flattenWavs(in.segWavs[:outroIdx])
 	wavs = append(wavs, cornerWavs...)
+	if bookReview != nil {
+		wavs = append(wavs, bookReview.wavs...)
+	}
 	wavs = append(wavs, in.segWavs[outroIdx]...)
 
 	mp3Path := filepath.Join(in.tmpDir, filename)
@@ -515,21 +573,19 @@ func (p *Pipeline) publishPrivateEpisode(ctx context.Context, logger *slog.Logge
 		in.speakerName)
 
 	episode := &entity.Episode{
-		FeedKind:   entity.FeedKindPrivate,
-		Title:      title,
-		ShowNotes:  showNotes,
-		AudioPath:  audioPath,
-		AudioBytes: stat.Size(),
-		// 手順6 申し送り: この DurationSec(news+quiz 合算)が §7.1 の
-		// 18分ガードの判定素材になる。
-		DurationSec: int(math.Round((in.newsDuration + cornerDuration).Seconds())),
+		FeedKind:    entity.FeedKindPrivate,
+		Title:       title,
+		ShowNotes:   showNotes,
+		AudioPath:   audioPath,
+		AudioBytes:  stat.Size(),
+		DurationSec: int(math.Round((in.newsDuration + cornerDuration + bookReviewDuration(bookReview)).Seconds())),
 		// The same selection timestamp as the public twin — deliberately:
 		// the private feed folds the day's public/private pair by equal
 		// published_at (feed.collapsePrivatePairs), and the public cursor
 		// reads public rows only, so this can never move article selection.
 		PublishedAt: in.now,
 	}
-	if err := p.Episodes.Create(ctx, episode, privateSegments(in.segments, in.corner)); err != nil {
+	if err := p.Episodes.Create(ctx, episode, privateSegments(in.segments, in.corner, bookReview)); err != nil {
 		logger.Warn("private episode skipped: insert failed (§9)", slog.Any("error", err))
 		return
 	}
@@ -537,23 +593,41 @@ func (p *Pipeline) publishPrivateEpisode(ctx context.Context, logger *slog.Logge
 	// 参照)により私的版では存在させない。regenerate_feed は公開版の分が
 	// 既に積まれている(かつ no-op ハンドラ)。
 	p.recordAsked(ctx, logger, in.corner, episode.ID, in.now)
+	// §7.3: カーソル前進・書籍クイズ INSERT は私的エピソード確定後に(生成
+	// 失敗で先にカーソルだけ進む事故を防ぐ)。冪等(AdvanceCursor の guarded
+	// WHERE + 同日 rev の HasBookReviewOn)。
+	if bookReview != nil {
+		p.commitBookReviewProgress(ctx, logger, in.now, bookReview)
+	}
 
 	logger.Info("private episode generated (§7.1 二本立て)",
 		slog.Int64("episode_id", episode.ID),
 		slog.String("title", title),
 		slog.String("audio_path", audioPath),
 		slog.Int("duration_sec", episode.DurationSec),
-		slog.Int("quiz_items", len(in.corner.Items)))
+		slog.Int("quiz_items", len(in.corner.Items)),
+		slog.Bool("book_review", bookReview != nil))
+}
+
+// bookReviewDuration is the plan's audio length, or zero when no book_review
+// runs this episode.
+func bookReviewDuration(plan *bookReviewPlan) time.Duration {
+	if plan == nil {
+		return 0
+	}
+	return plan.duration
 }
 
 // privateSegments builds the private episode's own segment rows: the public
 // intro/news scripts copied verbatim (私的版は公開版の上位集合, §7.1), the
-// quiz corner (1 項目 = 1 行, §7.2-4), then the outro. Fresh copies are
-// mandatory — Create mutates ID/EpisodeID, and the passed-in rows are
-// already committed under the public episode.
-func privateSegments(public []*entity.Segment, corner script.QuizCorner) []*entity.Segment {
+// quiz corner (1 項目 = 1 行, §7.2-4), the §7.3 book_review (kind constant via
+// entity, §12-6), then the outro. Positions stay contiguous and unique. Fresh
+// copies are mandatory — Create mutates ID/EpisodeID, and the passed-in rows
+// are already committed under the public episode. bookReview may be nil (no
+// book_review this episode).
+func privateSegments(public []*entity.Segment, corner script.QuizCorner, bookReview *bookReviewPlan) []*entity.Segment {
 	cornerSegs := corner.Segments(len(public)) // outro の位置から採番
-	out := make([]*entity.Segment, 0, len(public)+len(cornerSegs))
+	out := make([]*entity.Segment, 0, len(public)+len(cornerSegs)+1)
 	copySegment := func(s *entity.Segment, position int) *entity.Segment {
 		return &entity.Segment{Position: position, Kind: s.Kind, ArticleID: s.ArticleID, Script: s.Script}
 	}
@@ -561,8 +635,14 @@ func privateSegments(public []*entity.Segment, corner script.QuizCorner) []*enti
 		out = append(out, copySegment(s, s.Position))
 	}
 	out = append(out, cornerSegs...)
+	pos := len(public) + len(cornerSegs)
 	// (手順6) book_review セグメントはここ(quiz の後・outro の前)に挿入。
-	out = append(out, copySegment(public[len(public)-1], len(public)+len(cornerSegs)))
+	if bookReview != nil {
+		out = append(out, &entity.Segment{
+			Position: pos, Kind: entity.SegmentKindBookReview, Script: bookReview.segment.Script})
+		pos++
+	}
+	out = append(out, copySegment(public[len(public)-1], pos))
 	return out
 }
 
@@ -884,7 +964,7 @@ func flattenWavs(groups [][]string) []string {
 // item drafts and the quiz selection are printed for inspection but nothing
 // is written — no InsertItem, no AutoResolve, no RecordAsked (dry-run makes
 // no DB writes).
-func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, segments []*entity.Segment, drafts []script.QuizDraft, dueItems []learning.Item) error {
+func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, segments []*entity.Segment, drafts []script.QuizDraft, dueItems []learning.Item, bookReview *bookReviewSelection) error {
 	out := p.Out
 	if out == nil {
 		out = os.Stdout
@@ -908,8 +988,27 @@ func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, 
 		}
 		sb.WriteString("\n")
 	}
+	// §7.3 book_review 対象(dry-run: Ollama 生成・カーソル前進・クイズ INSERT
+	// は行わない)。尺ガード(§7.1)は実 run の音声尺に依存するため dry-run では
+	// 評価せず、対象書名とチャンク範囲のみ印字する。
+	if bookReview != nil {
+		last := bookReview.chunks[len(bookReview.chunks)-1].Position
+		fmt.Fprintf(&sb, "--- book_review target (dry-run: 生成/カーソル前進/クイズ INSERT なし) ---\n書名: %s (book %d)\nチャンク範囲: position %d..%d (%d 個), cursor %d -> %d%s\n\n",
+			bookReview.book.Title, bookReview.book.ID,
+			bookReview.chunks[0].Position, last, len(bookReview.chunks),
+			bookReview.book.Cursor, bookReview.newCursor, finishedNote(bookReview.finished))
+	}
 	if _, err := io.WriteString(out, sb.String()); err != nil {
 		return fmt.Errorf("radio: write dry-run report: %w", err)
 	}
 	return nil
+}
+
+// finishedNote annotates the dry-run cursor line when this batch would finish
+// the book (§7.3: 末尾到達で finished).
+func finishedNote(finished bool) string {
+	if finished {
+		return " (末尾到達 → finished)"
+	}
+	return ""
 }

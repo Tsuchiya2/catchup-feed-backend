@@ -233,8 +233,8 @@ func cutLabel(line, label string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	rest = strings.TrimLeft(rest, " \t")
-	for _, sep := range []string{":", ":"} {
+	rest = strings.TrimLeft(rest, " 　\t")    // ASCII と全角スペース両方
+	for _, sep := range []string{":", "："} { // ASCII コロンと全角コロン(LLM 出力の揺れ)
 		if v, ok := strings.CutPrefix(rest, sep); ok {
 			return strings.TrimSpace(v), true
 		}
