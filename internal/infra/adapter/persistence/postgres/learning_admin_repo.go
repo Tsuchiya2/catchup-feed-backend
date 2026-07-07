@@ -39,6 +39,14 @@ func NewLearningAdminRepo(db *sql.DB) repository.LearningAdminRepository {
 // ListPendingReviews returns the grading queue, oldest asking first
 // (§8.1). Both not-yet-set columns are in the WHERE so the set is exactly
 // the logs GradeReview's claim can still win.
+//
+// The join to learning_items deliberately does NOT filter on retired_at: an
+// ungraded log of a retired item (graduated or manually archived while its
+// last asking sat unanswered) is intentionally still returned. This is by
+// design — the queue only drains: grading such a log closes it (GradeReview
+// keeps the item terminal, §6.1), and the 48h auto-resolve closes it
+// otherwise (result='auto'). Either way the pending row disappears; hiding it
+// here would instead leave it dangling forever (nothing else closes it).
 func (r *LearningAdminRepo) ListPendingReviews(ctx context.Context) ([]repository.PendingReview, error) {
 	const query = `
 SELECT rl.id, rl.item_id, rl.asked_on, li.concept, li.question, li.answer

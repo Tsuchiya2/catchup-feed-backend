@@ -39,9 +39,12 @@ func toPendingDTO(p repository.PendingReview) PendingReviewDTO {
 
 // GradeRequest is the POST /learning/reviews/{id}/grade body. result is
 // the manual verdict (○△×); 'auto' is reserved for the radio batch's
-// 48h auto-resolve and is rejected.
+// 48h auto-resolve and is rejected. binding:"required" makes swag mark the
+// field required in the schema, matching the handler's reality: Service.Grade
+// rejects an empty or unknown result with ErrInvalidResult → 400 (the 400
+// branch itself is unchanged — validation stays in the usecase).
 type GradeRequest struct {
-	Result string `json:"result" example:"good" enums:"good,fuzzy,forgot"`
+	Result string `json:"result" binding:"required" example:"good" enums:"good,fuzzy,forgot"`
 }
 
 // GradeResponse reports the item state after the grade (§6.1 遷移後) —
