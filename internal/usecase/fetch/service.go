@@ -28,15 +28,19 @@ const (
 	// each bounded by the describer's own request timeout).
 	YouTubeDirectMaxPerCycle = 3
 
-	// TranscribeBackfillCutoff bounds how far back the transcribe path
-	// (youtube/podcast) ingests feed items (D-15, Phase 2 §5.2): items whose
-	// published_at is older than this are skipped entirely — no articles
-	// INSERT, no transcribe job, no §5.1 stage-1 attempt. Podcast feeds
-	// carry their full history (e.g. Latent Space, 212 items), and ingesting
-	// it would fill every morning's radio with months of back-catalog.
-	// Items with an unknown published_at (zero value) are treated as new —
-	// D-15: 判定不能を落とさない. The rss path is NOT affected.
-	TranscribeBackfillCutoff = 14 * 24 * time.Hour
+	// BackfillCutoff bounds how far back feed items of ANY kind are
+	// ingested (D-15 + D-15b, Phase 2 §5): items whose published_at is
+	// older than this are skipped entirely — no articles INSERT, no
+	// content fetch (go-readability), no summarization, no transcribe
+	// job, no §5.1 stage-1 attempt. Feeds carry their full history
+	// (podcast: Latent Space, 212 items; rss: Vercel Blog, 794 items
+	// back to 2024 — 本番実障害), and ingesting it floods the hourly
+	// summarize sweep and lets the radio selection (published_at 古い順)
+	// serve months of back-catalog instead of news. Items with an
+	// unknown published_at (zero value) are treated as new — D-15:
+	// 判定不能を落とさない. Originally transcribe-only (D-15, as
+	// TranscribeBackfillCutoff); D-15b extends it to the rss path.
+	BackfillCutoff = 14 * 24 * time.Hour
 )
 
 // FeedFetcher is an interface for fetching RSS/Atom feeds from a URL.
@@ -156,8 +160,8 @@ func NewService(
 // transcribe job (youtube/podcast sources, Phase 2 §5); those articles are
 // also counted in Inserted. SkippedNoMedia counts feed items dropped
 // because no media URL could be determined. SkippedBackfill counts
-// transcribe-path items dropped by the D-15 backlog cutoff (published_at
-// older than TranscribeBackfillCutoff). YouTubeDirectAttempts counts
+// items of any kind dropped by the D-15/D-15b backlog cutoff
+// (published_at older than BackfillCutoff). YouTubeDirectAttempts counts
 // §5.1 stage-1 tries this cycle (capped at YouTubeDirectMaxPerCycle) and
 // YouTubeDirectSucceeded the ones persisted with a summary and no
 // transcribe job (also counted in Inserted, not in TranscribeEnqueued).
@@ -262,6 +266,40 @@ func (s *Service) processSingleSource(ctx context.Context, src *entity.Source, s
 			slog.String("feed_url", src.FeedURL))
 		return nil
 	}
+	itemsFound := int64(len(feedItems))
+
+	// D-15/D-15b バックログカットオフ(全 kind): published_at が
+	// BackfillCutoff より古い item はここで落とす。dedupe(ExistsByURLBatch)
+	// より前・kind 分岐より前に置くことで、旧 item は content 取得
+	// (go-readability)・要約・§5.1 第1段の cap(Gemini 呼び出し枠)の
+	// いずれにもネットワーク/クオータを一切消費しない。published_at 不明
+	// (zero value)は新着扱い(判定不能を落とさない)。ソース単位のサマリ
+	// 1行に集計する(初回クロールの全履歴フィードは数百件スキップし得る
+	// ので item ごとのログは出さない)。既に DB にある旧記事には触れない:
+	// スキップは INSERT をしないだけで、削除・更新は発生しない。
+	// in-place filter(feedItems[:0])にしない: FeedFetcher の実装が
+	// 返すスライスの所有権はこちらにない(呼び出し間で共有され得る)。
+	backfillCutoff := time.Now().Add(-BackfillCutoff)
+	fresh := make([]FeedItem, 0, len(feedItems))
+	var skippedBackfill int64
+	for _, item := range feedItems {
+		if !item.PublishedAt.IsZero() && item.PublishedAt.Before(backfillCutoff) {
+			skippedBackfill++
+			continue
+		}
+		fresh = append(fresh, item)
+	}
+	feedItems = fresh
+	if skippedBackfill > 0 {
+		// スキップした item も FeedItems(観測した件数)には数える。
+		atomic.AddInt64(&stats.FeedItems, skippedBackfill)
+		atomic.AddInt64(&stats.SkippedBackfill, skippedBackfill)
+		logger.Info("skipped backlog items older than cutoff (D-15)",
+			slog.Int64("source_id", src.ID),
+			slog.String("source_kind", src.Kind),
+			slog.Int64("skipped_backfill", skippedBackfill),
+			slog.Duration("cutoff", BackfillCutoff))
+	}
 
 	// N+1問題解消: 事前に全URLをバッチで存在チェック
 	// (キーは articleURLForItem — articles.url に入る値と同じでないと
@@ -300,7 +338,6 @@ func (s *Service) processSingleSource(ctx context.Context, src *entity.Source, s
 	}
 
 	sourceDuration := time.Since(sourceStart)
-	itemsFound := int64(len(feedItems))
 	itemsInserted := atomic.LoadInt64(&stats.Inserted) - beforeInserted
 	itemsDuplicated := atomic.LoadInt64(&stats.Duplicated) - beforeDuplicated
 
@@ -435,8 +472,9 @@ func articleURLForItem(src *entity.Source, item FeedItem) string {
 }
 
 // enqueueTranscribeItems handles new items of youtube/podcast sources
-// (Phase 2 §5.1 / §5.2, Pi 側): items older than TranscribeBackfillCutoff
-// are dropped up front (D-15); each remaining new item becomes an articles row with
+// (Phase 2 §5.1 / §5.2, Pi 側): items older than BackfillCutoff never
+// reach here (dropped kind-independently in processSingleSource, D-15/
+// D-15b); each new item becomes an articles row with
 // content NULL plus a kind='transcribe' job, inserted atomically by the
 // repository — except youtube items that the §5.1 stage-1 describer handles
 // first (see describeVideoDirect). No parallelism: the DB writes are local
@@ -457,29 +495,13 @@ func (s *Service) enqueueTranscribeItems(
 ) error {
 	logger := slog.Default()
 
-	// D-15 バックログカットオフ: published_at がこの時刻より古い item は
-	// 取り込まない(§5.2)。published_at 不明(zero value)は新着扱い。
-	// ソース単位のサマリ1行に集計するため件数はローカルに数える(初回
-	// クロールのポッドキャストは数百件スキップし得るので item ごとの
-	// ログは出さない)。
-	backfillCutoff := time.Now().Add(-TranscribeBackfillCutoff)
-	var skippedBackfill int64
-
 	for _, item := range feedItems {
 		atomic.AddInt64(&stats.FeedItems, 1)
 
-		// カットオフ判定は dedupe より前・§5.1 第1段の cap より前に置く:
-		// 古い item に Gemini 呼び出し枠(YouTubeDirectMaxPerCycle)を
-		// 消費させないのが D-15 の要件。dedupe との順序はどちらでも
-		// 正しさは変わらないが、ループ先頭に置くのが最も単純で、既存の
-		// existsMap 構築(processSingleSource、kind 非依存)を触らずに
-		// 済む — ExistsByURLBatch のキー数削減は初回クロール1回きりの
-		// 話なので、そのために dedupe キー収集へ kind 分岐を持ち込む
-		// 価値はない。
-		if !item.PublishedAt.IsZero() && item.PublishedAt.Before(backfillCutoff) {
-			skippedBackfill++
-			continue
-		}
+		// D-15/D-15b バックログカットオフはここには無い: kind 非依存に
+		// なったので processSingleSource(dedupe キー収集より前)で全 kind
+		// 共通に落ちる。古い item は §5.1 第1段の cap(Gemini 呼び出し枠、
+		// YouTubeDirectMaxPerCycle)にも到達しない。
 
 		// articles.url に入る値(link 無し podcast は enclosure URL に
 		// フォールバック)。dedupe キーと INSERT 値を必ず一致させる:
@@ -549,15 +571,6 @@ func (s *Service) enqueueTranscribeItems(
 			slog.String("url", art.URL),
 			slog.String("source_kind", src.Kind),
 			slog.String("media_url", mediaURL))
-	}
-
-	if skippedBackfill > 0 {
-		atomic.AddInt64(&stats.SkippedBackfill, skippedBackfill)
-		logger.Info("skipped backlog items older than cutoff (D-15)",
-			slog.Int64("source_id", src.ID),
-			slog.String("source_kind", src.Kind),
-			slog.Int64("skipped_backfill", skippedBackfill),
-			slog.Duration("cutoff", TranscribeBackfillCutoff))
 	}
 
 	return nil
