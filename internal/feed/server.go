@@ -202,6 +202,7 @@ func (s *Server) handlePrivateFeed(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
+	episodes = collapsePrivatePairs(episodes)
 	base := s.cfg.PrivateBaseURL
 	if base == "" {
 		// Tailnet-only plain HTTP; the Host header is the tailnet name.
@@ -210,6 +211,32 @@ func (s *Server) handlePrivateFeed(w http.ResponseWriter, r *http.Request) {
 	s.writeFeed(w, base, privateArtworkURL(base), episodes, func(ep *entity.Episode) string {
 		return privateEnclosureURL(base, ep.ID)
 	})
+}
+
+// collapsePrivatePairs hides a public episode when its private twin exists
+// (Phase 3 §7.1: 私的版は公開版の上位集合 — ニュース部分は同一音声). The
+// radio batch stamps both rows of one run with the same selection timestamp,
+// so equal published_at identifies the pair; without this fold the tailnet
+// feed would list every morning twice under identical titles. On a day where
+// only the public row exists (private generation degraded, §9) the public
+// episode still serves as the fallback — the C-5 contract that the private
+// feed carries every feed kind is unchanged, only the redundant twin is
+// folded. The public feed path is untouched (§12-1).
+func collapsePrivatePairs(episodes []*entity.Episode) []*entity.Episode {
+	private := make(map[int64]bool, len(episodes))
+	for _, ep := range episodes {
+		if ep.FeedKind == entity.FeedKindPrivate {
+			private[ep.PublishedAt.UnixNano()] = true
+		}
+	}
+	out := episodes[:0]
+	for _, ep := range episodes {
+		if ep.FeedKind == entity.FeedKindPublic && private[ep.PublishedAt.UnixNano()] {
+			continue
+		}
+		out = append(out, ep)
+	}
+	return out
 }
 
 func (s *Server) handlePrivateEpisode(w http.ResponseWriter, r *http.Request) {

@@ -41,6 +41,12 @@ type EpisodeMediaStore interface {
 // asset), then deletes orphan mp3 files that no episode row references
 // (rsync 成功後 INSERT 失敗で発生し得る). Idempotent: a retry re-scans and
 // finds less to do.
+//
+// feed_kind='private' の mp3 も対象 (Phase 3 §12-7 で確認): the expiry
+// query (ListWithAudioBefore) and the orphan scan (*.mp3 basename match
+// against ListAudioPaths) are both feed_kind-agnostic, so the daily private
+// episodes — including "-private.mp3" files — age out on the same D-4
+// 45-day window. Do not add a feed_kind filter to either query.
 type CleanupHandler struct {
 	Episodes EpisodeMediaStore
 	// AudioDir is the episodes directory (same value the feed server

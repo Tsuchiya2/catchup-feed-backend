@@ -19,11 +19,13 @@ import (
 	"catchup-feed/internal/feed"
 	pgRepo "catchup-feed/internal/infra/adapter/persistence/postgres"
 	"catchup-feed/internal/infra/db"
+	learncore "catchup-feed/internal/learning"
 	"catchup-feed/pkg/config"
 	"catchup-feed/pkg/security/csp"
 
 	alUC "catchup-feed/internal/usecase/accesslog"
 	artUC "catchup-feed/internal/usecase/article"
+	learnUC "catchup-feed/internal/usecase/learning"
 	srcUC "catchup-feed/internal/usecase/source"
 	subUC "catchup-feed/internal/usecase/subscriber"
 
@@ -31,6 +33,7 @@ import (
 	haccesslog "catchup-feed/internal/handler/http/accesslog"
 	harticle "catchup-feed/internal/handler/http/article"
 	hauth "catchup-feed/internal/handler/http/auth"
+	hlearning "catchup-feed/internal/handler/http/learning"
 	"catchup-feed/internal/handler/http/middleware"
 	"catchup-feed/internal/handler/http/requestid"
 	hsrc "catchup-feed/internal/handler/http/source"
@@ -164,6 +167,14 @@ func setupServer(logger *slog.Logger, database *sql.DB, version string) *ServerC
 	}
 	logSvc := alUC.Service{Logs: pgRepo.NewFeedAccessLogRepo(database)}
 
+	// 学習ループ管理 API(Phase 3 §8.1)。採点遷移のラダーは radio 側の
+	// 自動解決と同じ QUIZ_LADDER_DAYS(D-18)を読む — 両者が同じ
+	// learning.Transition を同じパラメータで適用する。
+	learnSvc := learnUC.Service{
+		Repo:   pgRepo.NewLearningAdminRepo(database),
+		Ladder: learncore.LoadConfig(logger).Ladder,
+	}
+
 	// Load trusted proxy configuration for IP extraction
 	proxyConfig, err := middleware.LoadTrustedProxyConfig()
 	if err != nil {
@@ -204,7 +215,7 @@ func setupServer(logger *slog.Logger, database *sql.DB, version string) *ServerC
 	)
 
 	// Setup routes with per-endpoint rate limiting
-	rootMux, rateLimiters := setupRoutes(database, version, srcSvc, artSvc, subSvc, logSvc, ipExtractor, logger, feedServer, feedCfg.PublicBaseURL)
+	rootMux, rateLimiters := setupRoutes(database, version, srcSvc, artSvc, subSvc, logSvc, learnSvc, ipExtractor, logger, feedServer, feedCfg.PublicBaseURL)
 	handler := applyMiddleware(logger, rootMux)
 
 	// The private feed handler skips CORS/CSP/auth entirely: physical
@@ -229,6 +240,7 @@ func setupRoutes(
 	artSvc artUC.Service,
 	subSvc subUC.Service,
 	logSvc alUC.Service,
+	learnSvc learnUC.Service,
 	ipExtractor middleware.IPExtractor,
 	logger *slog.Logger,
 	feedServer *feed.Server,
@@ -270,6 +282,9 @@ func setupRoutes(
 	// 購読 URL は publicBaseURL(D-6)から組み立てる。
 	hsub.Register(privateMux, subSvc, publicBaseURL)
 	haccesslog.Register(privateMux, logSvc)
+	// 学習ループ管理 API(Phase 3 §8.1、C-21 フラット構成)。全ルート
+	// JWT 必須 — 理解状態は私的データ(§10)。
+	hlearning.Register(privateMux, learnSvc)
 
 	// Apply authentication middleware
 	protected := hauth.Authz(privateMux)

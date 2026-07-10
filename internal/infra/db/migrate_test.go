@@ -10,14 +10,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// §4 (+ Phase 2 §6 books) tables in dependency order — MigrateUp must
-// create exactly these.
+// §4 (+ Phase 2 §6 books + Phase 3 §4 learning) tables in dependency order
+// — MigrateUp must create exactly these.
 var wantTables = []string{
 	"sources", "articles", "summaries",
 	"episodes", "segments",
 	"subscribers", "feed_tokens", "feed_access_logs",
 	"jobs",
 	"books", "book_chunks",
+	"learning_items", "review_logs",
 }
 
 func expectFullMigration(mock sqlmock.Sqlmock) {
@@ -31,6 +32,11 @@ func expectFullMigration(mock sqlmock.Sqlmock) {
 	mock.ExpectExec("ALTER TABLE sources ADD COLUMN IF NOT EXISTS kind").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("sources_kind_check").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	// Phase 3 upgrade path: books の book_review 進捗2カラム(§7.3)。
+	mock.ExpectExec("ALTER TABLE books ADD COLUMN IF NOT EXISTS review_cursor").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("ALTER TABLE books ADD COLUMN IF NOT EXISTS review_status").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	for range createIndexStatements {
 		mock.ExpectExec("CREATE INDEX IF NOT EXISTS").
@@ -194,6 +200,14 @@ func TestSchema_MatchesDesignDoc(t *testing.T) {
 		{"book_chunks reference books with NOT NULL FK (Phase 2 §6)", "book_id   bigint NOT NULL REFERENCES books"},
 		{"book_chunks embedding is 1024-dim (D-12: bge-m3)", "embedding vector(1024)"},
 		{"book_chunks unique per (book_id, position)", "UNIQUE (book_id, position)"},
+		// Phase 3 §4 — 学習ループ。DDL は設計書の逐語一致が原則。
+		{"learning_items start at stage 0 (Phase 3 §4)", "stage        int  NOT NULL DEFAULT 0"},
+		{"learning_items.due_on is a date (JST 放送日, Phase 3 §12-10)", "due_on       date NOT NULL"},
+		{"learning_items require article_id iff kind='article'", "CHECK ((kind = 'article') = (article_id IS NOT NULL))"},
+		{"learning_items require book_id iff kind='book'", "CHECK ((kind = 'book')    = (book_id    IS NOT NULL))"},
+		{"review_logs reference items with NOT NULL FK", "item_id     bigint NOT NULL REFERENCES learning_items"},
+		{"review_logs.asked_on is a date (JST 放送日)", "asked_on    date NOT NULL"},
+		{"review_logs unique per (item_id, asked_on) — 同日 rev 冪等キー", "UNIQUE (item_id, asked_on)"},
 	}
 
 	for _, tt := range tests {
@@ -201,4 +215,20 @@ func TestSchema_MatchesDesignDoc(t *testing.T) {
 			assert.Contains(t, all, tt.want)
 		})
 	}
+}
+
+// TestSegmentsKind_NoCheckConstraint pins the Phase 3 precondition (Phase 3
+// §4 設計メモ): segments.kind is a bare text column, so 'quiz' | 'review' |
+// 'book_review' rows insert without any ALTER. If someone adds a CHECK to
+// segments later, this fails before the radio batch does. (実 DB 側の確認は
+// learning_integration_test.go が行う。)
+func TestSegmentsKind_NoCheckConstraint(t *testing.T) {
+	for _, stmt := range createTableStatements {
+		if strings.Contains(stmt, "CREATE TABLE IF NOT EXISTS segments ") {
+			assert.NotContains(t, stmt, "CHECK",
+				"segments must stay CHECK-free so Phase 3 kinds insert as-is")
+			return
+		}
+	}
+	t.Fatal("segments DDL not found in createTableStatements")
 }

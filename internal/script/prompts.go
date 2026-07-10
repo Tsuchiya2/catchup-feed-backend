@@ -43,11 +43,36 @@ type newsData struct {
 	Total     int
 }
 
-// outroData feeds prompts/outro.tmpl.
+// outroData feeds prompts/outro.tmpl. Quiz enables the Phase 3 learning
+// item section piggybacked on the outro call (D-19: 台本生成と同一 LLM
+// 呼び出しに相乗り — クオータ純増ゼロ); nil renders the outro prompt
+// byte-identically to the pre-Phase 3 template, which is what keeps the
+// public episode free of any regression (Phase 3 §12-1).
 type outroData struct {
 	ShowName string
 	Date     string
 	Titles   []string
+	Quiz     *quizPromptData
+}
+
+// quizPromptData feeds the learning-item section of outro.tmpl (Phase 3
+// §5.1). It carries public data only — numbered titles and summary bodies
+// of the day's featured articles. Learning state (stage, review history,
+// backlog counts) must never appear here (Phase 3 §10/§12-4): the struct
+// deliberately has no field that could hold it.
+type quizPromptData struct {
+	Count    int    // M — 選ばせる記事数 (D-18)
+	Marker   string // quizSectionMarker
+	Articles []quizPromptArticle
+}
+
+// quizPromptArticle is one numbered entry of the 本日の記事一覧. Number is
+// the 1-based on-air position; the parser maps it back to the article ID
+// (§5.1: article_id との対応をパースで復元).
+type quizPromptArticle struct {
+	Number  int
+	Title   string
+	Summary string
 }
 
 func renderPrompt(name string, data any) (string, error) {

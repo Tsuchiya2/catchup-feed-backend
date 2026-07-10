@@ -32,7 +32,28 @@ const (
 	// still guarantees the batch cannot wedge. Ollama-only degraded runs
 	// may legitimately need more — override with RADIO_TIMEOUT.
 	defaultRunTimeout = time.Hour
+
+	// defaultLearningURL is the dashboard grading page linked from private
+	// show notes (Phase 3 §7.5: 聴取→採点の唯一の橋).
+	defaultLearningURL = "https://pulse.catchup-feed.com/learning"
+
+	// defaultBookReviewChunks is how many book_chunks one book_review covers
+	// (§7.3: 初期値 2〜3チャンク≒紹介1トピック).
+	defaultBookReviewChunks = 3
+
+	// defaultPrivateEpisodeMaxMinutes caps the private episode length; over it
+	// the book_review is deferred to tomorrow with no cursor advance (§7.1:
+	// 18分を超える場合は book_review を翌日に回す).
+	defaultPrivateEpisodeMaxMinutes = 18
 )
+
+// bookReviewEstimate is the assumed book_review length (§7.1: 書籍≒2分) added
+// to the news+quiz duration for the §7.1 length guard. Deliberately a
+// conservative constant, not env: the guard decides BEFORE generating so no
+// Ollama/TTS work is spent on a day that is already too long, and erring
+// toward deferral is the right 縮退 direction (翌日カーソル位置から再開).
+// Revisit if BOOK_REVIEW_CHUNKS is raised well beyond the default.
+const bookReviewEstimate = 3 * time.Minute
 
 // Config holds the radio batch settings.
 type Config struct {
@@ -54,6 +75,15 @@ type Config struct {
 	RsyncPath string
 	// Timeout bounds one whole batch run (RADIO_TIMEOUT).
 	Timeout time.Duration
+	// LearningURL is the grading page linked from private show notes
+	// (RADIO_LEARNING_URL, Phase 3 §7.5).
+	LearningURL string
+	// BookReviewChunks is how many book_chunks one book_review covers
+	// (BOOK_REVIEW_CHUNKS, §7.3).
+	BookReviewChunks int
+	// PrivateEpisodeMax caps the private episode length; over it book_review
+	// is deferred (PRIVATE_EPISODE_MAX_MINUTES as minutes, §7.1).
+	PrivateEpisodeMax time.Duration
 }
 
 // LoadConfig reads the radio batch settings from environment variables:
@@ -65,17 +95,26 @@ type Config struct {
 //   - RADIO_RSYNC_DEST: rsync destination; empty = copy locally into RADIO_EPISODES_DIR
 //   - RADIO_RSYNC_PATH: rsync binary (default "rsync")
 //   - RADIO_TIMEOUT: whole-run timeout as a Go duration (default 1h)
+//   - RADIO_LEARNING_URL: dashboard grading page for private show notes
+//     (default https://pulse.catchup-feed.com/learning, Phase 3 §7.5)
+//   - BOOK_REVIEW_CHUNKS: book_chunks per book_review (default 3, §7.3)
+//   - PRIVATE_EPISODE_MAX_MINUTES: private episode length cap for the
+//     book_review guard (default 18, §7.1)
 func LoadConfig(logger *slog.Logger) (Config, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	cfg := Config{
-		ShowName:    pkgconfig.GetEnvString("RADIO_SHOW_NAME", defaultShowName),
-		MaxArticles: pkgconfig.GetEnvInt("RADIO_MAX_ARTICLES", defaultMaxArticles),
-		EpisodesDir: pkgconfig.GetEnvString("RADIO_EPISODES_DIR", defaultEpisodesDir),
-		RsyncDest:   pkgconfig.GetEnvString("RADIO_RSYNC_DEST", ""),
-		RsyncPath:   pkgconfig.GetEnvString("RADIO_RSYNC_PATH", "rsync"),
-		Timeout:     pkgconfig.GetEnvDuration("RADIO_TIMEOUT", defaultRunTimeout),
+		ShowName:         pkgconfig.GetEnvString("RADIO_SHOW_NAME", defaultShowName),
+		MaxArticles:      pkgconfig.GetEnvInt("RADIO_MAX_ARTICLES", defaultMaxArticles),
+		EpisodesDir:      pkgconfig.GetEnvString("RADIO_EPISODES_DIR", defaultEpisodesDir),
+		RsyncDest:        pkgconfig.GetEnvString("RADIO_RSYNC_DEST", ""),
+		RsyncPath:        pkgconfig.GetEnvString("RADIO_RSYNC_PATH", "rsync"),
+		Timeout:          pkgconfig.GetEnvDuration("RADIO_TIMEOUT", defaultRunTimeout),
+		LearningURL:      pkgconfig.GetEnvString("RADIO_LEARNING_URL", defaultLearningURL),
+		BookReviewChunks: pkgconfig.GetEnvInt("BOOK_REVIEW_CHUNKS", defaultBookReviewChunks),
+		PrivateEpisodeMax: time.Duration(
+			pkgconfig.GetEnvInt("PRIVATE_EPISODE_MAX_MINUTES", defaultPrivateEpisodeMaxMinutes)) * time.Minute,
 	}
 	if cfg.Timeout <= 0 {
 		logger.Warn("RADIO_TIMEOUT must be positive, using default",
@@ -86,6 +125,17 @@ func LoadConfig(logger *slog.Logger) (Config, error) {
 		logger.Warn("RADIO_MAX_ARTICLES must be positive, using default",
 			slog.Int("value", cfg.MaxArticles), slog.Int("default", defaultMaxArticles))
 		cfg.MaxArticles = defaultMaxArticles
+	}
+	if cfg.BookReviewChunks <= 0 {
+		logger.Warn("BOOK_REVIEW_CHUNKS must be positive, using default",
+			slog.Int("value", cfg.BookReviewChunks), slog.Int("default", defaultBookReviewChunks))
+		cfg.BookReviewChunks = defaultBookReviewChunks
+	}
+	if cfg.PrivateEpisodeMax <= 0 {
+		logger.Warn("PRIVATE_EPISODE_MAX_MINUTES must be positive, using default",
+			slog.Duration("value", cfg.PrivateEpisodeMax),
+			slog.Int("default_minutes", defaultPrivateEpisodeMaxMinutes))
+		cfg.PrivateEpisodeMax = defaultPrivateEpisodeMaxMinutes * time.Minute
 	}
 
 	tz := pkgconfig.GetEnvString("RADIO_TIMEZONE", defaultTimezone)
