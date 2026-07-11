@@ -85,6 +85,11 @@ services:
 
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?set CORS_ALLOWED_ORIGINS in deploy/.env}
 
+      # 認証 cookie の Domain(D-22)。pulse./radio. 間で JWT cookie を共有するため
+      # 親ドメイン(.catchup-feed.com)を設定する。空だと発行ホスト限定になり、
+      # ダッシュボード(pulse.)側の proxy.ts が cookie を読めずログインが通らない。
+      AUTH_COOKIE_DOMAIN: ${AUTH_COOKIE_DOMAIN:-}
+
       # Cloudflare Tunnel(cloudflared は同一ホストの 127.0.0.1 から接続)越しの
       # クライアント IP をレートリミッターに見せる場合のみ有効化(既定は secure mode)
       RATE_LIMIT_TRUST_PROXY: ${RATE_LIMIT_TRUST_PROXY:-}
