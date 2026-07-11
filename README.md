@@ -242,17 +242,28 @@ make swagger
 ### 認証
 
 ```bash
-# トークン取得
-curl -X POST http://localhost:8080/auth/token \
+# トークン取得(JSON body の token に加え、HttpOnly cookie も発行される: D-22)
+curl -i -X POST http://localhost:8080/auth/token \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"your-password"}'
+  -d '{"email":"admin@example.com","password":"your-password"}'
+
+# ログアウト(HttpOnly cookie を失効。冪等・認証不要)
+curl -X POST http://localhost:8080/auth/logout
 ```
+
+`/auth/token` 成功時、JWT は JSON body の `token`(dev / 非ブラウザクライアントの
+Bearer フォールバック用に維持)に加えて、`HttpOnly; Secure; SameSite=Strict` の
+cookie(`catchup_feed_auth_token`)としても発行されます(D-22: XSS によるトークン
+窃取対策)。認証ミドルウェアは **cookie を優先**し、無ければ `Authorization: Bearer`
+にフォールバックします。`HttpOnly; Secure; SameSite=Strict` は固定で、cookie の
+Domain のみ `AUTH_COOKIE_DOMAIN` で制御します(下記「任意環境変数」)。
 
 ### 主要エンドポイント
 
 | メソッド | エンドポイント | 説明 |
 |---------|---------------|------|
-| POST | `/auth/token` | 認証トークン取得 |
+| POST | `/auth/token` | 認証トークン取得(Set-Cookie: catchup_feed_auth_token も発行) |
+| POST | `/auth/logout` | 認証 cookie 失効(冪等・認証不要) |
 | GET | `/sources` | フィードソース一覧 |
 | POST | `/sources` | フィードソース登録 |
 | GET | `/articles` | 記事一覧（要約付き） |
@@ -289,6 +300,19 @@ printf '%s' 'your-password' | go run ./cmd/hash-password
 出力されたハッシュを `ADMIN_PASSWORD_HASH` に設定してください。
 docker compose が読み込む `.env` に書く場合は、ハッシュに含まれる `$` を
 `$$` にエスケープする必要があります（例: `$2a$12$...` → `$$2a$$12$$...`）。
+
+#### 認証 cookie（任意環境変数、D-22）
+
+`/auth/token` は JWT を HttpOnly cookie でも発行します。cookie の属性は以下で制御します。
+
+| 環境変数 | 説明 | デフォルト |
+|----------|------|-----------|
+| `AUTH_COOKIE_DOMAIN` | cookie の Domain 属性。空なら Domain を付けない（レスポンスホスト限定＝localhost 開発向け）。本番は共通 eTLD+1（例: `.catchup-feed.com`）を指定し、同一サイトのサブドメイン間で cookie を共有。先頭ドットは net/http が正規化して除去（RFC 6265、`catchup-feed.com` と等価） | 空 |
+
+`HttpOnly` / `Secure` / `SameSite=Strict` は固定（env 化しない）。`Secure` は常時付与
+——modern ブラウザは `http://localhost` を secure context として扱うため localhost
+開発でも cookie は送られます。ログアウトは `POST /auth/logout`（cookie を
+`Max-Age=0` で失効。冪等・認証不要）。
 
 ### 要約エンジン（フォールバック連鎖: Gemini → Groq → Ollama）
 

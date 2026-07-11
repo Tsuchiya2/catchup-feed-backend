@@ -218,6 +218,7 @@ func TestPublicEndpointsList(t *testing.T) {
 		"/live",
 		"/swagger/",
 		"/auth/token",
+		"/auth/logout",
 	}
 
 	if len(PublicEndpoints) != len(expectedEndpoints) {

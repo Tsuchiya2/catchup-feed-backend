@@ -6,15 +6,18 @@ import "strings"
 // These endpoints are accessible without a valid JWT token.
 //
 // Justification for each public endpoint:
-// - /health, /ready, /live: Required for orchestration health checks (Kubernetes, Docker, monitoring)
-// - /swagger/: API documentation for developers
-// - /auth/token: Token generation endpoint (can't require token to get token)
+//   - /health, /ready, /live: Required for orchestration health checks (Kubernetes, Docker, monitoring)
+//   - /swagger/: API documentation for developers
+//   - /auth/token: Token generation endpoint (can't require token to get token)
+//   - /auth/logout: Cookie invalidation (idempotent; must work even with an
+//     already-expired token, so it stays unauthenticated — D-22)
 var PublicEndpoints = []string{
 	"/health",
 	"/ready",
 	"/live",
 	"/swagger/",
 	"/auth/token",
+	"/auth/logout",
 }
 
 // IsPublicEndpoint checks if a given path is a public endpoint.

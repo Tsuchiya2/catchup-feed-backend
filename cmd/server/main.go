@@ -262,6 +262,11 @@ func setupRoutes(
 
 	publicMux := http.NewServeMux()
 	publicMux.Handle("/auth/token", authRateLimiter.Middleware(hauth.TokenHandler(authService)))
+	// ログアウト: HttpOnly cookie を backend で失効させる(D-22)。冪等・
+	// 認証不要(期限切れトークンでも cookie を消せること)。POST 限定 —
+	// メソッド未制限だと <img src=".../auth/logout"> の反射 GET で被害者を
+	// 強制ログアウトできる(GET CSRF)。他メソッドは ServeMux が 405 を返す。
+	publicMux.Handle("POST /auth/logout", hauth.LogoutHandler())
 
 	// ヘルスチェックエンドポイント（認証不要）
 	publicMux.Handle("/health", &hhttp.HealthHandler{DB: database, Version: version})
@@ -291,6 +296,7 @@ func setupRoutes(
 
 	rootMux := http.NewServeMux()
 	rootMux.Handle("/auth/token", publicMux)
+	rootMux.Handle("/auth/logout", publicMux)
 	rootMux.Handle("/health", publicMux)
 	rootMux.Handle("/ready", publicMux)
 	rootMux.Handle("/live", publicMux)

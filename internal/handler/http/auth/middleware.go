@@ -74,7 +74,15 @@ func Authz(next http.Handler) http.Handler {
 		}
 
 		// Step 2: Protected endpoint - require a valid JWT for ALL methods.
-		sub, err := validateJWT(r.Header.Get("Authorization"), secret)
+		// The token is read from the HttpOnly cookie first (D-22) and falls
+		// back to the Authorization: Bearer header (dev / API clients). Both
+		// paths feed the identical HS256/exp/sub verification below.
+		tokenString, err := extractToken(r)
+		if err != nil {
+			respond.SafeError(w, http.StatusUnauthorized, fmt.Errorf("unauthorized: %w", err))
+			return
+		}
+		sub, err := validateJWT(tokenString, secret)
 		if err != nil {
 			respond.SafeError(w, http.StatusUnauthorized, fmt.Errorf("unauthorized: %w", err))
 			return
@@ -97,15 +105,30 @@ func Authz(next http.Handler) http.Handler {
 	})
 }
 
-// validateJWT parses and validates a Bearer token and returns its subject.
-// It enforces HS256, a valid signature, the presence of exp (not yet
-// expired) and a non-empty sub claim.
-func validateJWT(authz string, secret []byte) (string, error) {
+// extractToken pulls the raw JWT string from the request. Precedence (D-22):
+//  1. The HttpOnly cookie catchup_feed_auth_token (browser dashboard).
+//  2. The Authorization: Bearer header (dev / non-browser API clients).
+//
+// The cookie is only used when present and non-empty; otherwise the Bearer
+// header is used as a complete fallback, so the pre-existing Bearer behaviour
+// is preserved unchanged.
+func extractToken(r *http.Request) (string, error) {
+	if c, err := r.Cookie(authCookieName); err == nil && c.Value != "" {
+		return c.Value, nil
+	}
+
 	const prefix = "Bearer "
+	authz := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authz, prefix) {
 		return "", errors.New("missing bearer token")
 	}
-	tokenString := strings.TrimPrefix(authz, prefix)
+	return strings.TrimPrefix(authz, prefix), nil
+}
+
+// validateJWT parses and validates a raw JWT string and returns its subject.
+// It enforces HS256, a valid signature, the presence of exp (not yet
+// expired) and a non-empty sub claim.
+func validateJWT(tokenString string, secret []byte) (string, error) {
 	tok, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 		if t.Method.Alg() != jwt.SigningMethodHS256.Alg() {
 			return nil, errors.New("unexpected signing method")
