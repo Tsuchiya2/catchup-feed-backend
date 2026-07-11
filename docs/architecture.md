@@ -40,7 +40,7 @@ catchup-feed is a RSS/Atom feed aggregator with AI-powered summarization capabil
 
 ### System Characteristics
 
-- **Language**: Go 1.25.4
+- **Language**: Go 1.26.5
 - **Architecture**: Clean Architecture (Hexagonal/Ports & Adapters)
 - **Deployment**: Docker containers with docker-compose
 - **Database**: PostgreSQL 18 (production), SQLite (testing)
@@ -206,7 +206,7 @@ Dependency Direction: Presentation → UseCase → Domain ← Infrastructure
 
 | Category | Technology | Version | Purpose |
 |----------|-----------|---------|---------|
-| **Language** | Go | 1.25.4 | Primary programming language |
+| **Language** | Go | 1.26.5 | Primary programming language |
 | **Database** | PostgreSQL | 18 | Primary data store |
 | **Database (Test)** | SQLite | 3.x | In-memory testing |
 | **HTTP Framework** | net/http | stdlib | HTTP server (no framework) |
@@ -1374,7 +1374,7 @@ Worker (Port 9091):
 
 ```dockerfile
 # Stage 1: Dependencies
-FROM golang:1.25.5-alpine AS deps
+FROM golang:1.26.5-alpine AS deps
 - Install build tools (gcc, musl-dev)
 - Download Go modules (cached layer)
 - Verify module checksums
@@ -1554,9 +1554,9 @@ CRAWL_TIMEOUT=30m
 - Lost on restart (acceptable, 429s are temporary)
 - Future: Consider Redis for multi-instance deployment
 
-### 8. Why Go 1.25.4?
+### 8. Why Go 1.26.5?
 
-**Decision**: Use Go 1.25.4 (latest stable)
+**Decision**: Use Go 1.26.5 (latest stable)
 
 **Rationale**:
 - **log/slog**: Built-in structured logging (Go 1.21+)
