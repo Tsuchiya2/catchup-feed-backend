@@ -28,15 +28,15 @@ func BuildWeeklyReview(m learning.WeeklyReview) (string, bool) {
 	sb.WriteString("さて、ここで今週の学びを振り返ってみましょう。")
 
 	if n := len(m.Concepts); n > 0 {
-		sb.WriteString(fmt.Sprintf("今週は全部で%d個の項目を学びました。", n))
+		fmt.Fprintf(&sb, "今週は全部で%d個の項目を学びました。", n)
 		sb.WriteString(strings.Join(m.Concepts, "、"))
 		sb.WriteString("、の回でしたね。")
 	}
 	if m.GraduatedCount > 0 {
-		sb.WriteString(fmt.Sprintf("そして今週は、%d個の項目が繰り返しの復習を経てしっかり定着し、めでたく卒業となりました。", m.GraduatedCount))
+		fmt.Fprintf(&sb, "そして今週は、%d個の項目が繰り返しの復習を経てしっかり定着し、めでたく卒業となりました。", m.GraduatedCount)
 	}
 	if m.Reintroduced != "" {
-		sb.WriteString(fmt.Sprintf("いっぽうで、「%s」は一度忘れてしまったので、もう一度おさらいのリストに戻しています。", m.Reintroduced))
+		fmt.Fprintf(&sb, "いっぽうで、「%s」は一度忘れてしまったので、もう一度おさらいのリストに戻しています。", m.Reintroduced)
 	}
 
 	sb.WriteString("来週も、少しずつ続けていきましょう。")
@@ -59,7 +59,7 @@ func AppendWeeklyReviewShowNotes(notes string, m learning.WeeklyReview) string {
 		sb.WriteString(concept)
 		sb.WriteString("\n")
 	}
-	sb.WriteString(fmt.Sprintf("卒業した項目: %d件", m.GraduatedCount))
+	fmt.Fprintf(&sb, "卒業した項目: %d件", m.GraduatedCount)
 	if m.Reintroduced != "" {
 		sb.WriteString("\nもう一度おさらい: ")
 		sb.WriteString(m.Reintroduced)

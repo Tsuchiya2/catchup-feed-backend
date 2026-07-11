@@ -7,7 +7,7 @@ on:
     branches: [ main, develop ]
 
 env:
-  GO_VERSION: '1.25.4'
+  GO_VERSION: '1.26.5'
 
 jobs:
   # ──────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.6.1
+          version: v2.12.2
           args: --timeout=5m
 
   # ──────────────────────────────────────────────────────────

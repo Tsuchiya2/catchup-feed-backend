@@ -58,7 +58,11 @@ services:
   # PostgreSQL データベース (pgvector対応)
   # ──────────────────────────────────────────────────────────
   postgres:
-    image: pgvector/pgvector:pg18
+    # pgvector 0.8.5 on PostgreSQL 18 (latest major). PG major stays at 18 so
+    # the existing db-data volume (mounted at /var/lib/postgresql) needs no
+    # migration. Bump the PG major here only alongside a documented volume
+    # migration step.
+    image: pgvector/pgvector:0.8.5-pg18
     container_name: catchup-postgres
     restart: unless-stopped
 
