@@ -1706,7 +1706,7 @@ Acceptance Criteria:
 
 ### 6.1 Technology Stack
 
-- **Language**: Go 1.25.4
+- **Language**: Go 1.26.5
 - **Database**: PostgreSQL 18+ (primary), SQLite (testing)
 - **HTTP Router**: Standard `net/http`
 - **Authentication**: JWT (golang-jwt/jwt/v5)

@@ -43,7 +43,7 @@ catchup-feed is a Go-based RSS/Atom feed aggregation system with AI-powered summ
 ## Technology Stack
 
 ### Core
-- **Language**: Go 1.25.4+
+- **Language**: Go 1.26.5+
 - **Database**: PostgreSQL 18+ (production), SQLite (testing)
 - **HTTP Router**: Standard `net/http` package
 - **Authentication**: JWT (golang-jwt/jwt/v5)
@@ -1084,7 +1084,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.25.4'
+          go-version: '1.26.5'
       - run: go test -v -race -coverprofile=coverage.out ./...
       - uses: codecov/codecov-action@v5
 
@@ -1161,7 +1161,7 @@ golangci-lint run
 ### Docker Compose Services
 
 - `postgres` - Database (PostgreSQL 18)
-- `dev` - Development container (Go 1.25.4 + tools)
+- `dev` - Development container (Go 1.26.5 + tools)
 - `app` - API server (port 8080)
 - `worker` - Background worker
 - `prometheus` - Metrics (port 9090)
@@ -1173,7 +1173,7 @@ Optimized for security and size:
 
 ```dockerfile
 # Stage 1: Dependencies
-FROM golang:1.25.5-alpine AS deps
+FROM golang:1.26.5-alpine AS deps
 RUN apk add --no-cache build-base ca-certificates
 COPY go.mod go.sum ./
 RUN go mod download

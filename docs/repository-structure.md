@@ -4,7 +4,7 @@ This document provides a comprehensive overview of the catchup-feed-backend repo
 
 **Last Updated:** 2026-01-23
 **Project:** catchup-feed-backend
-**Language:** Go 1.25.4
+**Language:** Go 1.26.5
 **Architecture Pattern:** Clean Architecture with Domain-Driven Design
 
 ---

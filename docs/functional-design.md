@@ -2,7 +2,7 @@
 
 > **Project**: catchup-feed-backend
 > **Architecture**: Clean Architecture
-> **Language**: Go 1.25.4
+> **Language**: Go 1.26.5
 > **Database**: PostgreSQL 18
 > **Last Updated**: 2026-01-24
 

@@ -1,6 +1,6 @@
 # catchup-feed-backend(pulse バックエンド)
 
-Go 1.25 単一モジュール。pulse Phase 1 の中核。全体像と規約は親ディレクトリの `CLAUDE.md` と `docs/pulse-phase1-design.md` が正。ここにはリポジトリ固有の事項のみ書く。
+Go 1.26.5 単一モジュール。pulse Phase 1 の中核。全体像と規約は親ディレクトリの `CLAUDE.md` と `docs/pulse-phase1-design.md` が正。ここにはリポジトリ固有の事項のみ書く。
 
 ## バイナリ構成(目標)
 - `cmd/server` — Pi 常駐。公開: フィード配信(/feeds/{token}/*)+管理 API(JWT)。tailnet: 私的フィード(/private/*)
