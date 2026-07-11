@@ -18,6 +18,11 @@ mkdir -p ~/catchup-feed/episodes
 #   - setgid(2xxx)により Mac からの rsync で置かれるファイルも gid 10001 を継承する
 sudo chgrp 10001 ~/catchup-feed/episodes
 sudo chmod 2775 ~/catchup-feed/episodes
+
+# 書籍 PDF の置き場(D-25)。server がアップロード保存・削除で読み書きする
+mkdir -p ~/catchup-feed/books
+sudo chgrp 10001 ~/catchup-feed/books
+sudo chmod 2775 ~/catchup-feed/books
 ```
 
 ## 2. リポジトリ配置と .env 作成
@@ -36,6 +41,7 @@ chmod 600 deploy/.env
 |---|---|
 | `TAILNET_IP` | `tailscale ip -4` の出力 |
 | `EPISODES_DIR` | `/home/<pi-user>/catchup-feed/episodes`(1章で作った絶対パス) |
+| `BOOKS_DIR` | `/home/<pi-user>/catchup-feed/books`(1章で作った絶対パス、D-25) |
 | `POSTGRES_PASSWORD` | `openssl rand -base64 24` |
 | `JWT_SECRET` | `openssl rand -base64 48`(U-3) |
 | `ADMIN_PASSWORD_HASH` | `make admin-hash` の出力。**`$` は `$$` にエスケープ**(U-3) |

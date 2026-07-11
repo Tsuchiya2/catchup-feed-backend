@@ -199,3 +199,64 @@ func TestLimitRequestBody(t *testing.T) {
 		})
 	}
 }
+
+func TestLimitRequestBodyPerRoute(t *testing.T) {
+	tests := []struct {
+		name           string
+		method         string
+		path           string
+		bodySize       int
+		expectedStatus int
+	}{
+		{
+			name:           "override route accepts a body over the default",
+			method:         http.MethodPost,
+			path:           "/books",
+			bodySize:       200,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "override route still bounded by its own limit",
+			method:         http.MethodPost,
+			path:           "/books",
+			bodySize:       2000,
+			expectedStatus: http.StatusRequestEntityTooLarge,
+		},
+		{
+			name:           "other routes keep the default limit",
+			method:         http.MethodPost,
+			path:           "/sources",
+			bodySize:       200,
+			expectedStatus: http.StatusRequestEntityTooLarge,
+		},
+		{
+			name:           "same path with another method keeps the default",
+			method:         http.MethodPut,
+			path:           "/books",
+			bodySize:       200,
+			expectedStatus: http.StatusRequestEntityTooLarge,
+		},
+	}
+
+	overrides := map[string]int64{"POST /books": 1024}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := LimitRequestBodyPerRoute(100, overrides)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if _, err := io.ReadAll(r.Body); err != nil {
+					w.WriteHeader(http.StatusRequestEntityTooLarge)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			body := strings.Repeat("a", tt.bodySize)
+			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(body))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != tt.expectedStatus {
+				t.Errorf("got status %d, want %d", rr.Code, tt.expectedStatus)
+			}
+		})
+	}
+}

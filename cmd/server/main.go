@@ -25,6 +25,7 @@ import (
 
 	alUC "catchup-feed/internal/usecase/accesslog"
 	artUC "catchup-feed/internal/usecase/article"
+	bookUC "catchup-feed/internal/usecase/book"
 	learnUC "catchup-feed/internal/usecase/learning"
 	srcUC "catchup-feed/internal/usecase/source"
 	subUC "catchup-feed/internal/usecase/subscriber"
@@ -33,6 +34,7 @@ import (
 	haccesslog "catchup-feed/internal/handler/http/accesslog"
 	harticle "catchup-feed/internal/handler/http/article"
 	hauth "catchup-feed/internal/handler/http/auth"
+	hbook "catchup-feed/internal/handler/http/book"
 	hlearning "catchup-feed/internal/handler/http/learning"
 	"catchup-feed/internal/handler/http/middleware"
 	"catchup-feed/internal/handler/http/requestid"
@@ -175,6 +177,25 @@ func setupServer(logger *slog.Logger, database *sql.DB, version string) *ServerC
 		Ladder: learncore.LoadConfig(logger).Ladder,
 	}
 
+	// 書籍 PDF 管理(D-25): PDF は BOOKS_DIR にファイルシステム保存、DB は
+	// パスのみ(C-10 と同型)。取り込みは jobs(kind='book_ingest')経由で
+	// Mac の worker が実行する(C-4)。
+	bookCfg, err := bookUC.LoadConfig()
+	if err != nil {
+		logger.Error("failed to load books configuration", slog.Any("error", err))
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(bookCfg.Dir, 0o750); err != nil {
+		// 縮退: アップロードは失敗するが、server 自体は起動を続ける。
+		logger.Warn("books dir unavailable; book uploads will fail",
+			slog.String("dir", bookCfg.Dir), slog.Any("error", err))
+	}
+	bookSvc := &bookUC.Service{
+		Repo: pgRepo.NewBookAdminRepo(database),
+		Jobs: pgRepo.NewJobRepo(database),
+		Dir:  bookCfg.Dir,
+	}
+
 	// Load trusted proxy configuration for IP extraction
 	proxyConfig, err := middleware.LoadTrustedProxyConfig()
 	if err != nil {
@@ -215,14 +236,23 @@ func setupServer(logger *slog.Logger, database *sql.DB, version string) *ServerC
 	)
 
 	// Setup routes with per-endpoint rate limiting
-	rootMux, rateLimiters := setupRoutes(database, version, srcSvc, artSvc, subSvc, logSvc, learnSvc, ipExtractor, logger, feedServer, feedCfg.PublicBaseURL)
-	handler := applyMiddleware(logger, rootMux)
+	rootMux, rateLimiters := setupRoutes(database, version, srcSvc, artSvc, subSvc, logSvc, learnSvc, bookSvc, ipExtractor, logger, feedServer, feedCfg.PublicBaseURL)
+	// The PDF upload route needs a bigger request ceiling than the 1MB
+	// default (D-25: 100MB/冊; +1MB は multipart 境界と title の余裕分)。
+	bodyLimitOverrides := map[string]int64{
+		"POST /books": bookUC.DefaultMaxUploadBytes + 1<<20,
+	}
+	handler := applyMiddleware(logger, rootMux, bodyLimitOverrides)
 
-	// The private feed handler skips CORS/CSP/auth entirely: physical
-	// boundary (tailnet bind) is the authentication (C-5). Recovery and
-	// logging still apply.
+	// The private listener skips CORS/CSP/auth entirely: physical boundary
+	// (tailnet bind) is the authentication (C-5). Recovery and logging
+	// still apply. It carries the private feed plus the book PDF download
+	// the Mac ingest worker fetches from (D-25 (3)).
+	privateMux := http.NewServeMux()
+	privateMux.Handle("/", feedServer.PrivateHandler())
+	privateMux.Handle("GET /private/books/{file}", hbook.PrivateFileHandler{Dir: bookCfg.Dir, Logger: logger})
 	privateHandler := requestid.Middleware(
-		hhttp.Recover(logger)(hhttp.Logging(logger)(feedServer.PrivateHandler())))
+		hhttp.Recover(logger)(hhttp.Logging(logger)(privateMux)))
 
 	return &ServerComponents{
 		Handler:            handler,
@@ -241,6 +271,7 @@ func setupRoutes(
 	subSvc subUC.Service,
 	logSvc alUC.Service,
 	learnSvc learnUC.Service,
+	bookSvc *bookUC.Service,
 	ipExtractor middleware.IPExtractor,
 	logger *slog.Logger,
 	feedServer *feed.Server,
@@ -290,6 +321,8 @@ func setupRoutes(
 	// 学習ループ管理 API(Phase 3 §8.1、C-21 フラット構成)。全ルート
 	// JWT 必須 — 理解状態は私的データ(§10)。
 	hlearning.Register(privateMux, learnSvc)
+	// 書籍 PDF 管理(D-25、C-21 フラット構成)。全ルート JWT 必須。
+	hbook.Register(privateMux, bookSvc)
 
 	// Apply authentication middleware
 	protected := hauth.Authz(privateMux)
@@ -313,7 +346,9 @@ func setupRoutes(
 
 // applyMiddleware wraps the handler with middleware chain.
 // Middleware order: CORS → Request ID → Recovery → Logging → Body Limit → CSP
-func applyMiddleware(logger *slog.Logger, handler http.Handler) http.Handler {
+// bodyLimitOverrides loosens the 1MB body-limit default per route
+// ("METHOD /path"), used by the book PDF upload (D-25).
+func applyMiddleware(logger *slog.Logger, handler http.Handler, bodyLimitOverrides map[string]int64) http.Handler {
 	// Load CORS configuration from environment variables
 	corsConfig, err := middleware.LoadCORSConfig()
 	if err != nil {
@@ -365,7 +400,7 @@ func applyMiddleware(logger *slog.Logger, handler http.Handler) http.Handler {
 	middlewareChain := handler
 
 	middlewareChain = cspMiddleware(middlewareChain)
-	middlewareChain = hhttp.LimitRequestBody(1 << 20)(middlewareChain) // 1MB limit
+	middlewareChain = hhttp.LimitRequestBodyPerRoute(1<<20, bodyLimitOverrides)(middlewareChain) // 1MB limit (overrides: PDF upload)
 	middlewareChain = hhttp.Logging(logger)(middlewareChain)
 	middlewareChain = hhttp.Recover(logger)(middlewareChain)
 	middlewareChain = requestid.Middleware(middlewareChain)
