@@ -29,8 +29,20 @@ func newIntegrationServer(t *testing.T) http.Handler {
 		_, _ = w.Write([]byte("protected"))
 	})
 
+	// Mirror cmd/server's two-level routing: a public mux owns /auth/*, and
+	// the root mux delegates those exact paths to it while sending everything
+	// else to the Authz-protected mux. This structure matters for method
+	// matching — the POST-only logout route must 405 other methods instead of
+	// falling through to the catch-all.
+	publicMux := http.NewServeMux()
+	publicMux.Handle("/auth/token", TokenHandler(authservice.NewAuthService(NewAdminAuthProvider())))
+	// logout is POST-only so a reflected GET (<img src=".../auth/logout">)
+	// cannot force-logout a victim.
+	publicMux.Handle("POST /auth/logout", LogoutHandler())
+
 	mux := http.NewServeMux()
-	mux.Handle("/auth/token", TokenHandler(authservice.NewAuthService(NewAdminAuthProvider())))
+	mux.Handle("/auth/token", publicMux)
+	mux.Handle("/auth/logout", publicMux)
 	mux.Handle("/", Authz(protected))
 	return mux
 }
@@ -127,4 +139,50 @@ func TestIntegration_ProtectedWithoutToken(t *testing.T) {
 	server.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// TestIntegration_LogoutMethodRestriction verifies /auth/logout is POST-only,
+// wired the same way cmd/server registers it. A reflected GET
+// (<img src=".../auth/logout">) must be rejected with 405 and must NOT expire
+// the auth cookie, closing the GET-CSRF force-logout vector. POST still
+// clears the cookie with 204.
+func TestIntegration_LogoutMethodRestriction(t *testing.T) {
+	server := newIntegrationServer(t)
+
+	tests := []struct {
+		name          string
+		method        string
+		wantCode      int
+		wantSetCookie bool
+	}{
+		{name: "GET is rejected without clearing cookie", method: http.MethodGet, wantCode: http.StatusMethodNotAllowed, wantSetCookie: false},
+		{name: "HEAD is rejected", method: http.MethodHead, wantCode: http.StatusMethodNotAllowed, wantSetCookie: false},
+		{name: "POST clears the cookie", method: http.MethodPost, wantCode: http.StatusNoContent, wantSetCookie: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, "/auth/logout", nil)
+			rec := httptest.NewRecorder()
+			server.ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.wantCode, rec.Code)
+
+			c := findAuthCookie(t, rec)
+			if tt.wantSetCookie {
+				require.NotNil(t, c, "POST logout must emit an expiring Set-Cookie")
+				assert.Empty(t, c.Value)
+				assert.True(t, c.MaxAge < 0, "logout cookie must delete (Max-Age<=0)")
+			} else {
+				assert.Nil(t, c, "rejected method must not emit a Set-Cookie (no forced logout)")
+			}
+
+			// stdlib ServeMux advertises the allowed methods on 405 for the
+			// reflected-GET vector (the CSRF path). HEAD is handled specially
+			// by ServeMux and may omit Allow, so only assert it for GET.
+			if tt.method == http.MethodGet {
+				assert.Contains(t, rec.Header().Get("Allow"), http.MethodPost)
+			}
+		})
+	}
 }
