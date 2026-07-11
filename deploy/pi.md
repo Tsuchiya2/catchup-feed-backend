@@ -44,7 +44,7 @@ chmod 600 deploy/.env
 | `DISCORD_WEBHOOK_URL` / `SLACK_WEBHOOK_URL` | U-7 で取得した値(使う側の `*_ENABLED=true` も) |
 | `SMTP_*` | U-8 で取得した値(友人メール通知を使う段階で) |
 
-旧 catchup-feed の DB とは **PostgreSQL サーバーごと分離**する(catchup-feed は専用の `pulse-postgres` コンテナ、database 名 `catchup-feed`、ホスト側ポート 5433)。旧 DB からデータは移行しない — sources 定義は `internal/infra/db/seeds/sources.sql` が server 起動時に自動投入される(冪等、`ON CONFLICT DO NOTHING`)。
+旧 catchup-feed の DB とは **PostgreSQL サーバーごと分離**する(このスタックは専用の `catchup-feed-postgres` コンテナ、database 名 `catchup-feed`、ホスト側ポート 5433)。**旧システムの `catchup-postgres`(ハイフンの後が違うだけの別コンテナ)と取り違えない**。旧 DB からデータは移行しない — sources 定義は `internal/infra/db/seeds/sources.sql` が server 起動時に自動投入される(冪等、`ON CONFLICT DO NOTHING`)。
 
 ## 3. ビルドと起動
 
@@ -56,6 +56,61 @@ docker compose -f deploy/compose.pi.yml ps        # 3コンテナとも healthy 
 ```
 
 マイグレーション(§4 スキーマ)と sources シードは `server` の起動時に自動適用される。専用コマンドは無い。
+
+## 3.5. compose プロジェクト名リネーム(`pulse` → `catchup-feed`)の移行手順
+
+過去に compose プロジェクト名 `pulse`(コンテナ `pulse-*`、ボリューム `pulse_db-data`)で稼働していた
+Pi を、現行の `name: catchup-feed`(コンテナ `catchup-feed-*`、ボリューム `catchup-feed_db-data`)へ
+移行する場合の手順。**データ喪失を許容する前提**(新プロジェクトは空ボリュームで起動し、sources は
+seeds が冪等投入する)。まだ稼働していない新規 Pi ならこの節は不要で、3章のまま `up -d --build`。
+
+### precondition(必ず `up` 前に確認)
+
+新プロジェクト名 `catchup-feed` が、**旧 catchup-feed compose プロジェクト**(名前が衝突しうる)と
+ぶつからないことを確認する。旧システム(§9)のプロジェクト・ボリュームが残っていると、同名衝突や
+意図しないボリューム再利用が起きうる。
+
+```bash
+docker compose ls                       # catchup-feed という名の別プロジェクトが無いこと
+docker volume ls | grep catchup-feed    # 旧由来の catchup-feed_* ボリューム/ネットワークが無いこと
+```
+
+衝突しうるものが残っている場合は、先に legacy-shutdown.md(§9 / U-15)の停止・撤去を済ませる。
+
+### 手順
+
+1. **旧プロジェクトを明示的に落とす**。compose ファイルを編集した後は、`docker compose -f ...` は
+   新プロジェクト名 `catchup-feed` で動くため、`-p pulse` を付けないと旧 `pulse-*` コンテナ・
+   `pulse_db-data` ボリュームを掴めない。
+
+   ```bash
+   # データを引き継ぎたい場合は、落とす前にここで退避(任意)
+   docker exec pulse-postgres pg_dump -U catchup-feed -Fc catchup-feed > /tmp/pre-rename.dump
+
+   docker compose -p pulse -f deploy/compose.pi.yml down
+   ```
+
+2. **新プロジェクトで起動**。新ボリューム `catchup-feed_db-data`(空)が作られ、**DB は初期状態**に
+   なる。sources は server 起動時に seeds が冪等投入する。
+
+   ```bash
+   docker compose -f deploy/compose.pi.yml up -d --build   # プロジェクト名は name: catchup-feed
+   docker compose -f deploy/compose.pi.yml ps              # catchup-feed-* が healthy に
+   ```
+
+3. **データを引き継ぐ場合(任意)**。1 で取った dump を新スタックへ流し込む。
+
+   ```bash
+   docker exec -i catchup-feed-postgres pg_restore -U catchup-feed -d catchup-feed \
+     --clean --if-exists < /tmp/pre-rename.dump
+   ```
+
+旧 `pulse_db-data` ボリュームは 2 の起動後も残る(自動削除されない)。引き継ぎ確認が済んだら
+`docker volume rm pulse_db-data` で回収してよい。
+
+> 注: systemd unit 名は `pulse.service` のまま(改名しない)。unit は `docker compose -f
+> compose.pi.yml up -d` を呼ぶだけで、compose プロジェクト名とは独立。旧システムの
+> `catchup-feed.service` と衝突させないため、あえて据え置いている(4章の注意も参照)。
 
 ## 4. systemd による常時稼働化
 
@@ -123,7 +178,7 @@ curl -s http://127.0.0.1:8090/health
 curl -s -X POST http://127.0.0.1:8090/auth/token -d '{"email":"<ADMIN_USER の値>","password":"<平文パスワード>"}'
 
 # worker がクロールしているか
-docker logs pulse-worker --since 10m
+docker logs catchup-feed-worker --since 10m
 
 # 公開フィード(トークン発行後、tailnet 外 = スマホのモバイル回線から)
 #   https://radio.catchup-feed.com/feeds/<token>/feed.xml → 200
@@ -148,7 +203,7 @@ curl -s http://<pi の MagicDNS 名>:8081/private/feed.xml
 scp ~/pulse/backups/db/pulse-<日時>.dump <pi-user>@<pi の MagicDNS 名>:/tmp/
 
 # Pi 側で(試験時は catchup-feed_restore_test など別 DB 名にすること)
-docker exec -i pulse-postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' < /tmp/pulse-<日時>.dump
+docker exec -i catchup-feed-postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' < /tmp/pulse-<日時>.dump
 rm /tmp/pulse-<日時>.dump
 ```
 
@@ -156,6 +211,6 @@ mp3 は Mac 側ミラー(`~/pulse/backups/episodes/`)から `EPISODES_DIR` へ r
 
 ## トラブル時の見方(監視スタックは無い。これで足りる)
 
-- コンテナ状態: `docker compose -f deploy/compose.pi.yml ps` / `docker logs pulse-server|pulse-worker`
-- 要約フォールバックの発生: `summaries.provider` を見る(`docker exec -it pulse-postgres psql -U catchup-feed -c "select provider, count(*) from summaries group by 1"`)
+- コンテナ状態: `docker compose -f deploy/compose.pi.yml ps` / `docker logs catchup-feed-server|catchup-feed-worker`
+- 要約フォールバックの発生: `summaries.provider` を見る(`docker exec -it catchup-feed-postgres psql -U catchup-feed -c "select provider, count(*) from summaries group by 1"`)
 - 朝エピソードが無い日: 正常系の欠番(Mac 不在)か、radio の失敗通知(Discord/Slack の notify_error)かをまず確認

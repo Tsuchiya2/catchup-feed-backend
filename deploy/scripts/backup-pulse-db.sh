@@ -7,7 +7,7 @@
 # 方が確実(launchd 05:15 = radio の後。deploy/launchd/com.pulse.backup.plist)。
 #
 # やること:
-#   1. ssh 経由で pulse-postgres コンテナ内の pg_dump(カスタム形式)を取得
+#   1. ssh 経由で catchup-feed-postgres コンテナ内の pg_dump(カスタム形式)を取得
 #   2. PULSE_BACKUP_RETENTION_DAYS(既定 30 日)より古い dump を削除
 #   3. Pi の episodes/ を rsync でミラー(--delete なし = Mac 側は蓄積)
 #      ※ radio はテンポラリディレクトリで生成して転送後に消すため、
@@ -52,11 +52,11 @@ tmp_file="$dump_file.tmp"
 
 log "dumping pulse database from $PULSE_PI_SSH"
 if ssh "${SSH_OPTS[@]}" "$PULSE_PI_SSH" \
-    'docker exec pulse-postgres sh -c '\''pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"'\''' \
+    'docker exec catchup-feed-postgres sh -c '\''pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB"'\''' \
     >"$tmp_file"; then
     if [ ! -s "$tmp_file" ]; then
         rm -f "$tmp_file"
-        log "ERROR: dump が空。Pi 側の pulse-postgres を確認する"
+        log "ERROR: dump が空。Pi 側の catchup-feed-postgres を確認する"
         exit 1
     fi
     mv "$tmp_file" "$dump_file"
