@@ -1,16 +1,16 @@
-# pulse — backend
+# catchup-feed — backend
 
 > 毎朝10〜15分の音声ラジオ番組をポッドキャストアプリに配信し、「理解の定着」を最適化する個人向け学習システムのバックエンド。
 
-`pulse` は旧 catchup-feed(RSS を要約して REST API / Discord に流す news aggregator)の後継です。旧システムは「配信された記事数」を最適化していましたが、Discord に流れる要約は読まれませんでした。pulse が最適化するのは **理解の定着** です。可処分時間が細切れで手も目も塞がっている時間帯(移動中・家事中)に消化できるよう、応答形態を **音声** に変えました。RSS を要約し、毎朝ラジオ番組(mp3)を生成し、ポッドキャストアプリ経由で本人と友人に届け、フィードバックを得ます。
+現行の `catchup-feed` は、RSS を要約して REST API / Discord に流す news aggregator だった**初代 catchup-feed** を作り直した後継です。初代は「配信された記事数」を最適化していましたが、Discord に流れる要約は読まれませんでした。本システムが最適化するのは **理解の定着** です。可処分時間が細切れで手も目も塞がっている時間帯(移動中・家事中)に消化できるよう、応答形態を **音声** に変えました。RSS を要約し、毎朝ラジオ番組(mp3)を生成し、ポッドキャストアプリ経由で本人と友人に届け、フィードバックを得ます。
 
-このリポジトリは pulse の Go バックエンドです。フロントエンド(ダッシュボード)は [catchup-feed-frontend](https://github.com/Tsuchiya2/catchup-feed-frontend)、文字起こし・書籍 RAG は [catchup-feed-ai](https://github.com/Tsuchiya2/catchup-feed-ai) にあります。
+このリポジトリは catchup-feed の Go バックエンドです。フロントエンド(ダッシュボード)は [catchup-feed-frontend](https://github.com/Tsuchiya2/catchup-feed-frontend)、文字起こし・書籍 RAG は [catchup-feed-ai](https://github.com/Tsuchiya2/catchup-feed-ai) にあります。
 
 ---
 
 ## 設計原則
 
-pulse は**単一ユーザー**が**ゼロ円**で運用する自宅ホスティングを前提に「右サイズ」で作られています。旧 catchup-feed が抱えていた gRPC・サーキットブレーカー・Prometheus・Grafana・OpenTelemetry・マイクロサービス分割・OpenAI/Claude 依存はすべて**削除済み**です。
+catchup-feed は**単一ユーザー**が**ゼロ円**で運用する自宅ホスティングを前提に「右サイズ」で作られています。初代 catchup-feed が抱えていた gRPC・サーキットブレーカー・Prometheus・Grafana・OpenTelemetry・マイクロサービス分割・OpenAI/Claude 依存はすべて**削除済み**です。
 
 - **単一ユーザー右サイズ** — 冗長化・可観測性基盤・内部 RPC を持たない。プロセス間連携は PostgreSQL のジョブテーブルのみ。
 - **ゼロ円運用** — 要約は無料枠 API → ローカル LLM のフォールバック連鎖。有料 API・有料 SaaS を使わない。
