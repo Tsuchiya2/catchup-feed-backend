@@ -143,8 +143,9 @@ func (f *ReadabilityFetcher) doFetch(ctx context.Context, urlStr string) (string
 		return "", fmt.Errorf("%w: failed to create request: %v", fetch.ErrInvalidURL, err)
 	}
 
-	// Set custom User-Agent to identify our bot
-	req.Header.Set("User-Agent", "CatchUpFeedBot/1.0")
+	// Identify ourselves with the crawler-wide User-Agent (shared with the
+	// RSS feed-fetch path; see useragent.go).
+	req.Header.Set("User-Agent", UserAgent)
 
 	// Execute HTTP request
 	resp, err := f.client.Do(req)

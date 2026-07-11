@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"catchup-feed/internal/infra/fetcher"
 	"catchup-feed/internal/infra/scraper"
 )
 
@@ -300,5 +301,40 @@ func TestRSSFetcher_Fetch_WithContent(t *testing.T) {
 	// ContentがDescriptionより優先されることを確認
 	if items[0].Content != "Full content here" {
 		t.Errorf("items[0].Content = %q, want %q", items[0].Content, "Full content here")
+	}
+}
+
+// TestRSSFetcher_Fetch_SendsSharedUserAgent verifies that the feed fetch
+// announces the crawler-wide User-Agent (fetcher.UserAgent). The RSS path and
+// the article-body path share this constant so the two cannot drift apart
+// (some sites, e.g. selfh.st, 403 bot-styled User-Agents).
+func TestRSSFetcher_Fetch_SendsSharedUserAgent(t *testing.T) {
+	gotUA := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA <- r.Header.Get("User-Agent")
+		rss := `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>UA Test Feed</title>
+    <link>https://example.com</link>
+    <description>UA test</description>
+  </channel>
+</rss>`
+		w.Header().Set("Content-Type", "application/rss+xml")
+		if _, err := w.Write([]byte(rss)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	rf := scraper.NewRSSFetcher(client)
+
+	if _, err := rf.Fetch(context.Background(), server.URL); err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+
+	if ua := <-gotUA; ua != fetcher.UserAgent {
+		t.Errorf("User-Agent = %q, want %q", ua, fetcher.UserAgent)
 	}
 }

@@ -19,9 +19,9 @@ import (
 func TestFetchContent_Success(t *testing.T) {
 	// Valid URL with well-formed HTML article
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify User-Agent
-		if r.Header.Get("User-Agent") != "CatchUpFeedBot/1.0" {
-			t.Errorf("expected User-Agent='CatchUpFeedBot/1.0', got %q", r.Header.Get("User-Agent"))
+		// Verify User-Agent (shared crawler-wide constant)
+		if r.Header.Get("User-Agent") != fetcher.UserAgent {
+			t.Errorf("expected User-Agent=%q, got %q", fetcher.UserAgent, r.Header.Get("User-Agent"))
 		}
 
 		html := `<!DOCTYPE html>
