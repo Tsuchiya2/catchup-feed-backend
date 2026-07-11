@@ -583,18 +583,15 @@ func TestFetchContent_TooManyRedirects(t *testing.T) {
 }
 
 func TestFetchContent_RedirectToPrivateIP(t *testing.T) {
-	// This test verifies that redirects to private IPs are blocked
-	// Note: httptest servers run on localhost, so we need to create the scenario differently
-
-	// We'll test by attempting to access a URL that redirects to 127.0.0.1
-	// Since we can't create a non-localhost test server easily, we'll skip this test
-	// or test it at integration level with actual external servers
-
-	t.Skip("Redirect to private IP validation tested via other tests (initial URL validation catches most cases)")
-
-	// In production, this would catch redirects like:
-	// https://evil.com → http://127.0.0.1:6379
-	// The CheckRedirect function validates each redirect target
+	// The readability fetcher validates the *initial* URL at entry
+	// (FetchContent → validateURL), so a loopback httptest server as the
+	// initial hop is rejected before any redirect fires — making the
+	// "public server redirects to private IP" scenario untestable here with a
+	// local server. The per-hop redirect guard itself is covered directly and
+	// exhaustively by TestSSRFCheckRedirect (shared hook), and end-to-end on
+	// the feed path — which has no entry validation — by the scraper package's
+	// TestRSSFetcher_RedirectToPrivateIP_Blocked.
+	t.Skip("per-hop redirect guard covered by TestSSRFCheckRedirect and scraper.TestRSSFetcher_RedirectToPrivateIP_Blocked")
 }
 
 func TestFetchContent_SuccessfulRedirect(t *testing.T) {

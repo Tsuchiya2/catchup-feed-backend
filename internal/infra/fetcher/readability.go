@@ -66,19 +66,9 @@ func NewReadabilityFetcher(config ContentFetchConfig) *ReadabilityFetcher {
 				MinVersion: tls.VersionTLS12, // Enforce TLS 1.2+
 			},
 		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// Check redirect limit
-			if len(via) >= fetcher.config.MaxRedirects {
-				return fmt.Errorf("%w: %d redirects", fetch.ErrTooManyRedirects, len(via))
-			}
-
-			// Validate each redirect target for SSRF
-			if err := validateURL(req.URL.String(), fetcher.config.DenyPrivateIPs); err != nil {
-				return fmt.Errorf("redirect target validation failed: %w", err)
-			}
-
-			return nil
-		},
+		// Per-hop SSRF validation, shared with the RSS feed-fetch client so the
+		// two fetch paths stay symmetric (H-1).
+		CheckRedirect: SSRFCheckRedirect(config.MaxRedirects, config.DenyPrivateIPs),
 	}
 
 	fetcher.client = client

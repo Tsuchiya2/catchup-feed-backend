@@ -4,10 +4,50 @@ package fetcher
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 
 	"catchup-feed/internal/usecase/fetch"
 )
+
+// SSRFCheckRedirect builds an http.Client CheckRedirect hook that enforces the
+// same SSRF protection on every redirect hop as the entry-point validation:
+// it caps the redirect chain at maxRedirects and re-validates each target with
+// validateURL (DNS-resolves and rejects private/loopback/link-local IPs when
+// denyPrivateIPs is true).
+//
+// H-1 (security audit): the article-body fetcher (readability.go) already
+// validated redirect targets, but the RSS feed-fetch HTTP client
+// (cmd/worker, cmd/crawl-once) did not. Both clients now install this shared
+// hook so the feed path and the article path stay symmetric and neither can be
+// used to reach cloud metadata (169.254.169.254), localhost, or the tailnet via
+// a 30x redirect. Note: this closes redirect-based SSRF only. A classic DNS
+// rebind on the initial (non-redirect) request — where the host resolves to a
+// public IP at validation time but a private IP at dial time — is NOT closed
+// here; that would require DialContext pinning, which readability.go also omits,
+// so the two paths remain symmetric.
+//
+// Parameters:
+//   - maxRedirects: maximum number of redirects to follow before failing
+//   - denyPrivateIPs: when true, reject redirect targets resolving to private IPs
+//
+// Returns:
+//   - func(*http.Request, []*http.Request) error suitable for http.Client.CheckRedirect
+func SSRFCheckRedirect(maxRedirects int, denyPrivateIPs bool) func(req *http.Request, via []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		// Check redirect limit.
+		if len(via) >= maxRedirects {
+			return fmt.Errorf("%w: %d redirects", fetch.ErrTooManyRedirects, len(via))
+		}
+
+		// Validate each redirect target for SSRF.
+		if err := validateURL(req.URL.String(), denyPrivateIPs); err != nil {
+			return fmt.Errorf("redirect target validation failed: %w", err)
+		}
+
+		return nil
+	}
+}
 
 // validateURL validates a URL for security before making an HTTP request.
 // This function prevents Server-Side Request Forgery (SSRF) attacks by:

@@ -89,16 +89,18 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 	artRepo := pgRepo.NewArticleRepo(database)
 
 	sum := createSummarizer(logger)
-	httpClient := createHTTPClient()
-	feedFetcher := scraper.NewRSSFetcher(httpClient)
 
-	// Load content fetch configuration from environment
+	// Load content fetch configuration from environment first: it also supplies
+	// the SSRF redirect limits for the feed-fetch client below (H-1).
 	contentFetchConfig, err := fetcher.LoadConfigFromEnv()
 	if err != nil {
 		logger.Warn("Content fetching disabled due to configuration error", slog.Any("error", err))
 		contentFetchConfig = fetcher.DefaultConfig()
 		contentFetchConfig.Enabled = false
 	}
+
+	httpClient := createHTTPClient(contentFetchConfig.MaxRedirects, contentFetchConfig.DenyPrivateIPs)
+	feedFetcher := scraper.NewRSSFetcher(httpClient)
 
 	// Create ContentFetcher if enabled
 	var contentFetcher fetchUC.ContentFetcher
@@ -141,9 +143,13 @@ func createSummarizer(logger *slog.Logger) fetchUC.Summarizer {
 	return chain
 }
 
-func createHTTPClient() *http.Client {
+// createHTTPClient builds the feed-fetch client. It validates every redirect
+// hop for SSRF via the shared fetcher.SSRFCheckRedirect hook (H-1), matching
+// the article-body fetcher.
+func createHTTPClient(maxRedirects int, denyPrivateIPs bool) *http.Client {
 	return &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout:       30 * time.Second,
+		CheckRedirect: fetcher.SSRFCheckRedirect(maxRedirects, denyPrivateIPs),
 		Transport: &http.Transport{
 			MaxIdleConns:        100,
 			MaxIdleConnsPerHost: 10,
