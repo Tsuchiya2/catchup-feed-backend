@@ -274,12 +274,13 @@ docker exec -it catchup-feed-postgres psql -U catchup-feed -c \
 | D-14 との関係 | 音源予算は**非適用**(embedding は数分で終わる別種の仕事)。`--deadline` ガードだけ適用 |
 | PDF の受け渡し | worker が `GET {BOOKS_PRIVATE_BASE_URL}/private/books/{ファイル名}` から一時取得(tailnet 専用・無認証、C-5)。一時ファイルは成功・失敗どちらでも削除 |
 | 同一性キー | `books.file_path` = payload の Pi 正準パス(一時パスは記録しない)。**同名再アップ=置き換え**(CLI ingest と同じ冪等意味論) |
-| 失敗の扱い | transcribe と同一(線形分バックオフ、attempts 上限 3)。payload 不正・HTTP 404(アップロード後に削除された)・壊れた PDF / DRM(C-15)/ 画像スキャンは**即 failed**。retry は run_after が数分先に付き、ドレインがその時点まで続いていれば同夜内に再 claim、終わっていれば翌夜回収 |
+| 失敗の扱い | transcribe と同一(線形分バックオフ、attempts 上限 3)。payload 不正・HTTP 404(アップロード後に削除された)・壊れた PDF / DRM(C-15)/ 画像スキャンは**即 failed**。retry は run_after が attempts×1分先に付き(7.1 と同一)、ドレインがその時点まで続いていれば同夜内に再 claim、終わっていれば翌夜回収 |
 | C-12 | PDF は Pi→Mac(Tailscale)のみ、embedding は Mac ローカルの Ollama(bge-m3)のみ。クラウド API はゼロ |
 
 観測は 7.1 のワンライナーの `kind='transcribe'` を `kind='book_ingest'` に replace すれば流用できる。
-ダッシュボードの取り込みステータス(待機/処理中/完了/失敗)はこの jobs 状態からの導出で、
-別のどこかに保存されてはいない(ジョブとディスクが正)。
+ダッシュボードの取り込みステータス(待機/処理中/完了/失敗)は jobs 状態・ディスク上の
+PDF・books 行の3つからの導出で、別のどこかに保存されてはいない(CLI 取り込みは
+ジョブなしで「完了」と表示される)。
 
 ### 7.2 文字起こし後の要約接続(§5.2b)
 
@@ -332,7 +333,7 @@ Pi worker の毎時 cron が「content 有り・summary 無し」の記事を掃
 ## 9. 書籍 PDF RAG
 
 書籍取り込み(PDF → チャンク化 → embedding → Pi の pgvector)は2経路あり、どちらも
-同一性キーは `books.file_path`(同名は置き換え):
+同一性キーは `books.file_path`(同じ file_path への再取り込みは置き換え):
 
 - **ダッシュボード経由**(D-25、このドキュメントで運用): `BOOKS_PRIVATE_BASE_URL` を
   設定すると(4章)、アップロードされた PDF を transcribe worker が同じ夜間実行で
