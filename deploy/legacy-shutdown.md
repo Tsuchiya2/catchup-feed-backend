@@ -4,7 +4,7 @@
 
 方針(§9): 旧 DB から持ち越すのは sources 定義のみ。それ以外のデータ(記事・要約・通知履歴)は捨てる。旧リポジトリはアーカイブして残す。
 
-前提の確認: 旧スタックは Pi 上の旧リポジトリの compose(コンテナ名 `catchup-postgres` / `catchup-server` / `catchup-worker`、ポート 8080/5432/9091)で稼働している。pulse スタック(`pulse-*`、8090/8081/5433)とは完全に分離されているため、以下の手順は pulse に影響しない。
+前提の確認: 旧スタックは Pi 上の旧リポジトリの compose(コンテナ名 `catchup-postgres` / `catchup-server` / `catchup-worker`、ポート 8080/5432/9091)で稼働している。後継スタック(コンテナ名 `catchup-feed-postgres` / `catchup-feed-server` / `catchup-feed-worker`、8090/8081/5433)とは完全に分離されているため、以下の手順は後継に影響しない。**旧 `catchup-*` と新 `catchup-feed-*` はハイフンの後が違うだけで紛らわしい**ので、停止コマンドを打つ前に必ずコンテナ名を確認する(落とすのは `catchup-*` の方)。
 
 ---
 
@@ -17,8 +17,8 @@ sources 定義の移植先は `internal/infra/db/seeds/sources.sql` で、pulse 
 docker exec catchup-postgres psql -U catchup -d catchup -At \
   -c "SELECT name || ' | ' || feed_url FROM sources WHERE active ORDER BY name" > /tmp/old-sources.txt
 
-# pulse 側の sources 一覧
-docker exec pulse-postgres psql -U pulse -d pulse -At \
+# 新(catchup-feed)側の sources 一覧
+docker exec catchup-feed-postgres psql -U catchup-feed -d catchup-feed -At \
   -c "SELECT name || ' | ' || feed_url FROM sources ORDER BY name" > /tmp/new-sources.txt
 
 diff /tmp/old-sources.txt /tmp/new-sources.txt

@@ -133,10 +133,10 @@ transcribe worker の設定は pydantic-settings(`src/pulse_transcribe/config.py
 
 1. ダッシュボードで kind=youtube または podcast のソースを登録する(D-13 の選定から1本。
    YouTube の feed_url は `https://www.youtube.com/feeds/videos.xml?channel_id=...`)
-2. Pi の毎時クロールを待つ(急ぐなら `docker restart pulse-worker` ではなく次の毎時発火を待つのが安全)。
+2. Pi の毎時クロールを待つ(急ぐなら `docker restart catchup-feed-worker` ではなく次の毎時発火を待つのが安全)。
    Pi 側でキューを確認:
    ```bash
-   docker exec -it pulse-postgres psql -U catchup-feed -c \
+   docker exec -it catchup-feed-postgres psql -U catchup-feed -c \
      "SELECT id, status, attempts, payload->>'source_kind' AS kind, left(payload->>'media_url',60) AS url \
       FROM jobs WHERE kind='transcribe' ORDER BY id DESC LIMIT 10;"
    ```
@@ -156,13 +156,13 @@ transcribe worker の設定は pydantic-settings(`src/pulse_transcribe/config.py
 4. 結果確認(Pi 側):
    ```bash
    # ジョブが done になり、記事に文字起こしが入っている
-   docker exec -it pulse-postgres psql -U catchup-feed -c \
+   docker exec -it catchup-feed-postgres psql -U catchup-feed -c \
      "SELECT a.id, a.title, length(a.content) AS content_len \
       FROM articles a JOIN sources s ON s.id = a.source_id \
       WHERE s.kind IN ('youtube','podcast') ORDER BY a.id DESC LIMIT 5;"
    ```
 5. **次の毎時サイクル後**に要約が付く(§5.2b スイープ)。worker のログに
-   `summary sweep completed` が出る: `docker logs pulse-worker --since 70m | grep sweep`
+   `summary sweep completed` が出る: `docker logs catchup-feed-worker --since 70m | grep sweep`
 
 ## 6. launchd 登録(03:00)+ 自動ウェイクの変更【ユーザー作業あり】
 
@@ -223,7 +223,7 @@ pmset の繰り返しウェイクは**1本しか持てない**。04:30 の radio
 観測用ワンライナー(Pi 上。困ったらまずこれ):
 
 ```bash
-docker exec -it pulse-postgres psql -U catchup-feed -c \
+docker exec -it catchup-feed-postgres psql -U catchup-feed -c \
   "SELECT id, status, attempts, run_after, left(last_error,80) AS last_error \
    FROM jobs WHERE kind='transcribe' ORDER BY id DESC LIMIT 20;"
 ```
@@ -274,7 +274,7 @@ Pi worker の毎時 cron が「content 有り・summary 無し」の記事を掃
   3. deferred で終了している → D-14 の持ち越し(正常)。連夜続くなら backlog が2時間/夜を
      超えている — ソースを減らすか `NIGHTLY_BUDGET_SECONDS` を調整(deadline 04:15 は不変なので上げ過ぎ注意)
 - **文字起こしはあるが要約が付かない** → 7.2。1時間待つ。それでも付かないなら
-  `docker logs pulse-worker --since 70m | grep -i sweep` と `summaries.provider`(pi.md トラブル節)
+  `docker logs catchup-feed-worker --since 70m | grep -i sweep` と `summaries.provider`(pi.md トラブル節)
 
 ## 9. 書籍 PDF RAG(将来追記)
 

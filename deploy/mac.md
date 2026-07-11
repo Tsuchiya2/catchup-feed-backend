@@ -278,7 +278,7 @@ compose の postgres は `pgvector/pgvector:pg18` イメージなので拡張は
 
 ```bash
 # 拡張が「利用可能」なこと(イメージ確認。installed_version はマイグレーション前は空で正常)
-docker exec -it pulse-postgres psql -U catchup-feed -c \
+docker exec -it catchup-feed-postgres psql -U catchup-feed -c \
   "SELECT name, default_version, installed_version FROM pg_available_extensions WHERE name='vector';"
 ```
 

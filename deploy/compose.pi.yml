@@ -1,8 +1,14 @@
 # ============================================================
-# pulse — Raspberry Pi 5 本番スタック(server + worker + PostgreSQL)
+# catchup-feed(後継 pulse)— Raspberry Pi 5 本番スタック(server + worker + PostgreSQL)
 # ============================================================
-# 旧 catchup-feed スタックと同一ホストで共存する前提(§9 の停止まで):
-#   - コンテナ名は pulse-*(旧: catchup-*)
+# 命名についての注意(混同厳禁):
+#   このスタックのコンテナ名は catchup-feed-*(catchup-feed-postgres / -server / -worker)。
+#   一方、同一ホストにまだ同居している【旧】システムのコンテナは catchup-*(catchup-postgres /
+#   catchup-server / catchup-worker)で、ハイフンの後が違うだけの別物。取り違えると別スタックを
+#   操作してしまうので、コマンドを打つ前に必ず末尾( -postgres か postgres か)を確認する。
+#   compose プロジェクト名は catchup-feed(下の name:)。旧スタックのプロジェクト名は別。
+#
+# 旧システムと同一ホストで共存する前提(§9 の停止まで):
 #   - ホスト側ポートは 8090 / 8081 / 5433(旧: 8080 / 9091 / 5432)
 #   - ネットワークは compose 既定(旧 compose の固定サブネット 172.25.0.0/16 と衝突させない)
 #
@@ -15,9 +21,9 @@
 #   - 私的リスナー(:8081)      → ${TAILNET_IP}:8081 のみ。tailnet 外・LAN には出ない(C-5)
 #   - PostgreSQL(:5432)        → 127.0.0.1 と ${TAILNET_IP} の 5433。radio(Mac)が tailnet 越しに接続
 #   TAILNET_IP へのバインドは tailscaled 起動後でないと失敗するため、ブート時の起動順は
-#   deploy/systemd/pulse.service が保証する(pi.md 参照)。
+#   deploy/systemd/pulse.service が保証する(pi.md 参照。unit 名は pulse.service のまま維持)。
 
-name: pulse
+name: catchup-feed
 
 volumes:
   db-data:
@@ -26,11 +32,11 @@ volumes:
 services:
   postgres:
     image: pgvector/pgvector:pg18
-    container_name: pulse-postgres
+    container_name: catchup-feed-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-pulse}
-      POSTGRES_DB: ${POSTGRES_DB:-pulse}
+      POSTGRES_USER: ${POSTGRES_USER:-catchup-feed}
+      POSTGRES_DB: ${POSTGRES_DB:-catchup-feed}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
       POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
     healthcheck:
@@ -57,13 +63,13 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: pulse-server
+    container_name: catchup-feed-server
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-pulse}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-pulse}?sslmode=disable
+      DATABASE_URL: postgresql://${POSTGRES_USER:-catchup-feed}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-catchup-feed}?sslmode=disable
 
       # 認証(C-7 / C-20)
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in deploy/.env}
@@ -115,7 +121,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    container_name: pulse-worker
+    container_name: catchup-feed-worker
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/worker"]
     command: []
@@ -125,7 +131,7 @@ services:
       server:
         condition: service_healthy # マイグレーションは server 起動時に適用される
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-pulse}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-pulse}?sslmode=disable
+      DATABASE_URL: postgresql://${POSTGRES_USER:-catchup-feed}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-catchup-feed}?sslmode=disable
 
       # 要約フォールバック連鎖(Gemini → Groq → Ollama)
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
