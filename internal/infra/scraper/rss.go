@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"catchup-feed/internal/infra/fetcher"
 	"catchup-feed/internal/usecase/fetch"
 
 	"github.com/mmcdole/gofeed"
@@ -35,7 +36,7 @@ func (f *RSSFetcher) Fetch(ctx context.Context, feedURL string) ([]fetch.FeedIte
 // doFetch performs the actual feed fetch without retry or circuit breaker.
 func (f *RSSFetcher) doFetch(ctx context.Context, feedURL string) ([]fetch.FeedItem, error) {
 	fp := gofeed.NewParser()
-	fp.UserAgent = "CatchUpFeedBot"
+	fp.UserAgent = fetcher.UserAgent
 	fp.Client = f.client
 
 	feed, err := fp.ParseURLWithContext(feedURL, ctx)

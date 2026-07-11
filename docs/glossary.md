@@ -213,7 +213,7 @@ An interface for fetching and parsing RSS/Atom feeds.
 - Supports both RSS and Atom formats
 - Automatic date parsing
 - Content prioritization (Content field preferred over Description)
-- User-Agent: "CatchUpFeedBot"
+- User-Agent: "catchup-feed/1.0 (personal RSS reader)" (shared constant `fetcher.UserAgent`, also used by the article-body fetcher)
 
 ### Notification Service
 A multi-channel notification system for new article alerts.
