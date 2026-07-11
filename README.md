@@ -255,8 +255,8 @@ curl -X POST http://localhost:8080/auth/logout
 Bearer フォールバック用に維持)に加えて、`HttpOnly; Secure; SameSite=Strict` の
 cookie(`catchup_feed_auth_token`)としても発行されます(D-22: XSS によるトークン
 窃取対策)。認証ミドルウェアは **cookie を優先**し、無ければ `Authorization: Bearer`
-にフォールバックします。cookie の Domain / Secure は `AUTH_COOKIE_DOMAIN` /
-`AUTH_COOKIE_SECURE` で制御します(下記「任意環境変数」)。
+にフォールバックします。`HttpOnly; Secure; SameSite=Strict` は固定で、cookie の
+Domain のみ `AUTH_COOKIE_DOMAIN` で制御します(下記「任意環境変数」)。
 
 ### 主要エンドポイント
 
@@ -308,9 +308,10 @@ docker compose が読み込む `.env` に書く場合は、ハッシュに含ま
 | 環境変数 | 説明 | デフォルト |
 |----------|------|-----------|
 | `AUTH_COOKIE_DOMAIN` | cookie の Domain 属性。空なら Domain を付けない（レスポンスホスト限定＝localhost 開発向け）。本番は共通 eTLD+1（例: `.catchup-feed.com`）を指定し、同一サイトのサブドメイン間で cookie を共有。先頭ドットは net/http が正規化して除去（RFC 6265、`catchup-feed.com` と等価） | 空 |
-| `AUTH_COOKIE_SECURE` | cookie の Secure 属性。`false` の時のみ Secure を外す（localhost 以外の平文開発用エスケープハッチ。本番で false は禁止） | `true` |
 
-SameSite は `Strict` 固定（env 化しない）。ログアウトは `POST /auth/logout`（cookie を
+`HttpOnly` / `Secure` / `SameSite=Strict` は固定（env 化しない）。`Secure` は常時付与
+——modern ブラウザは `http://localhost` を secure context として扱うため localhost
+開発でも cookie は送られます。ログアウトは `POST /auth/logout`（cookie を
 `Max-Age=0` で失効。冪等・認証不要）。
 
 ### 要約エンジン（フォールバック連鎖: Gemini → Groq → Ollama）

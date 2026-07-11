@@ -101,11 +101,14 @@ func TestTokenHandler_CookieDomain(t *testing.T) {
 	}
 }
 
-// TestTokenHandler_CookieSecureToggle verifies AUTH_COOKIE_SECURE=false drops
-// the Secure attribute (escape hatch for non-localhost plaintext dev).
-func TestTokenHandler_CookieSecureToggle(t *testing.T) {
+// TestTokenHandler_CookieAlwaysSecure verifies the Secure attribute is pinned
+// on: it cannot be disabled, and a leftover AUTH_COOKIE_SECURE=false env has no
+// effect (the toggle was removed so gosec can prove Secure statically, and to
+// eliminate any path that ships a non-Secure auth cookie in production).
+func TestTokenHandler_CookieAlwaysSecure(t *testing.T) {
 	handler := TokenHandler(newTestAuthService(t))
-	t.Setenv(EnvCookieSecure, "false")
+	// A stale env from an old deployment must not weaken the cookie.
+	t.Setenv("AUTH_COOKIE_SECURE", "false")
 
 	body := `{"email":"` + testAdminUser + `","password":"` + testPassword + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/token", strings.NewReader(body))
@@ -115,7 +118,8 @@ func TestTokenHandler_CookieSecureToggle(t *testing.T) {
 
 	c := findAuthCookie(t, rec)
 	require.NotNil(t, c)
-	assert.False(t, c.Secure, "AUTH_COOKIE_SECURE=false must drop the Secure attribute")
+	assert.True(t, c.Secure, "auth cookie must always carry the Secure attribute")
+	assert.Contains(t, rec.Header().Get("Set-Cookie"), "Secure")
 }
 
 // TestTokenHandler_NoCookieOnFailure verifies no cookie leaks on bad creds.

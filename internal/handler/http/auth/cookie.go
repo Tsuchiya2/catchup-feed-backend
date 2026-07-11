@@ -23,12 +23,6 @@ const (
 	// leading dot is ignored and both forms match all subdomains identically,
 	// so ".catchup-feed.com" and "catchup-feed.com" are interchangeable here.
 	EnvCookieDomain = "AUTH_COOKIE_DOMAIN"
-
-	// EnvCookieSecure toggles the Secure attribute. Default true. Modern
-	// browsers treat localhost as a secure context, so Secure cookies work on
-	// http://localhost; the override exists only as an escape hatch for
-	// non-localhost plaintext development.
-	EnvCookieSecure = "AUTH_COOKIE_SECURE"
 )
 
 // cookieDomain returns the configured Domain attribute (may be empty).
@@ -36,36 +30,45 @@ func cookieDomain() string {
 	return os.Getenv(EnvCookieDomain)
 }
 
-// cookieSecure reports whether the Secure attribute should be set. Default
-// true; only an explicit "false" disables it (D-22).
-func cookieSecure() bool {
-	return os.Getenv(EnvCookieSecure) != "false"
-}
-
 // newAuthCookie builds the auth cookie carrying the signed JWT. maxAge is the
-// cookie lifetime; pass the JWT TTL for issuance. The attributes are fixed by
-// D-22: HttpOnly, SameSite=Strict, Path=/, Secure (env-toggleable), and an
-// env-configurable Domain (omitted when empty).
+// cookie lifetime; pass the JWT TTL for issuance. The security attributes are
+// fixed by D-22 and non-configurable: HttpOnly, Secure, SameSite=Strict,
+// Path=/. Only the Domain is env-configurable (omitted when empty).
+//
+// Secure is a hard-coded literal (not env-driven): modern browsers treat
+// http://localhost as a secure context, so the Secure cookie is still sent in
+// localhost development, and pinning it removes any way to accidentally ship a
+// non-Secure auth cookie in production.
+//
+// The security fields are written inline (rather than shared via a mutated
+// base cookie) so gosec (G124/CWE-614) can prove Secure/HttpOnly/SameSite
+// statically at every construction site.
 func newAuthCookie(value string, maxAge time.Duration) *http.Cookie {
-	c := &http.Cookie{
+	return &http.Cookie{
 		Name:     authCookieName,
 		Value:    value,
 		Path:     "/",
 		Domain:   cookieDomain(),
 		MaxAge:   int(maxAge.Seconds()),
 		HttpOnly: true,
-		Secure:   cookieSecure(),
+		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 	}
-	return c
 }
 
 // expiredAuthCookie builds a cookie that instructs the browser to delete the
-// auth cookie. It mirrors the Name/Path/Domain/attributes of the issued cookie
-// (browsers match deletion by name+domain+path) with Max-Age=0 and an empty
-// value.
+// auth cookie. It mirrors the Name/Path/Domain and security attributes of the
+// issued cookie (browsers match deletion by name+domain+path) with an empty
+// value and MaxAge=-1, which net/http serializes as "Max-Age=0" (delete now).
 func expiredAuthCookie() *http.Cookie {
-	c := newAuthCookie("", 0)
-	c.MaxAge = -1 // http.Cookie: MaxAge<0 emits "Max-Age=0" (delete now)
-	return c
+	return &http.Cookie{
+		Name:     authCookieName,
+		Value:    "",
+		Path:     "/",
+		Domain:   cookieDomain(),
+		MaxAge:   -1, // net/http: MaxAge<0 emits "Max-Age=0" (delete now)
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	}
 }
