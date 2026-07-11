@@ -166,10 +166,10 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 	artRepo := pgRepo.NewArticleRepo(database)
 
 	sum := createSummarizer(logger)
-	httpClient := createHTTPClient()
-	feedFetcher := scraper.NewRSSFetcher(httpClient)
 
-	// Load content fetch configuration from environment
+	// Load content fetch configuration from environment first: it also supplies
+	// the SSRF redirect limits for the feed-fetch client below, keeping the RSS
+	// path symmetric with the article-body path (H-1).
 	contentFetchConfig, err := fetcher.LoadConfigFromEnv()
 	if err != nil {
 		logger.Error("Failed to load content fetch configuration",
@@ -178,6 +178,9 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 		contentFetchConfig = fetcher.DefaultConfig()
 		contentFetchConfig.Enabled = false
 	}
+
+	httpClient := createHTTPClient(contentFetchConfig.MaxRedirects, contentFetchConfig.DenyPrivateIPs)
+	feedFetcher := scraper.NewRSSFetcher(httpClient)
 
 	// Create ContentFetcher if enabled
 	var contentFetcher fetchUC.ContentFetcher
@@ -238,7 +241,14 @@ func createSummarizer(logger *slog.Logger) fetchUC.Summarizer {
 
 // createHTTPClient creates an HTTP client with timeouts and connection pooling.
 // TLS 1.2+ is enforced for security.
-func createHTTPClient() *http.Client {
+//
+// H-1: the feed-fetch client validates every redirect hop for SSRF via the
+// shared fetcher.SSRFCheckRedirect hook (same guard the article-body fetcher
+// uses), so a public feed URL that 30x-redirects to cloud metadata
+// (169.254.169.254), localhost, or the tailnet is rejected mid-chain. The
+// entry-point feed URL is still validated at source-creation time
+// (entity.ValidateURL).
+func createHTTPClient(maxRedirects int, denyPrivateIPs bool) *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
@@ -249,6 +259,7 @@ func createHTTPClient() *http.Client {
 				MinVersion: tls.VersionTLS12, // Enforce TLS 1.2+
 			},
 		},
+		CheckRedirect: fetcher.SSRFCheckRedirect(maxRedirects, denyPrivateIPs),
 	}
 }
 
