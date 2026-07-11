@@ -86,8 +86,20 @@ func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 
 // LimitRequestBody returns middleware that limits the size of request bodies to prevent DoS attacks.
 func LimitRequestBody(maxBytes int64) func(http.Handler) http.Handler {
+	return LimitRequestBodyPerRoute(maxBytes, nil)
+}
+
+// LimitRequestBodyPerRoute is LimitRequestBody with per-route overrides,
+// keyed by "METHOD /exact/path". Added for the book PDF upload (D-25:
+// 100MB) so that one route's ceiling does not loosen the tight default
+// every other route keeps.
+func LimitRequestBodyPerRoute(defaultMax int64, overrides map[string]int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			maxBytes := defaultMax
+			if v, ok := overrides[r.Method+" "+r.URL.Path]; ok {
+				maxBytes = v
+			}
 			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 			next.ServeHTTP(w, r)
 		})

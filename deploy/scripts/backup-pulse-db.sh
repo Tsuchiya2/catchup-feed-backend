@@ -13,12 +13,15 @@
 #      ※ radio はテンポラリディレクトリで生成して転送後に消すため、
 #        生成元は Mac に残らない。§8 の「実質二重化」はこのミラーが担う。
 #      Pi 側は D-4 で 45 日より古い mp3 が消えるが、ミラーには残る。
+#   4. Pi の books/ を rsync でミラー(D-25 (6): 書籍 PDF もバックアップ対象。
+#      --delete なし = ダッシュボードで削除してもミラーには残る)
 #
 # 失敗してもリトライしない(縮退許容)。実在確認は月次の定常運用タスク。
 #
 # 必要な環境変数(~/pulse/.env、deploy/env.mac.example 参照):
 #   PULSE_PI_SSH                 ssh 先(例: user@pi.tailnet-name.ts.net)
 #   PULSE_PI_EPISODES_DIR        Pi ホスト側の episodes 絶対パス
+#   PULSE_PI_BOOKS_DIR           Pi ホスト側の books 絶対パス(D-25)
 #   PULSE_BACKUP_DIR             保存先(既定: ~/pulse/backups)
 #   PULSE_BACKUP_RETENTION_DAYS  dump の保持日数(既定: 30)
 # ============================================================
@@ -82,6 +85,20 @@ if [ -n "${PULSE_PI_EPISODES_DIR:-}" ]; then
     fi
 else
     log "PULSE_PI_EPISODES_DIR 未設定のため episodes ミラーはスキップ"
+fi
+
+# --- 4. books ミラー(D-25 (6)。失敗しても dump は成功扱い) ---
+if [ -n "${PULSE_PI_BOOKS_DIR:-}" ]; then
+    mkdir -p "$BACKUP_DIR/books"
+    log "mirroring books from $PULSE_PI_SSH:$PULSE_PI_BOOKS_DIR"
+    if rsync -a -e "ssh ${SSH_OPTS[*]}" \
+        "$PULSE_PI_SSH:$PULSE_PI_BOOKS_DIR/" "$BACKUP_DIR/books/"; then
+        log "books mirror OK ($(ls "$BACKUP_DIR/books" | wc -l | tr -d ' ') files)"
+    else
+        log "WARN: books mirror failed(dump は保存済みなので継続)"
+    fi
+else
+    log "PULSE_PI_BOOKS_DIR 未設定のため books ミラーはスキップ"
 fi
 
 log "backup finished"

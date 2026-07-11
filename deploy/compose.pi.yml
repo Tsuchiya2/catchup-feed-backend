@@ -89,6 +89,10 @@ services:
       PRIVATE_FEED_ADDR: ${PRIVATE_FEED_ADDR:-server:8081}
       FEED_PRIVATE_BASE_URL: ${FEED_PRIVATE_BASE_URL:-}
 
+      # 書籍 PDF 管理(D-25)。コンテナ内パスが books.file_path と book_ingest
+      # ジョブに記録される(episodes の /data/episodes と同じ流儀)。
+      BOOKS_DIR: /data/books
+
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?set CORS_ALLOWED_ORIGINS in deploy/.env}
 
       # 認証 cookie の Domain(D-22)。pulse./radio. 間で JWT cookie を共有するため
@@ -109,6 +113,8 @@ services:
     volumes:
       # mp3 アーカイブ。server は配信のみ(読み取り専用)
       - ${EPISODES_DIR:?set EPISODES_DIR in deploy/.env}:/data/episodes:ro
+      # 書籍 PDF(D-25)。server がアップロード保存・削除を行うため読み書き
+      - ${BOOKS_DIR:?set BOOKS_DIR in deploy/.env}:/data/books
     security_opt:
       - no-new-privileges:true
     logging:
