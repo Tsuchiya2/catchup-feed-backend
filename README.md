@@ -1,563 +1,244 @@
-# catchup-feed
+# pulse — backend
 
-> RSS/Atomフィードを自動クロールし、AIで要約を生成するバックエンドシステム
+> 毎朝10〜15分の音声ラジオ番組をポッドキャストアプリに配信し、「理解の定着」を最適化する個人向け学習システムのバックエンド。
 
----
+`pulse` は旧 catchup-feed(RSS を要約して REST API / Discord に流す news aggregator)の後継です。旧システムは「配信された記事数」を最適化していましたが、Discord に流れる要約は読まれませんでした。pulse が最適化するのは **理解の定着** です。可処分時間が細切れで手も目も塞がっている時間帯(移動中・家事中)に消化できるよう、応答形態を **音声** に変えました。RSS を要約し、毎朝ラジオ番組(mp3)を生成し、ポッドキャストアプリ経由で本人と友人に届け、フィードバックを得ます。
 
-## 📸 スクリーンショット
-
-### 通知機能
-
-| Discord | Slack |
-|:-------:|:-----:|
-| ![Discord通知](docs/images/screenshots/discord-notification.webp) | ![Slack通知](docs/images/screenshots/slack-notification.webp) |
-
-### Web UI（[catchup-feed-frontend](https://github.com/Tsuchiya2/catchup-feed-frontend)）
-
-| 記事一覧 | 記事詳細 | ソース一覧 |
-|:-------:|:-------:|:---------:|
-| ![記事一覧](docs/images/screenshots/articles-list.webp) | ![記事詳細](docs/images/screenshots/article-detail.webp) | ![ソース一覧](docs/images/screenshots/sources.webp) |
+このリポジトリは pulse の Go バックエンドです。フロントエンド(ダッシュボード)は [catchup-feed-frontend](https://github.com/Tsuchiya2/catchup-feed-frontend)、文字起こし・書籍 RAG は [catchup-feed-ai](https://github.com/Tsuchiya2/catchup-feed-ai) にあります。
 
 ---
 
-## 📋 プロジェクト概要
+## 設計原則
 
-**catchup-feed** は、RSS/Atomフィードから記事を自動収集し、Claude/OpenAI APIを使用してAI要約を生成、REST APIで提供するバックエンドシステムです。
+pulse は**単一ユーザー**が**ゼロ円**で運用する自宅ホスティングを前提に「右サイズ」で作られています。旧 catchup-feed が抱えていた gRPC・サーキットブレーカー・Prometheus・Grafana・OpenTelemetry・マイクロサービス分割・OpenAI/Claude 依存はすべて**削除済み**です。
 
-### 開発の背景・目的
-
-日々大量に発信される技術記事やニュースを効率的にキャッチアップするため、AIによる自動要約機能を持つフィードリーダーのバックエンドとして開発しました。
-
-### 主な特徴
-
-- **クリーンアーキテクチャ採用**: 保守性・テスタビリティを重視した設計
-- **AI要約機能**: Claude/OpenAI APIによる記事の自動要約生成
-- **コンテンツ強化**: RSSの要約のみの記事は元記事から全文取得してAI要約品質を向上
-- **マルチチャネル通知**: Discord/Slack連携（拡張可能な設計）
-- **本番運用品質**: サーキットブレーカー、レート制限、Prometheusメトリクス対応
-- **実稼働中**: Raspberry Pi 5 + Cloudflare Tunnelで本番運用（[デモサイト](#-本番環境)）
+- **単一ユーザー右サイズ** — 冗長化・可観測性基盤・内部 RPC を持たない。プロセス間連携は PostgreSQL のジョブテーブルのみ。
+- **ゼロ円運用** — 要約は無料枠 API → ローカル LLM のフォールバック連鎖。有料 API・有料 SaaS を使わない。
+- **縮退許容** — 「壊れない」より「壊れても翌日勝手に戻る」。Mac 不在 → その日のエピソードは欠番、無料 API 全滅 → Ollama にフォールバック、VOICEVOX 障害 → 当日スキップ+通知。
+- **プライバシー分界** — 無料クラウド API に流してよいのは公開記事とその要約のみ。書籍・私的データはローカル LLM(Ollama)のみで処理する。
 
 ---
 
-## 🛠️ 使用技術
+## アーキテクチャ
 
-### バックエンド
+Go 1.26 の単一モジュールで、**3つのバイナリ**を持ちます。内部 HTTP/RPC はなく、`server` / `worker` / `radio` はすべて **PostgreSQL 経由**(`jobs` テーブル+状態テーブル)で連携します。
 
-| カテゴリ | 技術 |
-|---------|------|
-| **言語** | Go 1.26.5 |
-| **データベース** | PostgreSQL 18 / SQLite（テスト用） |
-| **HTTPルーター** | 標準ライブラリ（net/http） |
-| **認証** | JWT（golang-jwt/jwt/v5） |
-| **AI API** | Anthropic Claude（Sonnet 4.5） / OpenAI（GPT-4o-mini） |
-| **RSS解析** | mmcdole/gofeed |
-| **スケジューラ** | robfig/cron/v3 |
-| **監視** | Prometheus / Grafana |
-| **ドキュメント** | Swagger（swaggo/swag） |
+| バイナリ | 配置 | 役割 |
+|---|---|---|
+| `cmd/server` | Pi 5(常駐) | 公開フィード配信(`/feeds/{token}/*`、トークン認証)+ 管理 API(JWT)+ tailnet 限定の私的フィード(`/private/*`)。起動時に冪等マイグレーションを自動適用。 |
+| `cmd/worker` | Pi 5(常駐) | robfig/cron で毎時クロール → 本文抽出 → 要約 → DB 更新。`jobs` テーブルのコンシューマとして `regenerate_feed` / `notify_episode` / `notify_error` / `cleanup_old_media` を処理。 |
+| `cmd/radio` | M3 Mac(夜間バッチ) | 記事選定 → LLM 台本生成 → VOICEVOX で音声合成 → ffmpeg で結合・mp3 化 → rsync で Pi へ転送 → `episodes`/`segments` を登録。Phase 3 のクイズ・書籍コーナーも同一ランで生成。 |
 
-### 開発環境・ツール
+補助バイナリ: `cmd/hash-password`(管理者パスワードの bcrypt ハッシュ生成)、`cmd/crawl-once`(開発用の単発クロール)。
 
-| カテゴリ | 技術 |
-|---------|------|
-| **コンテナ** | Docker / Docker Compose |
-| **CI/CD** | GitHub Actions |
-| **静的解析** | golangci-lint / go vet |
-| **テスト** | 標準testing / testify |
+### ホスト配置
 
----
+```
+┌──────────── Raspberry Pi 5(常時稼働)──────────────┐
+│  server  : 公開フィード配信 / 管理 API / 私的フィード  │
+│  worker  : クロール・要約・通知(cron 常駐)          │
+│  PostgreSQL + mp3 アーカイブ(episodes/)             │
+└──────────────────────────────────────────────────┘
+          ▲ Tailscale(rsync / PostgreSQL 接続)
+┌──────────── M3 MacBook Pro(夜間バッチ)────────────┐
+│  radio   : 台本構成 → VOICEVOX → ffmpeg 結合         │
+│  VOICEVOX Engine(ずんだもん)                        │
+│  Ollama(要約・書籍のローカル LLM フォールバック)     │
+└──────────────────────────────────────────────────┘
 
-## 🏗️ アーキテクチャ
-
-### クリーンアーキテクチャ
-
-```text
-┌────────────────────────────────┐
-│ プレゼンテーション層            │ ← cmd/server, internal/handler/http
-│ （HTTPハンドラー）              │
-├────────────────────────────────┤
-│ ユースケース層                  │ ← internal/usecase
-│ （ビジネスロジック）            │
-├────────────────────────────────┤
-│ ドメイン層                      │ ← internal/domain/entity
-│ （エンティティ）                │
-├────────────────────────────────┤
-│ インフラストラクチャ層          │ ← internal/infra
-│ （DB、外部API）                 │
-└────────────────────────────────┘
+公開経路: Cloudflare Tunnel → Pi server
+  - pulse.catchup-feed.com         → Next.js ダッシュボード(JWT 保護)
+  - radio.catchup-feed.com/feeds/* → 公開フィード(トークン認証)
+私的経路: Tailscale(tailnet 内のみ、認証は物理境界)
+  - pi.tailnet:8081/private/feed.xml
 ```
 
-**依存方向**: 外側 → 内側（プレゼンテーション → ユースケース → ドメイン）
+### 日次フロー
 
-### 設計原則
-
-1. **依存性逆転の原則**: インターフェースを活用し、外部依存を抽象化
-2. **ドメイン層の独立性**: 外部ライブラリへの依存を排除
-3. **単一責任の原則**: 各ユースケースは1つの責務のみ担当
-4. **テスタビリティ**: モックを使った単体テストが容易な設計
-
----
-
-## 📁 ディレクトリ構成
-
-```text
-catchup-feed/
-├── cmd/
-│   ├── server/               # APIサーバー（ポート8080）
-│   └── worker/               # バッチクローラー（定期実行）
-├── internal/
-│   ├── config/               # 設定管理
-│   ├── domain/
-│   │   └── entity/           # ドメインエンティティ（Article, Source, User）
-│   ├── repository/           # リポジトリインターフェース
-│   ├── service/
-│   │   └── auth/             # 認証サービス
-│   ├── usecase/              # ビジネスロジック層
-│   │   ├── article/          # 記事ユースケース
-│   │   ├── source/           # ソースユースケース
-│   │   ├── fetch/            # フィード取得・要約生成
-│   │   └── notify/           # マルチチャネル通知
-│   ├── handler/http/         # HTTPハンドラー
-│   │   ├── auth/             # 認証ハンドラー・JWT検証
-│   │   ├── article/          # 記事ハンドラー
-│   │   ├── source/           # ソースハンドラー
-│   │   └── middleware/       # ミドルウェア（CORS、レート制限等）
-│   ├── infra/
-│   │   ├── adapter/          # 永続化アダプタ（SQLite実装）
-│   │   ├── db/               # データベース接続・マイグレーション
-│   │   ├── summarizer/       # 要約エンジン（Claude, OpenAI）
-│   │   ├── scraper/          # RSS/Atom解析
-│   │   ├── fetcher/          # コンテンツ取得（Readability）
-│   │   └── notifier/         # 通知（Discord, Slack）
-│   ├── observability/        # 監視（ロギング、メトリクス、トレーシング）
-│   ├── resilience/           # 耐障害性（サーキットブレーカー、リトライ）
-│   └── pkg/                  # 共通パッケージ（バリデーション等）
-├── config/                   # 設定ファイル（Prometheus、Grafana等）
-├── pkg/                      # 公開パッケージ（レート制限、セキュリティ）
-├── scripts/                  # 運用スクリプト（バックアップ、ヘルスチェック）
-├── tests/                    # テスト（E2E、統合、パフォーマンス）
-├── docs/                     # プロジェクトドキュメント
-└── .claude/                  # Claude Code設定
+```
+[worker/Pi]  毎時       : クロール → articles 挿入 → 要約 → summaries 更新
+[radio/Mac]  04:30 JST  : 当日分エピソード生成
+   1. 対象記事選定(前回エピソード以降の要約済み記事)
+   2. 台本生成(LLM): セグメントごとの読み上げ原稿+つなぎ文
+   3. VOICEVOX でセグメント別に合成 → ffmpeg で結合・mp3 化(64kbps mono)
+   4. rsync で Pi の episodes/ へ転送、episodes / segments を INSERT
+      → jobs に regenerate_feed / notify_episode を積む
+[worker/Pi]  ジョブ検知  : フィード XML 再生成 → Discord/Slack/メール通知
 ```
 
----
-
-## 📱 主要機能
-
-### 1. フィード自動収集・要約生成
-
-- 登録されたRSS/Atomフィードを定期クロール（デフォルト: 毎日5:30 AM）
-- 並列処理によるフィード取得の最適化
-- URL重複検知による記事の重複防止
-- Claude/OpenAI APIによる自動要約生成
-
-### 2. コンテンツ強化機能
-
-RSSフィードの内容が不十分な場合（要約のみの記事など）、元記事からフルテキストを自動取得してAI要約の品質を向上させる機能を実装しています。
-
-**技術的なポイント**:
-- Mozilla Readabilityアルゴリズムで記事本文を抽出
-- SSRF防止: プライベートIPアクセスをブロック
-- サイズ制限・タイムアウト・リダイレクト制限によるセキュリティ対策
-
-### 3. 認証・認可
-
-- JWT認証によるセキュアなAPI
-- ロールベースアクセス制御（Admin / Viewer）
-- 強力なパスワードポリシー（12文字以上、弱いパターン検出）
-
-### 4. エピソード通知（設計書 §7）
-
-通知の単位は記事ではなく**エピソード**（旧システムの per-article 通知は
-最適化目標の転換により廃止）。radio バッチが jobs テーブルに `notify_episode`
-を積み、worker のコンシューマが Destination interface（D-7）経由で配信する。
-
-```text
-jobs テーブル（PostgreSQL、C-4）
-   │  notify_episode / notify_error
-   ▼
-worker コンシューマ ── リトライは jobs の attempts 上限 3（§7）
-   │
-   ├─ Discord Webhook（本人、mp3 10MB 未満は直接添付）
-   ├─ Slack Webhook（本人）
-   └─ SMTP メール（友人、公開エピソードのみ、C-11）
-```
-
-### 5. 監視・可観測性
-
-- slog による構造化ロギング（JSON）
-- ヘルスチェックエンドポイント
-- フォールバック発生は summaries.provider / jobs.last_error で事後観測（§8）
+Mac が閉じていた日はエピソードが生成されないだけで、システムは壊れません(翌日に持ち越し)。
 
 ---
 
-## 🚀 クイックスタート
+## 技術スタック
 
-### 前提条件
+- **言語 / ランタイム**: Go 1.26.x(単一モジュール、標準ライブラリの `net/http` ルーター — 外部ルーター依存なし)
+- **データベース**: PostgreSQL(ドライバは pgx/v5)。マイグレーションは `cmd/server` 起動時に冪等 SQL を自動適用。
+- **認証**: 管理 API は JWT(golang-jwt/v5)+ 単一管理者(環境変数 + bcrypt ハッシュ)。フィード配信は URL 埋め込みの不透明トークン(`crypto/rand` 32byte → base64url、DB には SHA-256 ハッシュのみ保存)。
+- **クローラー**: gofeed(RSS/Atom パース)+ go-readability(本文抽出)。リダイレクトごとに SSRF ガード。
+- **要約 LLM(フォールバック連鎖)**: Gemini → Groq → Ollama。無料枠 API が全滅してもローカル(Ollama)で縮退継続。API キー未設定のプロバイダは連鎖から自動除外。
+- **音声合成 (TTS)**: VOICEVOX(HTTP API を直叩き、既定話者はずんだもん)。
+- **音声処理**: ffmpeg(結合・loudnorm・mp3 エンコード)、rsync(Pi への転送)を `exec.Command` で呼び出し。
+- **スケジューラ**: robfig/cron(worker)、launchd(radio の夜間起動)。
+- **学習ループ(Phase 3)**: `internal/learning/` に spaced repetition(SRS)の間隔ラダー・出題キュー飽和算術・理解トラッカーを実装。復習クイズをラジオ番組に音声注入する。
+- **API ドキュメント**: Swagger(swaggo、`/swagger/` で配信、フロントエンドの型生成元)。
+- **ロギング**: slog(JSON)。メトリクス基盤は持たない(フォールバック発生は `summaries.provider` で事後観測)。
 
-- Docker / Docker Compose
-- Claude または OpenAI のAPIキー
+---
 
-### セットアップ
+## セットアップと起動
+
+### 前提
+
+- Docker / Docker Compose(Pi 上での server + worker + PostgreSQL 実行)
+- radio バッチ用に Mac 側で: Go 1.26.x、[VOICEVOX Engine](https://voicevox.hiroshiba.jp/)、[Ollama](https://ollama.com/)、ffmpeg、rsync
+
+### 開発環境
+
+Makefile 経由で Docker 上の開発コンテナを操作します。
 
 ```bash
-# 1. 環境変数を設定
-cp .env.example .env
-# .env を編集し、APIキー等を設定
-
-# 2. 開発環境を起動
-make setup
-
-# 3. 開発コンテナに入る
-make dev-shell
-
-# 4. テスト実行
-go test ./...
-
-# 5. 静的解析
-golangci-lint run
+cp .env.example .env          # 環境変数を設定(下表参照)
+make setup                    # 開発コンテナのビルド + 環境起動
+make dev-up                   # コンテナ起動
+make test                     # go test -race ./...(コンテナ内)
+make lint                     # golangci-lint
+make swagger                  # Swagger ドキュメント再生成
+make admin-hash               # 管理者パスワードの bcrypt ハッシュ生成
+make dev-down                 # 停止
 ```
 
-### Swagger ドキュメント生成
+主な Make ターゲット: `dev-up` / `dev-down` / `dev-shell` / `build` / `test` / `test-unit` / `test-coverage` / `lint` / `lint-fix` / `fmt` / `swagger` / `admin-hash` / `db-reset` / `db-shell` / `logs` / `clean`(一覧は `make help`)。
 
-ハンドラのアノテーションを変更したら `docs/` を再生成する（frontend の型生成が
-この出力に依存する）。CI と同じバージョンの swag（go.mod で固定）が使われる。
+### server + worker(Pi)
+
+Docker Compose で `postgres` / `app`(server) / `worker` を起動します。
 
 ```bash
-make swagger
+docker compose up -d
 ```
 
-### アクセス
+server は起動時に PostgreSQL のマイグレーションを冪等適用してから `:8080` で待ち受けます(`PRIVATE_FEED_ADDR` を設定すると tailnet 用の私的フィードリスナーを別ポートで起動)。
 
-| サービス | URL | 説明 |
-|---------|-----|------|
-| API | <http://localhost:8080> | REST API |
-| Swagger UI | <http://localhost:8080/swagger/index.html> | APIドキュメント |
-| Prometheus | <http://localhost:9090> | メトリクス |
-| Grafana | <http://localhost:3000> | ダッシュボード |
+### radio(Mac、夜間バッチ)
 
----
-
-## 📡 API概要
-
-### 認証
+radio は Mac ネイティブでビルドし、launchd で 04:30 JST に起動します。tailnet 越しに Pi の PostgreSQL へ直接接続します。
 
 ```bash
-# トークン取得(JSON body の token に加え、HttpOnly cookie も発行される: D-22)
-curl -i -X POST http://localhost:8080/auth/token \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@example.com","password":"your-password"}'
-
-# ログアウト(HttpOnly cookie を失効。冪等・認証不要)
-curl -X POST http://localhost:8080/auth/logout
+go build -o radio ./cmd/radio
+./radio                       # 当日分エピソードを生成
+./radio -dry-run              # 台本のみ生成して stdout へ出力(TTS / DB 書き込みなし)
+./radio -since 2026-07-04T00:00:00+09:00   # 記事選定カーソルを手動指定して再実行
 ```
-
-`/auth/token` 成功時、JWT は JSON body の `token`(dev / 非ブラウザクライアントの
-Bearer フォールバック用に維持)に加えて、`HttpOnly; Secure; SameSite=Strict` の
-cookie(`catchup_feed_auth_token`)としても発行されます(D-22: XSS によるトークン
-窃取対策)。認証ミドルウェアは **cookie を優先**し、無ければ `Authorization: Bearer`
-にフォールバックします。`HttpOnly; Secure; SameSite=Strict` は固定で、cookie の
-Domain のみ `AUTH_COOKIE_DOMAIN` で制御します(下記「任意環境変数」)。
-
-### 主要エンドポイント
-
-| メソッド | エンドポイント | 説明 |
-|---------|---------------|------|
-| POST | `/auth/token` | 認証トークン取得(Set-Cookie: catchup_feed_auth_token も発行) |
-| POST | `/auth/logout` | 認証 cookie 失効(冪等・認証不要) |
-| GET | `/sources` | フィードソース一覧 |
-| POST | `/sources` | フィードソース登録 |
-| GET | `/articles` | 記事一覧（要約付き） |
-| GET | `/health` | ヘルスチェック |
-| GET | `/metrics` | Prometheusメトリクス |
-
-詳細は [Swagger UI](http://localhost:8080/swagger/index.html) を参照してください。
 
 ---
 
-## 🔧 設定
+## 環境変数
 
-### 必須環境変数
+`.env.example` にテンプレートがあります。以下はバイナリが実際に読む主要な変数です(既定値があるものは未設定でも動作します)。
 
-| 項目 | 説明 |
-|------|------|
-| `DATABASE_URL` | PostgreSQL接続文字列 |
-| `JWT_SECRET` | JWT署名用秘密鍵（32文字以上） |
-| `ADMIN_USER` | 管理者ユーザー名（単一管理者、C-7） |
-| `ADMIN_PASSWORD_HASH` | 管理者パスワードの bcrypt ハッシュ（下記参照） |
+### 共通 / データベース
 
-#### 管理者パスワードハッシュの生成
+| 変数 | 説明 |
+|---|---|
+| `DATABASE_URL` | PostgreSQL 接続文字列(必須) |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Compose の PostgreSQL 初期化 |
+| `LOG_LEVEL` | `debug` で詳細ログ(既定は info) |
+| `DB_MAX_OPEN_CONNS` / `DB_MAX_IDLE_CONNS` / `DB_CONN_MAX_LIFETIME` / `DB_CONN_MAX_IDLE_TIME` | コネクションプール調整 |
 
-サーバーには平文パスワードを置かず、bcrypt ハッシュのみを環境変数に設定します（C-7/C-20）。
+### server(管理 API・フィード配信)
+
+| 変数 | 説明 |
+|---|---|
+| `JWT_SECRET` | 管理 API 用 JWT 署名鍵(32文字以上、必須) |
+| `ADMIN_USER` / `ADMIN_PASSWORD_HASH` | 単一管理者の資格情報(パスワードは bcrypt ハッシュ、`make admin-hash` で生成) |
+| `FEED_PUBLIC_BASE_URL` | 公開フィードの基底 URL(例: `https://radio.catchup-feed.com`) |
+| `FEED_PRIVATE_BASE_URL` | 私的フィードの基底 URL(空なら Host ヘッダから導出) |
+| `FEED_AUDIO_DIR` | mp3 アーカイブのディレクトリ(パストラバーサルガードの基準) |
+| `FEED_CHANNEL_TITLE` / `FEED_CHANNEL_DESCRIPTION` / `FEED_MAX_ITEMS` | RSS チャンネルメタデータ |
+| `PRIVATE_FEED_ADDR` | tailnet 限定リスナーのバインドアドレス(例: `100.64.0.1:8081`。空で無効。ワイルドカードバインドは拒否) |
+| `CORS_ALLOWED_ORIGINS` / `CORS_ALLOWED_METHODS` / `CORS_ALLOWED_HEADERS` / `CORS_MAX_AGE` | CORS 設定 |
+| `CSP_ENABLED` / `CSP_REPORT_ONLY` | Content-Security-Policy |
+| `RATELIMIT_ENABLED` / `RATE_LIMIT_TRUST_PROXY` / `RATE_LIMIT_TRUSTED_PROXIES` | レート制限(公開ルートは per-IP) |
+
+### 要約 LLM(worker・radio 共通)
+
+| 変数 | 説明 |
+|---|---|
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | 第1段(無料枠)。キー未設定なら連鎖から除外 |
+| `GROQ_API_KEY` / `GROQ_MODEL` | 第2段(無料枠)。キー未設定なら連鎖から除外 |
+| `OLLAMA_ENABLED` / `OLLAMA_HOST` / `OLLAMA_MODEL` | 最終段(ローカルフォールバック) |
+| `SUMMARIZER_TIMEOUT` / `SUMMARIZER_CHAR_LIMIT` | 要約タイムアウト・入力文字数上限 |
+
+### worker(クロール・ジョブ)
+
+| 変数 | 説明 |
+|---|---|
+| `CONTENT_FETCH_ENABLED` / `CONTENT_FETCH_THRESHOLD` / `CONTENT_FETCH_PARALLELISM` / `CONTENT_FETCH_TIMEOUT` | go-readability 本文抽出 |
+| `CONTENT_FETCH_MAX_REDIRECTS` / `CONTENT_FETCH_DENY_PRIVATE_IPS` / `CONTENT_FETCH_MAX_BODY_SIZE` | SSRF ガード・取得上限 |
+| `JOBS_POLL_INTERVAL` | jobs コンシューマのポーリング間隔 |
+| `CLEANUP_CRON_SCHEDULE` | mp3 保持ジョブの投入スケジュール(既定 `30 6 * * *`) |
+
+### radio(音声生成・TTS)
+
+| 変数 | 説明 |
+|---|---|
+| `RADIO_SHOW_NAME` | 番組名 |
+| `RADIO_MAX_ARTICLES` | 1エピソードの最大記事数(既定 8) |
+| `RADIO_EPISODES_DIR` | Mac 側の一時生成ディレクトリ(既定 `/data/episodes`) |
+| `RADIO_RSYNC_DEST` / `RADIO_RSYNC_PATH` | Pi への rsync 転送先(空ならローカル配置) |
+| `RADIO_TIMEZONE` | 放送日判定のタイムゾーン(既定 `Asia/Tokyo`) |
+| `RADIO_TIMEOUT` | ラン全体のタイムアウト(既定 1h) |
+| `VOICEVOX_URL` | VOICEVOX Engine のエンドポイント(既定 `http://127.0.0.1:50021`) |
+| `VOICEVOX_SPEAKER` / `VOICEVOX_SPEAKER_NAME` | 話者 ID(既定 3 = ずんだもん)/ クレジット表記用の話者名 |
+| `VOICEVOX_SPEED_SCALE` / `VOICEVOX_TIMEOUT` | 話速 / 合成タイムアウト |
+| `FFMPEG_PATH` | ffmpeg のパス |
+| `BOOK_REVIEW_OLLAMA_MODEL` / `BOOK_REVIEW_CHUNKS` | 書籍コーナー(私的データ)のローカルモデル・チャンク数 |
+
+### 学習ループ(Phase 3)
+
+| 変数 | 説明 |
+|---|---|
+| `QUIZ_LADDER_DAYS` | spaced repetition の間隔ラダー |
+| `QUIZ_ITEMS_PER_DAY` / `QUIZ_SLOTS` | 1日の生成項目数・出題スロット数 |
+| `QUIZ_AUTO_RESOLVE_AFTER` / `QUIZ_BACKPRESSURE_THRESHOLD` / `QUIZ_WEEKLY_REVIEW_DOW` | 自動採点・キュー飽和・週次振り返り曜日 |
+
+### 通知
+
+| 変数 | 説明 |
+|---|---|
+| `DISCORD_ENABLED` | Discord Webhook 通知の有効化 |
+| `SLACK_ENABLED` | Slack Webhook 通知の有効化 |
+| `SMTP_ENABLED` | 友人へのメール通知(SMTP)の有効化 |
+
+Webhook URL・SMTP 認証情報などの機密値は `.env.example` のコメントを参照してください。秘密情報はコードやリポジトリにコミットしないでください。
+
+---
+
+## テスト
 
 ```bash
-# 対話的に生成（パスワードは12文字以上72バイト以下、コスト12で生成）
-make admin-hash
-
-# または stdin から
-printf '%s' 'your-password' | go run ./cmd/hash-password
+make test          # go test -race ./...(コンテナ内)
+make test-unit     # 短縮ユニットテスト
+make test-coverage # カバレッジ HTML 生成
 ```
 
-出力されたハッシュを `ADMIN_PASSWORD_HASH` に設定してください。
-docker compose が読み込む `.env` に書く場合は、ハッシュに含まれる `$` を
-`$$` にエスケープする必要があります（例: `$2a$12$...` → `$$2a$$12$$...`）。
-
-#### 認証 cookie（任意環境変数、D-22）
-
-`/auth/token` は JWT を HttpOnly cookie でも発行します。cookie の属性は以下で制御します。
-
-| 環境変数 | 説明 | デフォルト |
-|----------|------|-----------|
-| `AUTH_COOKIE_DOMAIN` | cookie の Domain 属性。空なら Domain を付けない（レスポンスホスト限定＝localhost 開発向け）。本番は共通 eTLD+1（例: `.catchup-feed.com`）を指定し、同一サイトのサブドメイン間で cookie を共有。先頭ドットは net/http が正規化して除去（RFC 6265、`catchup-feed.com` と等価） | 空 |
-
-`HttpOnly` / `Secure` / `SameSite=Strict` は固定（env 化しない）。`Secure` は常時付与
-——modern ブラウザは `http://localhost` を secure context として扱うため localhost
-開発でも cookie は送られます。ログアウトは `POST /auth/logout`（cookie を
-`Max-Age=0` で失効。冪等・認証不要）。
-
-### 要約エンジン（フォールバック連鎖: Gemini → Groq → Ollama）
-
-API キーが設定されたプロバイダのみ連鎖に組み込まれ、上から順に試行されます。
-全プロバイダが失敗した記事は未要約のまま次回クロールに持ち越されます。
-
-| 環境変数 | 説明 | デフォルト |
-|----------|------|-----------|
-| `GEMINI_API_KEY` | Google AI Studio（無料枠）API キー。未設定なら連鎖から除外 | — |
-| `GEMINI_MODEL` | Gemini モデル | `gemini-2.5-flash` |
-| `GROQ_API_KEY` | Groq（無料枠）API キー。未設定なら連鎖から除外 | — |
-| `GROQ_MODEL` | Groq モデル | `llama-3.3-70b-versatile` |
-| `OLLAMA_ENABLED` | ローカル Ollama を最終フォールバックとして使う（`false` で除外） | `true` |
-| `OLLAMA_HOST` | Ollama エンドポイント。worker をコンテナ/Pi で動かす場合、デフォルトはコンテナ自身を指すため tailnet 上の Mac のアドレス指定が必須 | `http://localhost:11434` |
-| `OLLAMA_MODEL` | Ollama モデル（事前に `ollama pull` が必要） | `qwen2.5:7b` |
-| `SUMMARIZER_CHAR_LIMIT` | 要約の文字数上限（100〜5000） | `900` |
-| `SUMMARIZER_TIMEOUT` | プロバイダ1回あたりのタイムアウト（Go duration 形式） | `60s` |
-
-### フィード配信（設計書 §5）
-
-公開フィードは `GET /feeds/{token}/feed.xml`（トークン認証、Cloudflare Tunnel 経由）、
-私的フィードは `GET /private/feed.xml`（認証なし、tailnet バインドの別リスナー）。
-mp3 の URL もトークンパス配下（C-9）で、Range リクエストに対応する（C-10）。
-
-| 環境変数 | 説明 | デフォルト |
-|----------|------|-----------|
-| `FEED_PUBLIC_BASE_URL` | 公開フィード・enclosure URL のベース（D-6） | `https://radio.catchup-feed.com` |
-| `FEED_PRIVATE_BASE_URL` | 私的フィードの enclosure URL ベース。未設定ならリクエストの Host から導出 | — |
-| `FEED_AUDIO_DIR` | エピソード mp3 の格納ディレクトリ。この外を指す audio_path は配信しない | `episodes` |
-| `FEED_CHANNEL_TITLE` | RSS チャンネルタイトル | `catchup-feed radio` |
-| `FEED_CHANNEL_DESCRIPTION` | RSS チャンネル説明。値に関わらず末尾へ「音声合成: VOICEVOX」が自動付与される（U-13。話者ごとのクレジットは各エピソードのショーノート側） | `毎朝の技術ニュースラジオ` |
-| `FEED_MAX_ITEMS` | フィードに載せる最大エピソード数 | `30` |
-| `PRIVATE_FEED_ADDR` | 私的フィードリスナーの bind アドレス。**必ず tailnet の IP:port を明示すること**。`:8081` や `0.0.0.0:8081` は無認証の私的エピソードを LAN 全体に露出するため、server が検出して私的リスナーの起動を拒否する（公開側は通常起動）。未設定なら私的リスナーを起動しない | — |
-
-> **注意（Cloudflare Tunnel 背後での運用）**: 公開フィードのレート制限は
-> per-IP のため、trusted proxy 設定（`RATE_LIMIT_TRUST_PROXY=true` +
-> `RATE_LIMIT_TRUSTED_PROXIES`）が必須。未設定だとすべてのクライアントが
-> Tunnel の接続元 IP ひとつに束ねられ、単一のレートバケットを共有して
-> しまい、正規の購読者が巻き添えで 429 になる。
-
-### ラジオ生成バッチ（cmd/radio、設計書 §6）
-
-Mac の夜間バッチ（launchd、04:30 JST 想定）。tailnet 越しに Pi の PostgreSQL へ
-直接接続する（`DATABASE_URL`）。台本生成の LLM は要約と同一のフォールバック連鎖
-（D-3、上記の Gemini/Groq/Ollama 設定を共有）。記事ゼロの日はスキップ（D-1）、
-VOICEVOX・ffmpeg・rsync の失敗は当日スキップでエラー終了し、翌日 launchd が再試行
-する（§8）。`-dry-run` で台本生成まで実行して stdout に出力（話者・プロンプト調整用、
-D-2）、`-since <RFC3339>` で記事選定カーソルを上書きできる。
-VOICEVOX の利用規約に基づき、各エピソードのショーノート末尾には
-「音声合成: VOICEVOX:話者名」のクレジットが自動挿入される（U-13）。話者名の解決に
-失敗した日はクレジット無しでの配信を避けるため当日スキップになる（dry-run のみ
-プレースホルダで続行）。
-
-| 環境変数 | 説明 | デフォルト |
-|----------|------|-----------|
-| `RADIO_SHOW_NAME` | 番組名（エピソードタイトル・プロンプト・ID3 タグに使用） | `catchup-feed` |
-| `RADIO_MAX_ARTICLES` | 1エピソードで紹介する記事の上限。超過分はショーノートにリンクのみ（§6-1） | `8` |
-| `RADIO_TIMEZONE` | 放送日の基準タイムゾーン（タイトル・rev 判定） | `Asia/Tokyo` |
-| `RADIO_EPISODES_DIR` | Pi 側のエピソード格納ディレクトリ（episodes.audio_path に記録） | `/data/episodes` |
-| `RADIO_RSYNC_DEST` | rsync 転送先（例 `pi@pi.tailnet:/data/episodes`）。未設定なら `RADIO_EPISODES_DIR` へ直接コピーするローカル完結モード | — |
-| `RADIO_RSYNC_PATH` | rsync バイナリのパス | `rsync` |
-| `RADIO_TIMEOUT` | バッチ全体のタイムアウト（Go duration 形式）。Ollama のみの縮退運転で台本生成が長引く場合は延長する | `1h` |
-| `RADIO_LEARNING_URL` | 私的版ショーノートに載せる採点ページの URL（Phase 3 §7.5。聴取→採点の唯一の橋） | `https://pulse.catchup-feed.com/learning` |
-| `FFMPEG_PATH` | ffmpeg バイナリのパス（Mac は brew の ffmpeg 前提） | `ffmpeg` |
-| `VOICEVOX_URL` | VOICEVOX Engine のエンドポイント | `http://127.0.0.1:50021` |
-| `VOICEVOX_SPEAKER` | 話者スタイル ID。仮話者は 3（ずんだもん ノーマル）、耳での選定は後日（D-2） | `3` |
-| `VOICEVOX_SPEAKER_NAME` | クレジット表記用の話者名の明示指定（U-13）。未設定なら Engine の `/speakers` API からスタイル ID で解決する。解決に失敗した日はクレジット無し配信を避けるため当日スキップ | —（API から解決） |
-| `VOICEVOX_SPEED_SCALE` | 話速倍率（D-2） | `1.0` |
-| `VOICEVOX_TIMEOUT` | 1文あたりの合成タイムアウト（Go duration 形式） | `120s` |
-
-同一日の再実行は既存エピソードを上書きせず、タイトルとファイル名に `rev2`, `rev3`…
-を付けた新規版になる（§6-6）。既に放送済み（segments に載った）記事は、再実行や
-`-since` の巻き戻しでも再選定されない。生成の中間ファイルはテンポラリディレクトリ内で
-完結し、DB への書き込み（episodes/segments INSERT と `regenerate_feed` /
-`notify_episode` ジョブ投入）は mp3 の転送成功後のみ行われる。なお episodes INSERT
-成功後のジョブ投入が失敗した場合、フィード反映・通知は翌日の成功実行まで遅れる
-（§8 の縮退範囲として許容）。
-
-### 学習ループ（Phase 3 設計書 §5/§6、D-17/D-18）
-
-毎朝の放送内容から学習項目（クイズ Q&A）を生成し、間隔反復ラダー
-（[1,7,30] 日）で私的エピソードの復習コーナーに再出題する。未採点の出題は
-48h で good 相当に自動前進し（result='auto'）、キューは採点しなくても勝手に
-ドレインする（D-17: 罪悪感 UI の禁止）。パラメータはすべて env で調整でき、
-radio（選定・自動解決）と server（採点 API）が同じ値を読む。
-
-| 環境変数 | 説明 | デフォルト |
-|----------|------|-----------|
-| `QUIZ_ITEMS_PER_DAY` | 1日あたりの学習項目生成数 M。M×ラダー段数 ≦ `QUIZ_SLOTS` を保つこと（§6.2 の飽和算術） | `1` |
-| `QUIZ_LADDER_DAYS` | 間隔ラダー（日数、カンマ区切り） | `1,7,30` |
-| `QUIZ_SLOTS` | 1エピソードの出題枠 S。超過分は翌日以降に oldest-first でスライド | `4` |
-| `QUIZ_BACKPRESSURE_THRESHOLD` | 期日超過の現役項目数がこの値を超えたら新規生成を停止（§5.2。出題は継続） | `30` |
-| `QUIZ_AUTO_RESOLVE_AFTER` | 未採点ログが自動前進するまでの経過時間（Go duration 形式、D-17） | `48h` |
-| `QUIZ_WEEKLY_REVIEW_DOW` | 週次振り返りセグメントを注入する JST 放送日の曜日（英語名 `saturday` または Go の time.Weekday 番号 `0`=日〜`6`=土、D-21） | `saturday` |
-
-`QUIZ_LADDER_DAYS` は radio（自動解決）と server（採点 API のステージ遷移）の
-両方が読むため、Pi と Mac で同じ値にする。それ以外の `QUIZ_*` と
-`RADIO_LEARNING_URL`（前掲の radio 表参照）、後述の `BOOK_REVIEW_*` /
-`PRIVATE_EPISODE_MAX_MINUTES` は radio（Mac）でのみ効く
-（server はラダー以外の値を使わない）。
-
-### 書籍レビュー（book_review、Phase 3 §7.3、C-12/D-12）
-
-私的エピソードに書籍の紹介コーナー（`segments.kind='book_review'`）を注入する。
-書籍は私的データのため台本生成は**ローカル Ollama 限定**（クラウド連鎖は使わない）。
-対象書籍の選択・一時停止・再開はダッシュボード（`/learning/books`、D-20）から行い、
-同時に進行するのは最大1冊（アプリ層で強制）。生成失敗・尺超過はその日スキップし、
-翌日カーソル位置から再開する（縮退許容）。
-
-| 環境変数 | 説明 | デフォルト |
-|----------|------|-----------|
-| `BOOK_REVIEW_OLLAMA_MODEL` | book_review 台本と書籍クイズを生成する Ollama モデル。要約連鎖の `OLLAMA_MODEL` とは別（書籍を安価な要約用モデルに載せない、C-12） | `gemma4:12b` |
-| `BOOK_REVIEW_CHUNKS` | 1回の book_review で読む `book_chunks` の数（≒紹介1トピック、§7.3） | `3` |
-| `PRIVATE_EPISODE_MAX_MINUTES` | 私的エピソードの尺ガード（分）。超過が見込まれる日は book_review を翌日に回す（§7.1） | `18` |
-
-### 通知とジョブ処理（worker、設計書 §3.3 / §7）
-
-worker は jobs テーブルのコンシューマを常駐させ、radio バッチが積んだ
-`regenerate_feed` / `notify_episode` / `notify_error` と、日次で自分が積む
-`cleanup_old_media`（D-4: mp3 は直近45日保持）を処理する。失敗ジョブは
-attempts 上限 3 でリトライし（§7）、worker クラッシュで running のまま残った
-ジョブは次回起動時に pending へ掃き戻される。通知チャネルは本人= Discord/Slack
-（D-7、`*_ENABLED` で宣言的に有効化）、友人=メール（C-11、公開エピソードのみ。
-購読 URL はハッシュ保存のため本文に含められず、新着案内のみ）。`notify_error`
-は best-effort で、通知自体の失敗はリトライしない（§8）。
-
-| 環境変数 | 説明 | デフォルト |
-|----------|------|-----------|
-| `JOBS_POLL_INTERVAL` | jobs テーブルのポーリング間隔（Go duration 形式） | `10s` |
-| `CLEANUP_CRON_SCHEDULE` | `cleanup_old_media` を積む cron 式（radio の 04:30 より後にする） | `30 6 * * *` |
-| `DISCORD_ENABLED` | Discord 通知を有効化（`true` のみ） | `false` |
-| `DISCORD_WEBHOOK_URL` | Discord Webhook URL（https / discord.com / /api/webhooks/ を検証） | — |
-| `SLACK_ENABLED` | Slack 通知を有効化（`true` のみ） | `false` |
-| `SLACK_WEBHOOK_URL` | Slack Incoming Webhook URL（https / hooks.slack.com / /services/ を検証） | — |
-| `SMTP_ENABLED` | 友人向けメール通知を有効化（`true` のみ） | `false` |
-| `SMTP_HOST` | SMTP サーバ（例 `smtp.gmail.com`。ゼロ円原則: 既存の無料 SMTP を使う） | — |
-| `SMTP_PORT` | SMTP ポート。465 は implicit TLS、それ以外は STARTTLS を試行 | `587` |
-| `SMTP_USERNAME` | SMTP 認証ユーザー（Gmail ならメールアドレス）。空なら AUTH なし | — |
-| `SMTP_PASSWORD` | SMTP パスワード（Gmail はアプリパスワード） | — |
-| `SMTP_FROM` | 送信元アドレス | `SMTP_USERNAME` |
-
-公開エピソードの mp3 が 10MB 未満なら Discord に直接添付される（§7）。
-本人通知のエピソードリンクには `FEED_PRIVATE_BASE_URL` を使う（未設定ならリンクなし）。
-
-詳細な設定項目は `.env.example` を参照してください。
+テストは table-driven + testify。フィードのトークン検証(失効・不正トークン)と Range 配信(境界)には専用のテストがあります。
 
 ---
 
-## 🎯 開発ガイドライン
+## ドキュメント
 
-### コーディング規約
+Phase 別の設計は親リポジトリの `docs/` にあります(このリポジトリと食い違う場合は設計書が正)。
 
-- **クリーンアーキテクチャ準拠**: 依存方向を厳守（外側 → 内側）
-- **ドメイン層の独立性**: 外部依存を持たない（標準ライブラリのみ）
-- **テストカバレッジ**: 70%以上を維持
-- **静的解析**: go fmt / goimports / go vet / golangci-lint
+- Phase 1 — ラジオ配信基盤(構成・データモデル・フィード/トークン認証・通知)
+- Phase 2 — ソース多モーダル化(YouTube/ポッドキャスト取り込み)+ 書籍 PDF RAG
+- Phase 3 — 学習ループコア(理解トラッカー・spaced repetition・復習クイズの音声注入)
 
-### エラーハンドリング
-
-```go
-// コンテキスト情報を付与
-if err != nil {
-    return fmt.Errorf("failed to create article: %w", err)
-}
-```
-
-### ブランチ命名規則
-
-- `feature/XXX` - 新機能
-- `fix/XXX` - バグ修正
-- `hotfix/XXX` - 緊急修正
+API 仕様は server 起動後に `/swagger/` で確認できます。
 
 ---
 
-## 🌐 本番環境
+## ライセンス
 
-### デモサイト
-
-本プロジェクトは**実際に稼働しているサービス**です。
-
-| 環境 | URL |
-|------|-----|
-| **フロントエンド** | [pulse.catchup-feed.com](https://pulse.catchup-feed.com) |
-| **バックエンドAPI** | [catchup.catchup-feed.com](https://catchup.catchup-feed.com) |
-
-### インフラ構成
-
-```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         catchup-feed.com                                │
-│                      (Cloudflare DNS Zone)                              │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  ┌───────────────────────┐         ┌───────────────────────┐           │
-│  │pulse.catchup-feed.com │         │catchup.catchup-feed.com│           │
-│  │       (CNAME)         │         │       (CNAME)          │           │
-│  │          ↓            │         │          ↓             │           │
-│  │    Vercel Edge        │         │   Cloudflare Tunnel    │           │
-│  │    (Next.js SSR)      │         │          ↓             │           │
-│  │                       │         │    Raspberry Pi 5      │           │
-│  │ catchup-feed-frontend │←───────→│ catchup-feed-backend   │           │
-│  │      (Frontend)       │   API   │   (Go API + Claude)    │           │
-│  └───────────────────────┘         └───────────────────────┘           │
-│                                              │                          │
-│                                              ▼                          │
-│                                     ┌─────────────────┐                 │
-│                                     │   PostgreSQL    │                 │
-│                                     └─────────────────┘                 │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### 技術的なポイント
-
-| 項目 | 内容 |
-|------|------|
-| **ホスティング** | Raspberry Pi 5（8GB）でGoバックエンド + PostgreSQLを運用 |
-| **セキュア公開** | Cloudflare Tunnelでポート開放なしにインターネット公開 |
-| **フロントエンド** | Vercel Edge Networkによるグローバルな CDN配信 |
-| **SSL/TLS** | Cloudflare / Vercelによる自動証明書管理 |
-| **CI/CD** | GitHub Actionsによる自動テスト・デプロイ |
-
-### なぜRaspberry Pi 5？
-
-- **低コスト運用**: クラウドサービスの月額費用を抑えながら本番運用
-- **学習目的**: インフラ構築からデプロイまで一貫した経験
-- **実用性の証明**: 軽量なGoバックエンドは低スペック環境でも十分なパフォーマンス
-
----
-
-## 📚 ドキュメント
-
-| ドキュメント | 説明 |
-|------------|------|
-| [docs/architecture.md](docs/architecture.md) | システムアーキテクチャ |
-| [docs/development-guidelines.md](docs/development-guidelines.md) | 開発ガイドライン |
-| [docs/functional-design.md](docs/functional-design.md) | 機能設計 |
-| [CHANGELOG.md](CHANGELOG.md) | 変更履歴 |
-
----
-
-## 📄 ライセンス
-
-MITライセンス - 詳細は [LICENSE](LICENSE) を参照
-
----
-
-**最終更新**: 2026-01-18
+[MIT License](LICENSE)
