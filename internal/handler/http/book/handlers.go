@@ -45,7 +45,7 @@ type UploadHandler struct{ Svc *bookUC.Service }
 
 // ServeHTTP 書籍 PDF アップロード
 // @Summary      書籍 PDF アップロード
-// @Description  PDF を BOOKS_DIR に保存し、kind='book_ingest' のジョブを投入します(取り込みは Mac の worker が夜間に実行、C-4)。検証: 拡張子 .pdf + マジックバイト %PDF、上限 100MB(D-25)。同名ファイルの再アップロードは置き換え+ジョブ再投入です(冪等。既存の pending ジョブがあれば重複投入しません)
+// @Description  PDF を BOOKS_DIR に保存し、kind='book_ingest' のジョブを投入します(取り込みは Mac の worker が夜間に実行、C-4)。検証: 拡張子 .pdf + マジックバイト %PDF、上限 100MB(D-25)。同名ファイルの再アップロードは置き換え+ジョブ再投入です(冪等。既存の pending ジョブがあれば重複投入せず、そのジョブの payload タイトルを新しいタイトルに更新します)
 // @Tags         books
 // @Security     BearerAuth
 // @Accept       multipart/form-data
@@ -126,7 +126,7 @@ type DeleteHandler struct{ Svc *bookUC.Service }
 
 // ServeHTTP 書籍削除
 // @Summary      書籍削除
-// @Description  正準ファイル名をキーに書籍を削除します: books 行(book_chunks・学習項目も含めて削除)+ PDF ファイル + 未処理(pending)の book_ingest ジョブ取消。ingest 前(books 行なし)でもファイルとジョブの削除で成功します
+// @Description  正準ファイル名をキーに書籍を削除します: books 行(book_chunks・学習項目も含めて削除)+ PDF ファイル + 未処理(pending)の book_ingest ジョブ取消。ingest 前(books 行なし)でもファイルとジョブの削除で成功します。対象は Pi にアップロードされた書籍(GET /books の deletable=true)のみで、CLI 取り込み書籍(deletable=false、file_path が Mac パス)はこの API では削除できません(pulse-books CLI 側で管理)
 // @Tags         books
 // @Security     BearerAuth
 // @Param        filename path string true "正準ファイル名(例: golang-book.pdf)"

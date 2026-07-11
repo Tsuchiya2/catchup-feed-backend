@@ -30,10 +30,11 @@ type fakeRepo struct {
 	books  []repository.BookRecord
 	states map[string]repository.IngestJobState
 
-	pending      map[string]bool
-	cancelReturn int64
-	deleteReturn bool
-	err          error
+	pending       map[string]bool
+	updatedTitles []string
+	cancelReturn  int64
+	deleteReturn  bool
+	err           error
 }
 
 func (f *fakeRepo) ListBooks(context.Context) ([]repository.BookRecord, error) {
@@ -44,8 +45,15 @@ func (f *fakeRepo) LatestIngestStates(context.Context) (map[string]repository.In
 	return f.states, f.err
 }
 
-func (f *fakeRepo) HasPendingIngest(_ context.Context, filePath string) (bool, error) {
-	return f.pending[filePath], f.err
+func (f *fakeRepo) UpdatePendingIngestTitle(_ context.Context, filePath, title string) (int64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	if !f.pending[filePath] {
+		return 0, nil
+	}
+	f.updatedTitles = append(f.updatedTitles, title)
+	return 1, nil
 }
 
 func (f *fakeRepo) CancelPendingIngest(context.Context, string) (int64, error) {
@@ -214,6 +222,8 @@ func TestUploadHandler(t *testing.T) {
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dto))
 			assert.Equal(t, tt.wantTitle, dto.Title)
 			assert.Equal(t, bookUC.StatusPending, dto.Status)
+			assert.Equal(t, filepath.Join(svc.Dir, dto.Filename), dto.FilePath)
+			assert.True(t, dto.Deletable)
 			require.Len(t, jobs.kinds, 1)
 			assert.Equal(t, entity.JobKindBookIngest, jobs.kinds[0])
 
@@ -255,6 +265,7 @@ func TestUploadHandler_PendingJobNotDuplicated(t *testing.T) {
 	repo.pending[filepath.Join(svc.Dir, "book.pdf")] = true
 
 	body, contentType := multipartBody(t, []field{
+		{name: "title", value: "改訂タイトル"},
 		{name: "file", filename: "book.pdf", value: "%PDF body"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/books", body)
@@ -264,6 +275,8 @@ func TestUploadHandler_PendingJobNotDuplicated(t *testing.T) {
 
 	assert.Equal(t, http.StatusCreated, rec.Code)
 	assert.Empty(t, jobs.kinds, "existing pending job suppresses re-enqueue")
+	// The deduped pending job gets the fresh title instead of a stale one.
+	assert.Equal(t, []string{"改訂タイトル"}, repo.updatedTitles)
 	// The file itself is still replaced.
 	_, err := os.Stat(filepath.Join(svc.Dir, "book.pdf"))
 	assert.NoError(t, err)
@@ -302,6 +315,8 @@ func TestListHandler(t *testing.T) {
 	assert.Equal(t, "処理中の本", onDisk.Title)
 	require.NotNil(t, onDisk.SizeBytes)
 	assert.Equal(t, int64(len("%PDF body")), *onDisk.SizeBytes)
+	assert.Equal(t, pdfPath, onDisk.FilePath)
+	assert.True(t, onDisk.Deletable, "Pi uploads are deletable")
 
 	cli := byName["cli.pdf"]
 	assert.Equal(t, bookUC.StatusDone, cli.Status)
@@ -310,6 +325,8 @@ func TestListHandler(t *testing.T) {
 	require.NotNil(t, cli.ChunkCount)
 	assert.Equal(t, 12, *cli.ChunkCount)
 	assert.Nil(t, cli.SizeBytes)
+	assert.Equal(t, "/mac/cli.pdf", cli.FilePath)
+	assert.False(t, cli.Deletable, "CLI books (Mac path) are not deletable via the API")
 }
 
 func TestListHandler_RepoError(t *testing.T) {

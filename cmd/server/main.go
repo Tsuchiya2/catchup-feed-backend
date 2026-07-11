@@ -190,6 +190,16 @@ func setupServer(logger *slog.Logger, database *sql.DB, version string) *ServerC
 		logger.Warn("books dir unavailable; book uploads will fail",
 			slog.String("dir", bookCfg.Dir), slog.Any("error", err))
 	}
+	// クラッシュで残った ".upload-*"(stage 済み・commit 前の一時ファイル)
+	// を起動時に1回だけ掃除する。この時点で処理中のアップロードは存在し得
+	// ない(まだ待ち受けていない)。失敗しても起動は継続(縮退許容)。
+	if swept, err := bookUC.SweepStagingFiles(bookCfg.Dir); err != nil {
+		logger.Warn("books staging sweep failed; leftover temp files may remain",
+			slog.String("dir", bookCfg.Dir), slog.Any("error", err))
+	} else if swept > 0 {
+		logger.Info("books staging sweep removed leftover temp files",
+			slog.String("dir", bookCfg.Dir), slog.Int("removed", swept))
+	}
 	bookSvc := &bookUC.Service{
 		Repo: pgRepo.NewBookAdminRepo(database),
 		Jobs: pgRepo.NewJobRepo(database),

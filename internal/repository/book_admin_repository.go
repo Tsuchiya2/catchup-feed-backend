@@ -41,10 +41,14 @@ type BookAdminRepository interface {
 	// file_path payload key are ignored.
 	LatestIngestStates(ctx context.Context) (map[string]IngestJobState, error)
 
-	// HasPendingIngest reports whether a pending kind='book_ingest' job for
-	// the file_path already exists (upload idempotency, D-25: 既存 pending
-	// ジョブがあれば重複投入しない).
-	HasPendingIngest(ctx context.Context, filePath string) (bool, error)
+	// UpdatePendingIngestTitle rewrites the payload title of pending
+	// kind='book_ingest' jobs for the file_path and returns how many rows
+	// it touched. Zero means no pending job exists — the caller enqueues a
+	// new one (upload idempotency, D-25: 既存 pending ジョブがあれば重複
+	// 投入しない; the title rewrite keeps a re-upload's new title from
+	// going stale on the deduped job). Only the payload is updated —
+	// status/attempts semantics stay owned by internal/jobs.
+	UpdatePendingIngestTitle(ctx context.Context, filePath, title string) (int64, error)
 
 	// CancelPendingIngest deletes pending (never running) book_ingest jobs
 	// for the file_path and returns how many rows it removed. Deleting a

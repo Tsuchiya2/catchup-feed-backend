@@ -76,28 +76,28 @@ func TestBookAdminRepo_LatestIngestStates(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-/* ───────────────────────── HasPendingIngest ───────────────────────── */
+/* ─────────────────────── UpdatePendingIngestTitle ─────────────────────── */
 
-func TestBookAdminRepo_HasPendingIngest(t *testing.T) {
+func TestBookAdminRepo_UpdatePendingIngestTitle(t *testing.T) {
 	tests := []struct {
-		name   string
-		exists bool
+		name string
+		rows int64
 	}{
-		{"pending job exists", true},
-		{"no pending job", false},
+		{"pending job updated", 1},
+		{"no pending job", 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo, mock, cleanup := newBookAdminRepo(t)
 			defer cleanup()
 
-			mock.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS (")).
-				WithArgs("book_ingest", "pending", "/data/books/a.pdf").
-				WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(tt.exists))
+			mock.ExpectExec(regexp.QuoteMeta("SET payload = jsonb_set(payload, '{title}', to_jsonb($4::text))")).
+				WithArgs("book_ingest", "pending", "/data/books/a.pdf", "新タイトル").
+				WillReturnResult(sqlmock.NewResult(0, tt.rows))
 
-			got, err := repo.HasPendingIngest(context.Background(), "/data/books/a.pdf")
+			got, err := repo.UpdatePendingIngestTitle(context.Background(), "/data/books/a.pdf", "新タイトル")
 			require.NoError(t, err)
-			assert.Equal(t, tt.exists, got)
+			assert.Equal(t, tt.rows, got)
 			assert.NoError(t, mock.ExpectationsWereMet())
 		})
 	}

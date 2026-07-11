@@ -54,9 +54,17 @@ type Service struct {
 // the books row (ingest result) and the latest book_ingest job (status).
 // SizeBytes/UploadedAt are nil for books ingested via the Mac CLI, whose
 // PDF never lived on the Pi; BookID/ChunkCount are nil until ingest.
+//
+// FilePath is the canonical identity (books.file_path / job payload) and
+// stays unique even when a Pi upload and a CLI ingest share a basename.
+// Deletable reports whether DELETE /books/{filename} can reach this entry:
+// true for Pi uploads (path directly under BOOKS_DIR), false for CLI
+// ingests (Mac-resolved path — those stay managed by the CLI).
 type Entry struct {
 	Filename   string
 	Title      string
+	FilePath   string
+	Deletable  bool
 	SizeBytes  *int64
 	UploadedAt *time.Time
 	Status     string
@@ -161,7 +169,7 @@ func (s *Service) Stage(filename string, r io.Reader) (*StagedUpload, error) {
 		return nil, ErrNotPDF
 	}
 
-	f, err := os.CreateTemp(s.Dir, ".upload-*")
+	f, err := os.CreateTemp(s.Dir, stagingPrefix+"*")
 	if err != nil {
 		return nil, fmt.Errorf("book: create temp file: %w", err)
 	}
@@ -198,8 +206,10 @@ func (s *Service) Stage(filename string, r io.Reader) (*StagedUpload, error) {
 
 // Commit finalizes a staged upload: rename onto the canonical path
 // (atomic overwrite — 同名ファイルの再アップは置き換え, D-25 の冪等意味論)
-// and enqueue kind='book_ingest' unless a pending job for the same
-// canonical path already exists. title falls back to the filename stem.
+// and enqueue kind='book_ingest'. When a pending job for the same
+// canonical path already exists it is not duplicated; its payload title is
+// rewritten instead, so the deduped job ingests under the freshest title
+// (the one this call also returns). title falls back to the filename stem.
 func (s *Service) Commit(ctx context.Context, up *StagedUpload, title string) (Entry, error) {
 	if up == nil || up.tmpPath == "" {
 		return Entry{}, errors.New("book: commit of empty staged upload")
@@ -216,11 +226,11 @@ func (s *Service) Commit(ctx context.Context, up *StagedUpload, title string) (E
 		title = titleFromFilename(up.Filename)
 	}
 
-	pending, err := s.Repo.HasPendingIngest(ctx, canonical)
+	updated, err := s.Repo.UpdatePendingIngestTitle(ctx, canonical, title)
 	if err != nil {
 		return Entry{}, err
 	}
-	if !pending {
+	if updated == 0 {
 		payload, err := json.Marshal(entity.BookIngestPayload{FilePath: canonical, Title: title})
 		if err != nil {
 			return Entry{}, fmt.Errorf("book: marshal payload: %w", err)
@@ -237,6 +247,8 @@ func (s *Service) Commit(ctx context.Context, up *StagedUpload, title string) (E
 	return Entry{
 		Filename:   up.Filename,
 		Title:      title,
+		FilePath:   canonical,
+		Deletable:  true,
 		SizeBytes:  &size,
 		UploadedAt: &now,
 		Status:     StatusPending,
@@ -264,7 +276,14 @@ func (s *Service) List(ctx context.Context) ([]Entry, error) {
 		if e, ok := byPath[path]; ok {
 			return e
 		}
-		e := &Entry{Filename: filepath.Base(path)}
+		e := &Entry{
+			Filename: filepath.Base(path),
+			FilePath: path,
+			// Only entries whose canonical path sits directly under
+			// BOOKS_DIR are reachable by DELETE /books/{filename}; CLI
+			// ingests carry Mac paths and stay CLI-managed.
+			Deletable: filepath.Dir(path) == s.Dir,
+		}
 		byPath[path] = e
 		paths = append(paths, path)
 		return e
@@ -383,6 +402,39 @@ func (s *Service) Delete(ctx context.Context, filename string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ---- staging sweep ----
+
+// stagingPrefix marks the temp files Stage writes into Dir. ValidateFilename
+// rejects hidden names, so these are invisible to the list/delete/private
+// endpoints; the startup sweep below is what reclaims their disk space.
+const stagingPrefix = ".upload-"
+
+// SweepStagingFiles removes leftover ".upload-*" staging temp files from
+// dir. A crash between Stage and Commit/Discard strands them; a cheap
+// one-shot sweep at server startup is enough (an in-flight upload cannot
+// exist at that moment — the server is not serving yet). Returns how many
+// files it removed; a missing dir is zero, not an error.
+func SweepStagingFiles(dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("book: read books dir: %w", err)
+	}
+	removed := 0
+	for _, de := range entries {
+		if !de.Type().IsRegular() || !strings.HasPrefix(de.Name(), stagingPrefix) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, de.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return removed, fmt.Errorf("book: sweep staging file: %w", err)
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 // removeFile deletes the PDF through os.Root so even a hostile filename

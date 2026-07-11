@@ -20,11 +20,17 @@ import (
 
 /* ───────────────────────────── fakes ───────────────────────────── */
 
+type titleUpdate struct {
+	filePath string
+	title    string
+}
+
 type fakeRepo struct {
 	books  []repository.BookRecord
 	states map[string]repository.IngestJobState
 
-	pending map[string]bool
+	pending      map[string]bool
+	titleUpdates []titleUpdate
 
 	cancelledPaths []string
 	cancelReturn   int64
@@ -43,8 +49,15 @@ func (f *fakeRepo) LatestIngestStates(context.Context) (map[string]repository.In
 	return f.states, f.err
 }
 
-func (f *fakeRepo) HasPendingIngest(_ context.Context, filePath string) (bool, error) {
-	return f.pending[filePath], f.err
+func (f *fakeRepo) UpdatePendingIngestTitle(_ context.Context, filePath, title string) (int64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	if !f.pending[filePath] {
+		return 0, nil
+	}
+	f.titleUpdates = append(f.titleUpdates, titleUpdate{filePath: filePath, title: title})
+	return 1, nil
 }
 
 func (f *fakeRepo) CancelPendingIngest(_ context.Context, filePath string) (int64, error) {
@@ -220,7 +233,7 @@ func TestService_Commit(t *testing.T) {
 	}{
 		{"enqueues with explicit title", "実用 Go 言語", false, "実用 Go 言語", true},
 		{"title falls back to filename stem", "", false, "book", true},
-		{"pending job suppresses re-enqueue", "t", true, "t", false},
+		{"pending job suppresses re-enqueue", "新しいタイトル", true, "新しいタイトル", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -238,6 +251,8 @@ func TestService_Commit(t *testing.T) {
 			assert.Equal(t, "book.pdf", entry.Filename)
 			assert.Equal(t, tt.wantTitle, entry.Title)
 			assert.Equal(t, bookUC.StatusPending, entry.Status)
+			assert.Equal(t, canonical, entry.FilePath)
+			assert.True(t, entry.Deletable, "Pi uploads are always deletable")
 
 			// The PDF sits at the canonical path with the full content.
 			got, err := os.ReadFile(canonical)
@@ -246,6 +261,9 @@ func TestService_Commit(t *testing.T) {
 
 			if !tt.wantEnqueue {
 				assert.Empty(t, jobs.enqueued)
+				// The deduped pending job must carry the fresh title, not
+				// the one from the original enqueue.
+				assert.Equal(t, []titleUpdate{{filePath: canonical, title: tt.wantTitle}}, repo.titleUpdates)
 				return
 			}
 			require.Len(t, jobs.enqueued, 1)
@@ -357,6 +375,8 @@ func TestService_List(t *testing.T) {
 		assert.Nil(t, byName["a-pending.pdf"].BookID)
 		assert.NotNil(t, byName["a-pending.pdf"].SizeBytes)
 		assert.NotNil(t, byName["a-pending.pdf"].UploadedAt)
+		assert.Equal(t, pendingPath, byName["a-pending.pdf"].FilePath)
+		assert.True(t, byName["a-pending.pdf"].Deletable, "Pi uploads are deletable")
 
 		assert.Equal(t, bookUC.StatusProcessing, byName["b-running.pdf"].Status)
 		assert.Equal(t, bookUC.StatusFailed, byName["d-failed.pdf"].Status)
@@ -375,6 +395,8 @@ func TestService_List(t *testing.T) {
 		assert.Nil(t, cli.UploadedAt)
 		require.NotNil(t, cli.BookID)
 		assert.Equal(t, int64(8), *cli.BookID)
+		assert.Equal(t, "/Users/mac/books/cli.pdf", cli.FilePath)
+		assert.False(t, cli.Deletable, "CLI books (Mac path) are not deletable via the API")
 	})
 
 	t.Run("disk file with no job and no book reads pending", func(t *testing.T) {
@@ -466,4 +488,33 @@ func TestService_Delete(t *testing.T) {
 			assert.True(t, os.IsNotExist(statErr), "the PDF must be gone")
 		})
 	}
+}
+
+/* ─────────────────────── SweepStagingFiles ─────────────────────── */
+
+func TestSweepStagingFiles(t *testing.T) {
+	t.Run("removes only staging temp files", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".upload-123"), []byte("%PDF partial"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".upload-456"), []byte("%PDF partial"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "book.pdf"), []byte("%PDF kept"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".other-hidden"), []byte("kept"), 0o600))
+
+		removed, err := bookUC.SweepStagingFiles(dir)
+		require.NoError(t, err)
+		assert.Equal(t, 2, removed)
+		assertDirHasOnly(t, dir, "book.pdf", ".other-hidden")
+	})
+
+	t.Run("empty dir is a no-op", func(t *testing.T) {
+		removed, err := bookUC.SweepStagingFiles(t.TempDir())
+		require.NoError(t, err)
+		assert.Zero(t, removed)
+	})
+
+	t.Run("missing dir is not an error", func(t *testing.T) {
+		removed, err := bookUC.SweepStagingFiles(filepath.Join(t.TempDir(), "nope"))
+		require.NoError(t, err)
+		assert.Zero(t, removed)
+	})
 }

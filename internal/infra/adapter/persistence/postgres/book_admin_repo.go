@@ -80,20 +80,25 @@ ORDER BY payload->>'file_path', id DESC`
 	return out, nil
 }
 
-// HasPendingIngest reports whether a pending book_ingest job for the
-// file_path exists.
-func (r *BookAdminRepo) HasPendingIngest(ctx context.Context, filePath string) (bool, error) {
+// UpdatePendingIngestTitle rewrites the payload title of pending
+// book_ingest jobs for the file_path (re-upload dedupe must not leave the
+// deduped job carrying the previous title). Zero rows back means "no
+// pending job" and the caller enqueues. Payload-only update: the row keeps
+// its status/attempts/run_after untouched (internal/jobs owns those).
+func (r *BookAdminRepo) UpdatePendingIngestTitle(ctx context.Context, filePath, title string) (int64, error) {
 	const query = `
-SELECT EXISTS (
-    SELECT 1 FROM jobs
-    WHERE kind = $1 AND status = $2 AND payload->>'file_path' = $3
-)`
-	var exists bool
-	err := r.db.QueryRowContext(ctx, query, entity.JobKindBookIngest, entity.JobStatusPending, filePath).Scan(&exists)
+UPDATE jobs
+SET payload = jsonb_set(payload, '{title}', to_jsonb($4::text))
+WHERE kind = $1 AND status = $2 AND payload->>'file_path' = $3`
+	res, err := r.db.ExecContext(ctx, query, entity.JobKindBookIngest, entity.JobStatusPending, filePath, title)
 	if err != nil {
-		return false, fmt.Errorf("HasPendingIngest: %w", err)
+		return 0, fmt.Errorf("UpdatePendingIngestTitle: %w", err)
 	}
-	return exists, nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("UpdatePendingIngestTitle: %w", err)
+	}
+	return n, nil
 }
 
 // CancelPendingIngest deletes pending book_ingest jobs for the file_path.
