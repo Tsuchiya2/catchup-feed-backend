@@ -102,6 +102,14 @@ transcribe worker の設定は pydantic-settings(`src/pulse_transcribe/config.py
 - 任意キー(`WHISPER_MODEL` 等)は既定値でよければ書かなくてよい。一覧と説明は
   catchup-feed-ai の `.env.example` が正。使う場合は `~/pulse/.env` に追記する
   (env.mac.example の「transcribe worker」節に同じキーをコメントで載せてある)
+- `BOOKS_PRIVATE_BASE_URL` — **書籍取り込み(D-25、7.1b章)を有効にする場合のみ**。
+  Pi の tailnet 専用リスナーのベース URL: `http://<pi の MagicDNS 名>:8081`
+  (compose.pi.yml が `${TAILNET_IP}:8081` に公開している私的リスナー。私的フィードと同居)。
+  worker はここに `/private/books/<ファイル名>` を付けて PDF を一時取得する
+  (無認証 — tailnet バインドが境界、C-5)。**未設定なら book_ingest ジョブは pending の
+  まま残る**(縮退動作。ダッシュボードの取り込みステータスが「待機」で止まる)。
+  scheme が http(s) 以外の設定ミスは book_ingest だけが無効化され(ERROR ログ)、
+  文字起こしは通常どおり実行される
 
 リポジトリ直下(`~/pulse/catchup-feed-ai/.env`)の .env は**手動開発用**。launchd 経由では
 `~/pulse/.env` の export 値が常に優先されるため、置いてあっても運用に影響しない。
@@ -164,6 +172,31 @@ transcribe worker の設定は pydantic-settings(`src/pulse_transcribe/config.py
 5. **次の毎時サイクル後**に要約が付く(§5.2b スイープ)。worker のログに
    `summary sweep completed` が出る: `docker logs catchup-feed-worker --since 70m | grep sweep`
 
+### 5.3 book_ingest を1冊通す(書籍取り込みを使う場合、D-25)
+
+書籍取り込み(ダッシュボードからの PDF アップロード)を使わないならこの節は飛ばしてよい
+(その場合 `BOOKS_PRIVATE_BASE_URL` も不要。契約の詳細は 7.1b章)。
+
+1. `~/pulse/.env` に追記(4章): `BOOKS_PRIVATE_BASE_URL=http://<pi の MagicDNS 名>:8081`
+2. 到達確認(Mac から):
+   ```bash
+   curl -sI http://<pi の MagicDNS 名>:8081/private/books/no-such.pdf
+   ```
+   **404 が返ればリスナー到達 OK**(存在しないファイル名なので 404 が正解。
+   接続拒否・タイムアウトなら Tailscale か Pi 側コンテナを疑う — 8章の接続確認と同じ手順)
+3. ダッシュボードから PDF をアップロード → jobs に pending が積まれることを確認(Pi 側):
+   ```bash
+   docker exec -it catchup-feed-postgres psql -U catchup-feed -c \
+     "SELECT id, status, attempts, payload->>'title' AS title \
+      FROM jobs WHERE kind='book_ingest' ORDER BY id DESC LIMIT 5;"
+   ```
+4. Mac で `~/pulse/bin/transcribe-run.sh --deadline 23:59` を手動実行(5.1 の deadline 読み替えと同じ)。
+   book_ingest は文字起こしより**先に**全件消化される。ログに
+   `jobs: job started` → `book_ingest: pdf downloaded` → `ingest: book stored` →
+   `jobs: job done` の順で出て、ダッシュボードのステータスが「完了」になれば OK
+5. Ollama(bge-m3)が落ちていると retryable 失敗(EmbeddingError)になる。
+   `ollama serve` が動いていることと `ollama list | grep bge-m3` を確認(mac.md 11章)
+
 ## 6. launchd 登録(03:00)+ 自動ウェイクの変更【ユーザー作業あり】
 
 **前提条件(順序厳守)**: 5章の手動確認が通っていること。特に後述のウェイク置き換えを
@@ -206,18 +239,19 @@ pmset の繰り返しウェイクは**1本しか持てない**。04:30 の radio
 
 ## 7. 他サービスとの連携(契約とデータの流れ)
 
-障害時にどこを見るかはすべてこの章に帰着する。連携面は **jobs テーブル**と **articles.content** の2つだけ。
+障害時にどこを見るかはすべてこの章に帰着する。連携面は **jobs テーブル**と **articles.content** の2つだけ
+(書籍取り込みを使う場合はこれに **books / book_chunks** が加わる — 7.1b章)。
 
 ### 7.1 jobs テーブル契約(正: backend `internal/jobs` + `internal/domain/entity/job.go`)
 
 | 項目 | 内容 |
 |---|---|
 | enqueue する側 | **Pi worker**。youtube/podcast の新着を articles(content NULL)+ jobs(kind='transcribe')で**原子的に** INSERT |
-| claim する側 | **Mac の pulse-transcribe だけ**。`kind='transcribe'` 限定で SKIP LOCKED claim(他 kind — notify_* 等 — は Pi worker の領分で、互いに触らない) |
+| claim する側 | **Mac の pulse-transcribe だけ**。`kind='transcribe'` を SKIP LOCKED claim(`kind='book_ingest'` も同じ worker の領分 — 7.1b章。他 kind — notify_* 等 — は Pi worker の領分で、互いに触らない) |
 | payload | `{article_id, media_url, source_kind}`。source_kind は 'youtube' \| 'podcast'。キー名は両リポジトリ共通の契約(変更は破壊的) |
 | status 遷移 | pending → running(claim、attempts+1)→ done / failed。リトライは pending に戻して run_after を後ろへ(attempts×1分) |
 | attempts 上限 | **3**。使い切ると failed で定着(=その動画・エピソードは諦める。通知しない、ダッシュボードで観測可) |
-| 起動時スイープ | Mac worker は起動時、**kind='transcribe' の running だけ**を pending に巻き戻す(前回クラッシュの孤児回収。他 kind は掃かない) |
+| 起動時スイープ | Mac worker は起動時、**kind='transcribe' と kind='book_ingest' の running だけ**を pending に巻き戻す(前回クラッシュの孤児回収。book_ingest が無効設定でも掃く — ダッシュボードに「処理中」が残り続けるのを防ぐ。他 kind は掃かない) |
 | D-14 持ち越し | 残予算(2時間/夜)に収まらないジョブは **attempts を巻き戻して pending に返し、その夜は以降 claim せず終了**。持ち越しは失敗ではない — 何夜続いても試行の権利は減らない。**単体で2時間超**の長尺だけは即 failed(足切り) |
 
 観測用ワンライナー(Pi 上。困ったらまずこれ):
@@ -227,6 +261,25 @@ docker exec -it catchup-feed-postgres psql -U catchup-feed -c \
   "SELECT id, status, attempts, run_after, left(last_error,80) AS last_error \
    FROM jobs WHERE kind='transcribe' ORDER BY id DESC LIMIT 20;"
 ```
+
+### 7.1b jobs テーブル契約 — kind='book_ingest'(D-25、書籍取り込み)
+
+`BOOKS_PRIVATE_BASE_URL`(4章)を設定した場合のみ有効。claim / status 遷移 / attempts の
+意味論は 7.1 と同一で、違いは以下だけ:
+
+| 項目 | 内容 |
+|---|---|
+| enqueue する側 | **Pi server**(`POST /books` のアップロード API)。PDF を BOOKS_DIR に保存し `{"file_path": "<Pi 正準絶対パス>", "title": "..."}` で投入 |
+| claim する側 | **Mac の pulse-transcribe だけ**(transcribe と同じ夜間実行の中で、文字起こしより**先に**全件消化) |
+| D-14 との関係 | 音源予算は**非適用**(embedding は数分で終わる別種の仕事)。`--deadline` ガードだけ適用 |
+| PDF の受け渡し | worker が `GET {BOOKS_PRIVATE_BASE_URL}/private/books/{ファイル名}` から一時取得(tailnet 専用・無認証、C-5)。一時ファイルは成功・失敗どちらでも削除 |
+| 同一性キー | `books.file_path` = payload の Pi 正準パス(一時パスは記録しない)。**同名再アップ=置き換え**(CLI ingest と同じ冪等意味論) |
+| 失敗の扱い | transcribe と同一(線形分バックオフ、attempts 上限 3)。payload 不正・HTTP 404(アップロード後に削除された)・壊れた PDF / DRM(C-15)/ 画像スキャンは**即 failed**。retry は run_after が数分先に付き、ドレインがその時点まで続いていれば同夜内に再 claim、終わっていれば翌夜回収 |
+| C-12 | PDF は Pi→Mac(Tailscale)のみ、embedding は Mac ローカルの Ollama(bge-m3)のみ。クラウド API はゼロ |
+
+観測は 7.1 のワンライナーの `kind='transcribe'` を `kind='book_ingest'` に replace すれば流用できる。
+ダッシュボードの取り込みステータス(待機/処理中/完了/失敗)はこの jobs 状態からの導出で、
+別のどこかに保存されてはいない(ジョブとディスクが正)。
 
 ### 7.2 文字起こし後の要約接続(§5.2b)
 
@@ -276,11 +329,18 @@ Pi worker の毎時 cron が「content 有り・summary 無し」の記事を掃
 - **文字起こしはあるが要約が付かない** → 7.2。1時間待つ。それでも付かないなら
   `docker logs catchup-feed-worker --since 70m | grep -i sweep` と `summaries.provider`(pi.md トラブル節)
 
-## 9. 書籍 PDF RAG(将来追記)
+## 9. 書籍 PDF RAG
 
-書籍取り込み(PDF → チャンク化 → embedding → Pi の pgvector)は実装ステップ7で
-このドキュメントに追記する。壁打ち UI(Open WebUI)と Ollama モデル(D-12)の導入は
-mac.md 11〜12章、pgvector の確認は mac.md 12章を参照。
+書籍取り込み(PDF → チャンク化 → embedding → Pi の pgvector)は2経路あり、どちらも
+同一性キーは `books.file_path`(同名は置き換え):
+
+- **ダッシュボード経由**(D-25、このドキュメントで運用): `BOOKS_PRIVATE_BASE_URL` を
+  設定すると(4章)、アップロードされた PDF を transcribe worker が同じ夜間実行で
+  取り込む。契約は 7.1b章、初回検証は 5.3章
+- **CLI 経由**(Mac ローカルの PDF): `uv run pulse-books ingest <PDF>`。worker は関与しない
+
+壁打ち UI(Open WebUI)と Ollama モデル(D-12)の導入は mac.md 11〜12章、
+pgvector の確認は mac.md 12章を参照。
 
 ## 停止・解除(参考)
 
