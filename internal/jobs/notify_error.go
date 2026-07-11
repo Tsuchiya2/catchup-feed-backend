@@ -49,7 +49,7 @@ func (h *NotifyErrorHandler) Handle(ctx context.Context, job *entity.Job) error 
 		payload.Source = "unknown"
 	}
 	msg := notify.Message{
-		Subject: fmt.Sprintf("pulse 障害: %s の実行が失敗しました", payload.Source),
+		Subject: fmt.Sprintf("catchup-feed 障害: %s の実行が失敗しました", payload.Source),
 		Body:    payload.Message,
 	}
 	for _, destination := range h.Destinations {

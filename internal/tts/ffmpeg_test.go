@@ -48,7 +48,7 @@ func TestFFmpeg_ConcatToMP3_CommandAssembly(t *testing.T) {
 	captured := &capturedRun{}
 	f := &tts.FFmpeg{Path: "/opt/homebrew/bin/ffmpeg", Run: captured.run}
 
-	tags := tts.ID3{Title: "pulse 2026-07-05", Artist: "pulse", Album: "pulse", Date: "2026-07-05"}
+	tags := tts.ID3{Title: "catchup-feed 2026-07-05", Artist: "catchup-feed", Album: "catchup-feed", Date: "2026-07-05"}
 	require.NoError(t, f.ConcatToMP3(context.Background(), wavs, out, tags))
 
 	assert.Equal(t, "/opt/homebrew/bin/ffmpeg", captured.name)
@@ -69,8 +69,8 @@ func TestFFmpeg_ConcatToMP3_CommandAssembly(t *testing.T) {
 
 	// ID3 tags
 	assert.Contains(t, args, "-id3v2_version")
-	assert.Contains(t, args, "title=pulse 2026-07-05")
-	assert.Contains(t, args, "artist=pulse")
+	assert.Contains(t, args, "title=catchup-feed 2026-07-05")
+	assert.Contains(t, args, "artist=catchup-feed")
 	assert.Contains(t, args, "date=2026-07-05")
 
 	// output is the final argument

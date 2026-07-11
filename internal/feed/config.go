@@ -24,7 +24,7 @@ import (
 const (
 	DefaultPublicBaseURL      = "https://radio.catchup-feed.com"
 	DefaultAudioDir           = "episodes"
-	DefaultChannelTitle       = "pulse radio"
+	DefaultChannelTitle       = "catchup-feed radio"
 	DefaultChannelDescription = "毎朝の技術ニュースラジオ"
 	DefaultMaxItems           = 30
 )
