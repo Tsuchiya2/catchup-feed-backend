@@ -18,8 +18,8 @@ const (
 	defaultMaxArticles = 8
 
 	// defaultShowName is the program name used in titles, prompts and ID3
-	// tags (仮称 pulse).
-	defaultShowName = "pulse"
+	// tags.
+	defaultShowName = "catchup-feed"
 
 	// defaultTimezone anchors the broadcast day (§3.3: 04:30 JST).
 	defaultTimezone = "Asia/Tokyo"
@@ -88,7 +88,7 @@ type Config struct {
 
 // LoadConfig reads the radio batch settings from environment variables:
 //
-//   - RADIO_SHOW_NAME: program name (default "pulse")
+//   - RADIO_SHOW_NAME: program name (default "catchup-feed")
 //   - RADIO_MAX_ARTICLES: on-air article cap (default 8, §6-1)
 //   - RADIO_TIMEZONE: broadcast-day timezone (default Asia/Tokyo)
 //   - RADIO_EPISODES_DIR: Pi-local episodes dir for audio_path (default /data/episodes)
