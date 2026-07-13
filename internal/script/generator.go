@@ -159,8 +159,11 @@ func quizPrompt(articles []repository.RadioArticle, count int) *quizPromptData {
 // 空になる), so the outro is regenerated exactly once with the quiz-less
 // pre-Phase 3 prompt (Quiz=nil) and the day's item generation is skipped —
 // the same "クイズなし" direction as every §5.1 degradation, keeping the
-// broadcast alive (§9). Only if that retry also comes back empty (or the
-// prompt was quiz-less to begin with) is it a script generation failure:
+// broadcast alive (§9). The retry body passes through stripQuizLeak too —
+// the model that just deviated into the composite format is the last one
+// to be trusted not to volunteer item lines again. Only if that retry also
+// ends up empty — natively or after the truncation — (or the prompt was
+// quiz-less to begin with) is it a script generation failure:
 // without a closing script there is no episode to ship, so the day is
 // skipped (§8) rather than broadcasting a truncated show.
 func (g *Generator) generateOutro(ctx context.Context, data outroData, articles []repository.RadioArticle, quizCount int) (string, []QuizDraft, error) {
@@ -225,10 +228,23 @@ func (g *Generator) generateOutro(ctx context.Context, data outroData, articles 
 		if err != nil {
 			return "", nil, fmt.Errorf("script: generate outro segment: %w", err)
 		}
-		// stripQuizLeak は意図的に通さない: 再試行プロンプトにはマーカーも
-		// クイズ指示も存在せず、pre-Phase 3 の quizCount<=0 経路と意味論
-		// 一致(§12-1 の混入経路はプロンプト側で消えている)。
-		body = strings.TrimSpace(raw)
+		body = raw
+		// 再試行プロンプトにマーカーもクイズ指示も存在しないが、§12-1 の
+		// 設計前提は「モデルは指示から逸脱する」— しかもここに来るのは
+		// 直前に複合フォーマットへ逸脱したばかりのモデルである。プライマリ
+		// 経路と同じ stripQuizLeak で公開台本への混入を遮断する(切断で
+		// 空になれば下の empty script = 当日スキップ §8)。なお通常の
+		// quizCount<=0 経路(QUIZ_ITEMS_PER_DAY=0 の日常運転)は従来
+		// どおり素通し — 同一実行内にクイズ指示が一度も存在しない文脈で、
+		// この遮断の対象外。
+		if clean, leaked := stripQuizLeak(body); leaked {
+			g.logger.WarnContext(ctx, "learning-item text leaked into the outro body, truncated (§12-1)",
+				slog.String("provider", provider),
+				slog.Bool("quizless_retry", true),
+				slog.Int("removed_chars", len([]rune(body))-len([]rune(clean))))
+			body = clean
+		}
+		body = strings.TrimSpace(body)
 	}
 	if body == "" {
 		return "", nil, fmt.Errorf("script: generate outro segment: empty script")

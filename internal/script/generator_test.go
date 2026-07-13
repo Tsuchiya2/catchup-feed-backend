@@ -339,6 +339,24 @@ func TestGenerator_QuizEmptyOutroQuizlessRetry(t *testing.T) {
 			wantErr:    true,
 		},
 		{
+			// §12-1 applies to the retry body too: the retrying model just
+			// deviated into the composite format, so volunteered item lines
+			// are truncated out of the broadcast even without any quiz
+			// instruction in the retry prompt.
+			name:       "retry volunteers quiz-like lines after the body — truncated, body ships",
+			outro:      "===LEARNING_ITEMS===\n" + itemLines,
+			retryOutro: "再試行のアウトロ。\n" + itemLines,
+			wantCalls:  5,
+			wantOutro:  "再試行のアウトロ。",
+		},
+		{
+			name:       "retry is quiz-like lines only — truncated to empty, day skipped (§8)",
+			outro:      "===LEARNING_ITEMS===\n" + itemLines,
+			retryOutro: itemLines,
+			wantCalls:  5,
+			wantErr:    true,
+		},
+		{
 			name:      "piggyback succeeds — no retry, drafts kept",
 			outro:     "アウトロ本文。\n===LEARNING_ITEMS===\n記事番号: 2\n概念: c\n問題: q\n答え: a",
 			wantCalls: 4,
