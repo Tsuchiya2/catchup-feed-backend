@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"catchup-feed/internal/utils/text"
@@ -20,15 +21,47 @@ var ErrNoProviders = errors.New("summarizer: no providers configured")
 // Chain tries providers in order (Gemini -> Groq -> Ollama) and returns the
 // first successful summary. Any provider error — 4xx/5xx, rate limit,
 // timeout, connection refused — moves on to the next provider; only parent
-// context cancellation aborts the chain. There is no retry and no circuit
-// breaker (C-3): if every provider fails, the error is returned and the
-// article is picked up again on the next cron run (§8 縮退許容).
+// context cancellation aborts the chain. There is no circuit breaker (C-3):
+// if every provider fails, the error is returned and the article is picked
+// up again on the next cron run (§8 縮退許容).
 //
-// D-3: the radio script generator reuses this same chain.
+// The single exception to "no retry" is D-26 (2), the 2026-07-13 欠番障害
+// 恒久対応: a 429 that carries the provider's own retry hint waits
+// min(hint, maxRetryAfterWait) and retries the same provider exactly once
+// before falling back. The waits are bounded per process by
+// retryWaitBudget; past the budget — and for any 429 without a usable
+// hint, or any other error — the chain falls back immediately as before.
+// The rationale: Gemini's minute quota resets in seconds, while falling
+// back lands the huge outro prompt on Groq's tighter TPM and finally on
+// Ollama, which is exactly the chain that killed the 7/13 episode.
+//
+// D-3: the radio script generator reuses this same chain (and the budget is
+// shared with worker summaries by design — D-26: チェーンは radio/worker
+// 共用のまま、遅延は累積予算で有界).
 type Chain struct {
 	providers []Provider
 	logger    *slog.Logger
+
+	// sleep waits for the 429 retry hint; injectable for tests. Returns
+	// the context error when canceled mid-wait.
+	sleep func(ctx context.Context, d time.Duration) error
+	// retryWaited accumulates the nanoseconds already spent waiting on 429
+	// hints in this process (D-26: 累積待機は retryWaitBudget で打ち切り).
+	retryWaited atomic.Int64
+	// budgetWarned makes the budget-exhaustion warning fire only once per
+	// process: the long-lived worker would otherwise repeat it on every 429
+	// for the rest of its life, but with zero occurrences the "retries have
+	// silently stopped" state would be invisible in the logs.
+	budgetWarned atomic.Bool
 }
+
+const (
+	// maxRetryAfterWait caps a single 429 hint wait (D-26: min(ヒント, 60s)).
+	maxRetryAfterWait = 60 * time.Second
+	// retryWaitBudget caps the total 429 wait time per process execution;
+	// once spent, every 429 falls back immediately (current behavior).
+	retryWaitBudget = 5 * time.Minute
+)
 
 // NewChain creates a fallback chain over the given providers, tried in order.
 // Returns ErrNoProviders if the list is empty.
@@ -36,7 +69,19 @@ func NewChain(providers ...Provider) (*Chain, error) {
 	if len(providers) == 0 {
 		return nil, ErrNoProviders
 	}
-	return &Chain{providers: providers, logger: slog.Default()}, nil
+	return &Chain{providers: providers, logger: slog.Default(), sleep: sleepContext}, nil
+}
+
+// sleepContext blocks for d or until ctx is canceled, whichever comes first.
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // NewChainFromEnv builds the standard Gemini -> Groq -> Ollama chain from
@@ -151,37 +196,93 @@ func (c *Chain) Generate(ctx context.Context, prompt string) (string, string, er
 }
 
 // fallback runs the provider chain for one operation and returns the first
-// successful output with the provider name.
+// successful output with the provider name. A provider gets at most two
+// attempts: the second only after a hinted 429 within the retry-wait budget
+// (D-26 (2)); everything else falls straight through to the next provider.
 func (c *Chain) fallback(ctx context.Context, op string, call func(Provider) (string, error)) (string, string, error) {
 	var errs []error
 
 	for _, p := range c.providers {
-		start := time.Now()
-		out, err := call(p)
-		duration := time.Since(start)
+		for attempt := 0; ; attempt++ {
+			start := time.Now()
+			out, err := call(p)
+			duration := time.Since(start)
 
-		if err == nil {
-			c.logger.InfoContext(ctx, op+" completed",
+			if err == nil {
+				c.logger.InfoContext(ctx, op+" completed",
+					slog.String("provider", p.Name()),
+					slog.Int("output_length", text.CountRunes(out)),
+					slog.Duration("duration", duration))
+				return out, p.Name(), nil
+			}
+
+			// Provider errors already carry the provider name prefix.
+			errs = append(errs, err)
+
+			// Parent context is gone (shutdown / crawl deadline): abort instead
+			// of hammering the remaining providers with a dead context.
+			if ctx.Err() != nil {
+				return "", "", fmt.Errorf("%s aborted: %w", op, errors.Join(errs...))
+			}
+
+			// D-26 (2): a 429 with the provider's own retry hint gets one
+			// bounded wait-and-retry on the same provider before falling
+			// back — the quota that just tripped resets in seconds, while
+			// the next provider downstream may be a strictly worse fit for
+			// this prompt (7/13 欠番の三段連鎖). Second attempts never
+			// retry again regardless of the error.
+			if attempt == 0 {
+				if wait, ok := c.reserveRetryWait(err); ok {
+					c.logger.WarnContext(ctx, op+" provider rate limited with retry hint, waiting for one same-provider retry (D-26)",
+						slog.String("provider", p.Name()),
+						slog.Duration("wait", wait),
+						slog.String("error", err.Error()))
+					if serr := c.sleep(ctx, wait); serr != nil {
+						errs = append(errs, serr)
+						return "", "", fmt.Errorf("%s aborted: %w", op, errors.Join(errs...))
+					}
+					continue
+				}
+			}
+
+			c.logger.WarnContext(ctx, op+" provider failed, falling back",
 				slog.String("provider", p.Name()),
-				slog.Int("output_length", text.CountRunes(out)),
-				slog.Duration("duration", duration))
-			return out, p.Name(), nil
+				slog.Duration("duration", duration),
+				slog.String("error", err.Error()))
+			break
 		}
-
-		// Provider errors already carry the provider name prefix.
-		errs = append(errs, err)
-
-		// Parent context is gone (shutdown / crawl deadline): abort instead
-		// of hammering the remaining providers with a dead context.
-		if ctx.Err() != nil {
-			return "", "", fmt.Errorf("%s aborted: %w", op, errors.Join(errs...))
-		}
-
-		c.logger.WarnContext(ctx, op+" provider failed, falling back",
-			slog.String("provider", p.Name()),
-			slog.Duration("duration", duration),
-			slog.String("error", err.Error()))
 	}
 
 	return "", "", fmt.Errorf("all %s providers failed: %w", op, errors.Join(errs...))
+}
+
+// reserveRetryWait decides whether err earns a same-provider retry (D-26
+// (2)): it must be a 429 carrying a usable hint, and the capped wait —
+// min(hint, maxRetryAfterWait) — must still fit into the process-wide
+// retryWaitBudget. Fitting waits are reserved atomically (the chain is
+// shared across worker goroutines) so the accumulated total never exceeds
+// the budget; once it is spent, every 429 falls back immediately, with a
+// once-per-process warning so the disabled-retry state stays observable.
+func (c *Chain) reserveRetryWait(err error) (time.Duration, bool) {
+	var rle *rateLimitError
+	if !errors.As(err, &rle) || rle.retryAfter <= 0 {
+		return 0, false
+	}
+	wait := min(rle.retryAfter, maxRetryAfterWait)
+	for {
+		used := c.retryWaited.Load()
+		if used+int64(wait) > int64(retryWaitBudget) {
+			if c.budgetWarned.CompareAndSwap(false, true) {
+				c.logger.Warn("429 retry-wait budget exhausted, falling back without retry — further skips are silent (D-26)",
+					slog.Duration("used", time.Duration(used)),
+					slog.Duration("budget", retryWaitBudget),
+					slog.Duration("requested_wait", wait),
+					slog.String("provider", rle.provider))
+			}
+			return 0, false
+		}
+		if c.retryWaited.CompareAndSwap(used, used+int64(wait)) {
+			return wait, true
+		}
+	}
 }
