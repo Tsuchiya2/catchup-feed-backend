@@ -36,7 +36,9 @@ const (
 // Config holds the learning-loop parameters (D-18/D-17).
 type Config struct {
 	// ItemsPerDay is M, the number of new items generated per broadcast
-	// (QUIZ_ITEMS_PER_DAY).
+	// (QUIZ_ITEMS_PER_DAY). 0 is a valid off switch (D-26 (3)): item
+	// generation is disabled and the outro prompt carries no piggybacked
+	// quiz section at all.
 	ItemsPerDay int
 	// Ladder is the spaced-repetition interval ladder in days
 	// (QUIZ_LADDER_DAYS, comma-separated positive ints).
@@ -57,7 +59,9 @@ type Config struct {
 
 // LoadConfig reads the learning-loop settings from environment variables:
 //
-//   - QUIZ_ITEMS_PER_DAY: 新規項目の1日あたり生成数 M (default 1, D-18)
+//   - QUIZ_ITEMS_PER_DAY: 新規項目の1日あたり生成数 M (default 1, D-18)。
+//     0 は正当な off 値 — クイズ生成無効、アウトロへの相乗りセクション
+//     なし (D-26 (3))。負値のみ警告してデフォルトに戻す
 //   - QUIZ_LADDER_DAYS: 間隔ラダー、カンマ区切りの日数 (default "1,7,30")
 //   - QUIZ_SLOTS: 1エピソードの出題枠 S (default 4)
 //   - QUIZ_BACKPRESSURE_THRESHOLD: 期日超過項目数の新規生成停止閾値 (default 30, §5.2)
@@ -79,8 +83,8 @@ func LoadConfig(logger *slog.Logger) Config {
 		AutoResolveAfter:      pkgconfig.GetEnvDuration("QUIZ_AUTO_RESOLVE_AFTER", defaultAutoResolveAfter),
 		WeeklyReviewDOW:       loadWeeklyReviewDOW(logger),
 	}
-	if cfg.ItemsPerDay <= 0 {
-		logger.Warn("QUIZ_ITEMS_PER_DAY must be positive, using default",
+	if cfg.ItemsPerDay < 0 {
+		logger.Warn("QUIZ_ITEMS_PER_DAY must not be negative (0 disables item generation), using default",
 			slog.Int("value", cfg.ItemsPerDay), slog.Int("default", defaultItemsPerDay))
 		cfg.ItemsPerDay = defaultItemsPerDay
 	}

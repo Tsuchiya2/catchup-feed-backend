@@ -177,7 +177,14 @@ func TestGenerator_OutroPromptUnchangedWithoutQuiz(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, llm.prompts, 4)
 
-	const golden = `あなたは技術ニュースを毎朝届けるラジオ番組「pulse」のパーソナリティです。
+	assert.Equal(t, goldenQuizlessOutroPrompt, llm.prompts[3],
+		"quizCount=0 must render the exact pre-Phase 3 outro prompt (§12-1)")
+}
+
+// goldenQuizlessOutroPrompt is the pre-Phase 3 outro prompt for day(4) and
+// radioArticles(). Shared by the §12-1 regression pin and the D-26 (1)
+// quiz-less retry test: the retry must reuse this exact prompt.
+const goldenQuizlessOutroPrompt = `あなたは技術ニュースを毎朝届けるラジオ番組「pulse」のパーソナリティです。
 2026年7月4日放送分のクロージング原稿を書いてください。
 
 今日紹介した記事:
@@ -189,9 +196,6 @@ func TestGenerator_OutroPromptUnchangedWithoutQuiz(t *testing.T) {
 - 出力は読み上げ原稿の本文のみ。見出し・箇条書き・記号・注釈は書かない。
 - 音声合成でそのまま読み上げるため、URL や英数字の羅列を避け、自然な日本語にする。
 `
-	assert.Equal(t, golden, llm.prompts[3],
-		"quizCount=0 must render the exact pre-Phase 3 outro prompt (§12-1)")
-}
 
 // TestGenerator_QuizPiggyback covers the D-19 happy path: one extra
 // section on the outro call (LLM 呼び出し回数は不変), the marker split
@@ -296,35 +300,86 @@ func TestGenerator_QuizDegradation(t *testing.T) {
 	}
 }
 
-// TestGenerator_QuizEmptyOutroBodyFails: a response with no closing script
-// at all — it starts with the marker, or the §12-1 leak truncation removed
-// everything. That is a script generation failure (empty script と同類),
-// not a quiz degradation — the day is skipped rather than shipping a
-// truncated show.
-func TestGenerator_QuizEmptyOutroBodyFails(t *testing.T) {
+// TestGenerator_QuizEmptyOutroQuizlessRetry pins D-26 (1) (2026-07-13 欠番
+// 障害の恒久対応): a piggybacked outro whose broadcast body comes back empty
+// — the response starts with the marker, or the §12-1 truncation removed
+// everything — is retried exactly once with the quiz-less pre-Phase 3
+// prompt, skipping the day's item generation (§5.1 と同じ「クイズなし」
+// への縮退で放送を守る). Only when the retry is also empty does the day
+// skip (§8), and a successful piggyback never triggers the retry.
+func TestGenerator_QuizEmptyOutroQuizlessRetry(t *testing.T) {
+	const itemLines = "記事番号: 1\n概念: c\n問題: q\n答え: a"
 	tests := []struct {
-		name  string
-		outro string
+		name       string
+		outro      string // 4th LLM response (piggybacked outro)
+		retryOutro string // 5th LLM response, "" = no 5th call expected
+		wantCalls  int
+		wantOutro  string
+		wantErr    bool
 	}{
 		{
-			name:  "response starts with the marker",
-			outro: "===LEARNING_ITEMS===\n記事番号: 1\n概念: c\n問題: q\n答え: a",
+			name:       "response starts with the marker — retry succeeds quiz-less",
+			outro:      "===LEARNING_ITEMS===\n" + itemLines,
+			retryOutro: "再試行のアウトロ。",
+			wantCalls:  5,
+			wantOutro:  "再試行のアウトロ。",
 		},
 		{
-			name:  "marker omitted and the whole response is item lines",
-			outro: "記事番号: 1\n概念: c\n問題: q\n答え: a",
+			name:       "marker omitted, whole response is item lines — retry succeeds quiz-less",
+			outro:      itemLines,
+			retryOutro: "再試行のアウトロ。",
+			wantCalls:  5,
+			wantOutro:  "再試行のアウトロ。",
+		},
+		{
+			name:       "retry also empty — empty script error, day skipped (§8)",
+			outro:      "===LEARNING_ITEMS===\n" + itemLines,
+			retryOutro: "   ",
+			wantCalls:  5,
+			wantErr:    true,
+		},
+		{
+			name:      "piggyback succeeds — no retry, drafts kept",
+			outro:     "アウトロ本文。\n===LEARNING_ITEMS===\n記事番号: 2\n概念: c\n問題: q\n答え: a",
+			wantCalls: 4,
+			wantOutro: "アウトロ本文。",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			llm := &fakeLLM{responses: []string{"イントロ。", "ニュース1。", "ニュース2。", tt.outro}}
+			responses := []string{"イントロ。", "ニュース1。", "ニュース2。", tt.outro}
+			if tt.retryOutro != "" {
+				responses = append(responses, tt.retryOutro)
+			}
+			llm := &fakeLLM{responses: responses}
 			gen := script.NewGenerator(llm, "pulse", nil)
 
 			segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "empty script")
-			assert.Nil(t, segments)
-			assert.Nil(t, drafts)
+
+			assert.Equal(t, tt.wantCalls, llm.calls,
+				"D-26: 再試行は1回だけ(成功時は再試行なし)")
+			if tt.wantCalls == 5 {
+				assert.Equal(t, goldenQuizlessOutroPrompt, llm.prompts[4],
+					"the retry must use the exact quiz-less pre-Phase 3 prompt (quizPrompt count<=0 経路)")
+			}
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "empty script")
+				assert.Nil(t, segments)
+				assert.Nil(t, drafts)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, segments, 4)
+			assert.Equal(t, tt.wantOutro, segments[3].Script)
+			if tt.wantCalls == 5 {
+				assert.Nil(t, drafts,
+					"quiz-less retry must skip the day's item generation (§5.1 縮退)")
+			} else {
+				require.Len(t, drafts, 1, "a successful piggyback keeps its drafts")
+				assert.Equal(t, int64(20), drafts[0].ArticleID)
+			}
 		})
 	}
 }

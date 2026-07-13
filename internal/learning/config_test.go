@@ -57,6 +57,29 @@ func TestLoadConfig_EnvOverrides(t *testing.T) {
 	assert.Equal(t, 72*time.Hour, cfg.AutoResolveAfter)
 }
 
+// TestLoadConfig_ItemsPerDay pins D-26 (3): 0 is a legitimate off switch
+// (クイズ生成無効・相乗りセクションなし) and must survive LoadConfig
+// unclamped; only negative values degrade to the default.
+func TestLoadConfig_ItemsPerDay(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{"positive value kept", "2", 2},
+		{"zero is a valid off value (D-26)", "0", 0},
+		{"negative falls back to default", "-1", 1},
+		{"non-numeric falls back to default", "many", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("QUIZ_ITEMS_PER_DAY", tt.value)
+			cfg := LoadConfig(nil)
+			assert.Equal(t, tt.want, cfg.ItemsPerDay)
+		})
+	}
+}
+
 func TestLoadConfig_InvalidValuesFallBack(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -67,7 +90,7 @@ func TestLoadConfig_InvalidValuesFallBack(t *testing.T) {
 		{"zero ladder entry", "QUIZ_LADDER_DAYS", "1,0,30"},
 		{"negative ladder entry", "QUIZ_LADDER_DAYS", "-1,7,30"},
 		{"empty ladder entry", "QUIZ_LADDER_DAYS", "1,,30"},
-		{"zero items per day", "QUIZ_ITEMS_PER_DAY", "0"},
+		{"negative items per day", "QUIZ_ITEMS_PER_DAY", "-1"},
 		{"negative slots", "QUIZ_SLOTS", "-4"},
 		{"zero backpressure threshold", "QUIZ_BACKPRESSURE_THRESHOLD", "0"},
 		{"negative auto-resolve delay", "QUIZ_AUTO_RESOLVE_AFTER", "-1h"},
