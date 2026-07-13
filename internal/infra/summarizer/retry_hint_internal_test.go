@@ -77,6 +77,20 @@ func TestParseRetryAfterHint(t *testing.T) {
 			want:   0,
 		},
 		{
+			// ParseFloat accepts "NaN"; without the dedicated guard this
+			// reaches the undefined float→Duration conversion. A parseable
+			// header also wins over the body by design (no fallback).
+			name:   "NaN header is not a hint and body is not consulted",
+			header: "NaN",
+			body:   `{"error":{"message":"Please retry in 9s."}}`,
+			want:   0,
+		},
+		{
+			name:   "infinite header is not a hint",
+			header: "+Inf",
+			want:   0,
+		},
+		{
 			name: "empty everything",
 			want: 0,
 		},
@@ -118,6 +132,15 @@ func TestPostJSON_RateLimitError(t *testing.T) {
 		{
 			name:          "429 without any hint",
 			status:        http.StatusTooManyRequests,
+			body:          `{"error":{"message":"quota exceeded"}}`,
+			wantRateLimit: true,
+		},
+		{
+			// NaN must not panic; the error degrades to a hint-less 429
+			// (= immediate fallback in the chain, current behavior).
+			name:          "429 with NaN Retry-After header degrades to no hint",
+			status:        http.StatusTooManyRequests,
+			retryAfter:    "NaN",
 			body:          `{"error":{"message":"quota exceeded"}}`,
 			wantRateLimit: true,
 		},

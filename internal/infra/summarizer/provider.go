@@ -118,6 +118,9 @@ var retryHintPatterns = []*regexp.Regexp{
 func parseRetryAfterHint(header string, body []byte) time.Duration {
 	if header != "" {
 		if secs, err := strconv.ParseFloat(header, 64); err == nil {
+			// A parseable header always wins, even when it yields no usable
+			// wait (e.g. "0" or "NaN" → 0): the server explicitly spoke, so
+			// the body message is deliberately not consulted as a fallback.
 			return secondsToDuration(secs)
 		}
 	}
@@ -133,8 +136,11 @@ func parseRetryAfterHint(header string, body []byte) time.Duration {
 
 // secondsToDuration converts a positive seconds hint to a Duration, rounded
 // up to a whole second so a fractional hint ("4.028s") never retries early.
+// NaN needs its own guard: ParseFloat accepts "NaN", and every comparison
+// below is false for it, which would otherwise reach the undefined
+// float→Duration conversion.
 func secondsToDuration(secs float64) time.Duration {
-	if secs <= 0 || math.IsInf(secs, 1) || secs > (math.MaxInt64/float64(time.Second)) {
+	if math.IsNaN(secs) || secs <= 0 || math.IsInf(secs, 1) || secs > (math.MaxInt64/float64(time.Second)) {
 		return 0
 	}
 	return time.Duration(math.Ceil(secs)) * time.Second

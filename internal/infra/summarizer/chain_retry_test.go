@@ -10,8 +10,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -194,6 +197,70 @@ func TestChain_RateLimitRetry(t *testing.T) {
 				"cumulative wait budget accounting")
 		})
 	}
+}
+
+// recordingHandler captures slog records for log-observability assertions.
+type recordingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *recordingHandler) countMessagesContaining(sub string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, r := range h.records {
+		if strings.Contains(r.Message, sub) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestChain_RateLimitRetry_BudgetExhaustionWarnsOnce: once the retry-wait
+// budget blocks a hinted retry, a Warn fires exactly once per process —
+// the disabled-retry state must be visible in the logs, but a long-lived
+// worker must not repeat it on every subsequent 429.
+func TestChain_RateLimitRetry_BudgetExhaustionWarnsOnce(t *testing.T) {
+	first := &scriptedProvider{name: "gemini", results: []stepResult{
+		{err: hinted429("gemini", 10*time.Second)}, // repeats on every call
+	}}
+	second := &scriptedProvider{name: "groq", results: []stepResult{{out: "groq 台本"}}}
+	chain, err := NewChain(first, second)
+	require.NoError(t, err)
+
+	handler := &recordingHandler{}
+	chain.logger = slog.New(handler)
+	var sleeps []time.Duration
+	chain.sleep = func(_ context.Context, d time.Duration) error {
+		sleeps = append(sleeps, d)
+		return nil
+	}
+	chain.retryWaited.Store(int64(retryWaitBudget)) // budget fully spent
+
+	for range 3 { // three hinted 429s after exhaustion
+		out, provider, err := chain.Generate(context.Background(), "prompt")
+		require.NoError(t, err)
+		assert.Equal(t, "groq 台本", out)
+		assert.Equal(t, "groq", provider)
+	}
+
+	assert.Empty(t, sleeps, "no waiting once the budget is spent")
+	assert.Equal(t, 3, first.calls, "no retry once the budget is spent")
+	assert.Equal(t, 1, handler.countMessagesContaining("retry-wait budget exhausted"),
+		"exhaustion warning must fire exactly once per process")
 }
 
 // TestChain_RateLimitRetry_ContextCanceledDuringWait: cancellation while

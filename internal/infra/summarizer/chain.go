@@ -48,6 +48,11 @@ type Chain struct {
 	// retryWaited accumulates the nanoseconds already spent waiting on 429
 	// hints in this process (D-26: 累積待機は retryWaitBudget で打ち切り).
 	retryWaited atomic.Int64
+	// budgetWarned makes the budget-exhaustion warning fire only once per
+	// process: the long-lived worker would otherwise repeat it on every 429
+	// for the rest of its life, but with zero occurrences the "retries have
+	// silently stopped" state would be invisible in the logs.
+	budgetWarned atomic.Bool
 }
 
 const (
@@ -256,7 +261,8 @@ func (c *Chain) fallback(ctx context.Context, op string, call func(Provider) (st
 // min(hint, maxRetryAfterWait) — must still fit into the process-wide
 // retryWaitBudget. Fitting waits are reserved atomically (the chain is
 // shared across worker goroutines) so the accumulated total never exceeds
-// the budget; once it is spent, every 429 falls back immediately.
+// the budget; once it is spent, every 429 falls back immediately, with a
+// once-per-process warning so the disabled-retry state stays observable.
 func (c *Chain) reserveRetryWait(err error) (time.Duration, bool) {
 	var rle *rateLimitError
 	if !errors.As(err, &rle) || rle.retryAfter <= 0 {
@@ -266,6 +272,13 @@ func (c *Chain) reserveRetryWait(err error) (time.Duration, bool) {
 	for {
 		used := c.retryWaited.Load()
 		if used+int64(wait) > int64(retryWaitBudget) {
+			if c.budgetWarned.CompareAndSwap(false, true) {
+				c.logger.Warn("429 retry-wait budget exhausted, falling back without retry — further skips are silent (D-26)",
+					slog.Duration("used", time.Duration(used)),
+					slog.Duration("budget", retryWaitBudget),
+					slog.Duration("requested_wait", wait),
+					slog.String("provider", rle.provider))
+			}
 			return 0, false
 		}
 		if c.retryWaited.CompareAndSwap(used, used+int64(wait)) {

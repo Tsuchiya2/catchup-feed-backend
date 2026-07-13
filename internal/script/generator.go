@@ -225,6 +225,9 @@ func (g *Generator) generateOutro(ctx context.Context, data outroData, articles 
 		if err != nil {
 			return "", nil, fmt.Errorf("script: generate outro segment: %w", err)
 		}
+		// stripQuizLeak は意図的に通さない: 再試行プロンプトにはマーカーも
+		// クイズ指示も存在せず、pre-Phase 3 の quizCount<=0 経路と意味論
+		// 一致(§12-1 の混入経路はプロンプト側で消えている)。
 		body = strings.TrimSpace(raw)
 	}
 	if body == "" {
