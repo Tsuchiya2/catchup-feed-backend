@@ -48,6 +48,17 @@ func (s *Service) List(ctx context.Context) ([]*entity.Source, error) {
 	return sources, nil
 }
 
+// ListActive retrieves only active sources. Used for viewer requests
+// (D-27 (3)): GET /sources is server-side forced to active=TRUE for the
+// viewer role — not a client opt-in query parameter.
+func (s *Service) ListActive(ctx context.Context) ([]*entity.Source, error) {
+	sources, err := s.Repo.ListActive(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list active sources: %w", err)
+	}
+	return sources, nil
+}
+
 // Search finds sources matching the given keyword.
 // The search is performed against source names.
 // Returns an error if the repository operation fails.

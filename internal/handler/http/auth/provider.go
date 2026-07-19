@@ -26,7 +26,12 @@ const (
 // and the response time does not reveal configuration state. The plaintext
 // is not used anywhere; validation against this hash always fails together
 // with the username check.
-const dummyBcryptHash = "$2a$12$CE054DMaQb/t43I4TxbNDurgUs70FL0XUpSqkOJ7VYpnMtVDPxuFu"
+//
+// The constant is kept at bcrypt.DefaultCost, aligned with the viewer
+// dummy (usecase/viewer): TestDummyBcryptHash_CostMatchesDefaultCost pins
+// the cost so future bcrypt.DefaultCost bumps do not silently reintroduce
+// a timing skew.
+const dummyBcryptHash = "$2a$10$2liJaVtwjkEHDTCuT02M2.Fk2DMXjYqQhpWzlKwPwD.B5SfFQ0fpm"
 
 // AdminAuthProvider validates the single administrator's credentials against
 // environment variables. The password is verified with bcrypt (C-20); the

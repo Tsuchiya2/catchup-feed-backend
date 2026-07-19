@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -9,6 +11,7 @@ import (
 
 	"catchup-feed/internal/handler/http/requestid"
 	authservice "catchup-feed/internal/service/auth"
+	viewerUC "catchup-feed/internal/usecase/viewer"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -25,9 +28,23 @@ type tokenResponse struct {
 // tokenTTL is the lifetime of an issued JWT.
 const tokenTTL = 1 * time.Hour
 
-// TokenHandler creates an HTTP handler that authenticates the administrator
-// and issues a JWT. pulse is a single-admin system (C-7/C-20): the token
-// carries only sub/iat/exp claims and no role.
+// ViewerAuthenticator validates a viewer login (email + bcrypt password
+// against the viewers table, D-27 (2)). It must reject deactivated viewers.
+// Credential mismatches (unknown email / wrong password / deactivated) must
+// be reported as usecase/viewer.ErrInvalidCredentials; any other error is
+// treated as an infrastructure failure (DB down) and logged as such — the
+// HTTP response is 401 either way so failures don't enumerate accounts.
+// Implemented by usecase/viewer.Service.
+type ViewerAuthenticator interface {
+	Authenticate(ctx context.Context, email, password string) error
+}
+
+// TokenHandler creates an HTTP handler that authenticates a user and issues
+// a JWT. Credentials are checked against the administrator first (C-7: env
+// + bcrypt); on mismatch they fall through to the viewers table (D-27 (2),
+// email + bcrypt; deactivated viewers are rejected). The issued token
+// carries sub/iat/exp plus the role claim (admin / viewer). viewers may be
+// nil to disable viewer login entirely (admin-only issuance).
 //
 // Unlike the admin API handlers (respond.SafeError -> JSON
 // {"error": "..."}), this endpoint replies to failures with http.Error
@@ -36,7 +53,10 @@ const tokenTTL = 1 * time.Hour
 // the spec matches the wire format the frontend already handles.
 //
 // @Summary      JWT トークン取得
-// @Description  管理者のユーザー名とパスワードで認証し、JWT トークンを発行します。
+// @Description  メールアドレスとパスワードで認証し、JWT トークンを発行します。
+// @Description  まず管理者(環境変数+bcrypt)と照合し、不一致なら viewers テーブルの
+// @Description  アクティブな閲覧専用アカウントと照合します(D-27。無効化済み viewer は拒否)。
+// @Description  発行する JWT には role クレーム(admin / viewer)が入ります。
 // @Description  JSON body の token(dev の Bearer フォールバック用に後方互換で維持)に加え、
 // @Description  同じ JWT を HttpOnly / Secure / SameSite=Strict の cookie
 // @Description  (catchup_feed_auth_token)で Set-Cookie します(D-22)。
@@ -51,7 +71,7 @@ const tokenTTL = 1 * time.Hour
 // @Failure      429 {string} string "Too many requests - rate limit exceeded"
 // @Failure      500 {string} string "トークン生成失敗"
 // @Router       /auth/token [post]
-func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
+func TokenHandler(authService *authservice.AuthService, viewers ViewerAuthenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
@@ -74,21 +94,40 @@ func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
 			Password: req.Password,
 		}
 
+		// 管理者を先に照合し、不一致なら viewer にフォールバック(D-27 (2))。
+		// 失敗レスポンスはどちらの照合で落ちたかを区別しない(401 固定)。
+		// ログのみ、資格情報不一致とインフラ障害(DB エラー等)を区別する。
+		role := RoleAdmin
 		if err := authService.ValidateCredentials(r.Context(), creds); err != nil {
-			logger.Warn("authentication failed",
-				slog.String("reason", "invalid_credentials"),
-				slog.Int64("duration_ms", time.Since(start).Milliseconds()))
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
+			viewerErr := err
+			if viewers != nil {
+				viewerErr = viewers.Authenticate(r.Context(), req.Email, req.Password)
+			}
+			if viewerErr != nil {
+				if viewers != nil && !errors.Is(viewerErr, viewerUC.ErrInvalidCredentials) {
+					logger.Error("authentication failed",
+						slog.String("reason", "viewer_lookup_failed"),
+						slog.String("error", viewerErr.Error()),
+						slog.Int64("duration_ms", time.Since(start).Milliseconds()))
+				} else {
+					logger.Warn("authentication failed",
+						slog.String("reason", "invalid_credentials"),
+						slog.Int64("duration_ms", time.Since(start).Milliseconds()))
+				}
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			role = RoleViewer
 		}
 
 		secret := []byte(os.Getenv("JWT_SECRET"))
 
 		now := time.Now()
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-			"sub": req.Email,
-			"iat": now.Unix(),
-			"exp": now.Add(tokenTTL).Unix(),
+			"sub":  req.Email,
+			"role": role,
+			"iat":  now.Unix(),
+			"exp":  now.Add(tokenTTL).Unix(),
 		})
 
 		signed, err := token.SignedString(secret)
@@ -102,6 +141,7 @@ func TokenHandler(authService *authservice.AuthService) http.HandlerFunc {
 
 		logger.Info("authentication successful",
 			slog.String("user_email", req.Email),
+			slog.String("role", role),
 			slog.Int64("duration_ms", time.Since(start).Milliseconds()))
 
 		// Issue the JWT as an HttpOnly cookie so the browser never exposes it

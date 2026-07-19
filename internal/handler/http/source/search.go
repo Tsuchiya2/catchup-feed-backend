@@ -15,7 +15,7 @@ type SearchHandler struct{ Svc srcUC.Service }
 
 // ServeHTTP ソース検索
 // @Summary      ソース検索
-// @Description  マルチキーワードでソースを検索します（AND論理）
+// @Description  マルチキーワードでソースを検索します（AND論理）。admin 専用(viewer は 403、D-27)
 // @Tags         sources
 // @Security     BearerAuth
 // @Produce      json
@@ -25,6 +25,7 @@ type SearchHandler struct{ Svc srcUC.Service }
 // @Success      200 {array} DTO "検索結果"
 // @Failure      400 {object} respond.ErrorResponse "Bad request"
 // @Failure      401 {object} respond.ErrorResponse "Authentication required"
+// @Failure      403 {object} respond.ErrorResponse "Forbidden - viewer ロールは検索不可(D-27)"
 // @Failure      429 {string} string "Too many requests - rate limit exceeded"
 // @Failure      500 {object} respond.ErrorResponse "Server error"
 // @Router       /sources/search [get]

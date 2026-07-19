@@ -15,7 +15,7 @@ import (
 var wantTables = []string{
 	"sources", "articles", "summaries",
 	"episodes", "segments",
-	"subscribers", "feed_tokens", "feed_access_logs",
+	"subscribers", "viewers", "feed_tokens", "feed_access_logs",
 	"jobs",
 	"books", "book_chunks",
 	"learning_items", "review_logs",
@@ -190,6 +190,9 @@ func TestSchema_MatchesDesignDoc(t *testing.T) {
 		{"segments unique per (episode_id, position)", "UNIQUE (episode_id, position)"},
 		{"feed_tokens stores only the hash, unique (D-5)", "token_hash    text NOT NULL UNIQUE"},
 		{"subscribers deactivate instead of delete (C-8)", "deactivated_at timestamptz"},
+		// D-27 — viewer 閲覧専用アカウント。
+		{"viewers.email is the unique login identifier (D-27)", "email          text NOT NULL UNIQUE"},
+		{"viewers store only the bcrypt hash (D-27)", "password_hash  text NOT NULL"},
 		{"jobs default to pending (C-4 DB queue)", "status        text NOT NULL DEFAULT 'pending'"},
 		{"jobs carry a jsonb payload", "payload       jsonb NOT NULL DEFAULT '{}'"},
 		{"episodes store the mp3 path, not the blob (C-10)", "audio_path    text NOT NULL"},

@@ -29,6 +29,7 @@ import (
 	learnUC "catchup-feed/internal/usecase/learning"
 	srcUC "catchup-feed/internal/usecase/source"
 	subUC "catchup-feed/internal/usecase/subscriber"
+	viewerUC "catchup-feed/internal/usecase/viewer"
 
 	hhttp "catchup-feed/internal/handler/http"
 	haccesslog "catchup-feed/internal/handler/http/accesslog"
@@ -40,6 +41,7 @@ import (
 	"catchup-feed/internal/handler/http/requestid"
 	hsrc "catchup-feed/internal/handler/http/source"
 	hsub "catchup-feed/internal/handler/http/subscriber"
+	hviewer "catchup-feed/internal/handler/http/viewer"
 	authservice "catchup-feed/internal/service/auth"
 
 	_ "catchup-feed/docs" // swagger docs
@@ -169,6 +171,11 @@ func setupServer(logger *slog.Logger, database *sql.DB, version string) *ServerC
 	}
 	logSvc := alUC.Service{Logs: pgRepo.NewFeedAccessLogRepo(database)}
 
+	// 閲覧専用アカウント(viewer, D-27): admin 管理の CRUD に加えて、
+	// ログイン照合(TokenHandler のフォールバック)とリクエスト毎の
+	// 有効性再検証(AuthzWithViewer)を担う。
+	viewerSvc := &viewerUC.Service{Viewers: pgRepo.NewViewerRepo(database)}
+
 	// 学習ループ管理 API(Phase 3 §8.1)。採点遷移のラダーは radio 側の
 	// 自動解決と同じ QUIZ_LADDER_DAYS(D-18)を読む — 両者が同じ
 	// learning.Transition を同じパラメータで適用する。
@@ -246,7 +253,7 @@ func setupServer(logger *slog.Logger, database *sql.DB, version string) *ServerC
 	)
 
 	// Setup routes with per-endpoint rate limiting
-	rootMux, rateLimiters := setupRoutes(database, version, srcSvc, artSvc, subSvc, logSvc, learnSvc, bookSvc, ipExtractor, logger, feedServer, feedCfg.PublicBaseURL)
+	rootMux, rateLimiters := setupRoutes(database, version, srcSvc, artSvc, subSvc, logSvc, learnSvc, bookSvc, viewerSvc, ipExtractor, logger, feedServer, feedCfg.PublicBaseURL)
 	// The PDF upload route needs a bigger request ceiling than the 1MB
 	// default (D-25: 100MB/冊; +1MB は multipart 境界と title の余裕分)。
 	bodyLimitOverrides := map[string]int64{
@@ -282,6 +289,7 @@ func setupRoutes(
 	logSvc alUC.Service,
 	learnSvc learnUC.Service,
 	bookSvc *bookUC.Service,
+	viewerSvc *viewerUC.Service,
 	ipExtractor middleware.IPExtractor,
 	logger *slog.Logger,
 	feedServer *feed.Server,
@@ -298,11 +306,12 @@ func setupRoutes(
 	// フィード1回+mp3数回なので通常運用では到達しない)
 	feedRateLimiter := middleware.NewRateLimiter(60, 1*time.Minute, ipExtractor)
 
-	// 単一管理者の資格情報検証(環境変数+bcrypt、C-7/C-20)
+	// 管理者の資格情報検証(環境変数+bcrypt、C-7/C-20)。不一致時は
+	// viewers テーブルへのフォールバック照合(D-27 (2))。
 	authService := authservice.NewAuthService(hauth.NewAdminAuthProvider())
 
 	publicMux := http.NewServeMux()
-	publicMux.Handle("/auth/token", authRateLimiter.Middleware(hauth.TokenHandler(authService)))
+	publicMux.Handle("/auth/token", authRateLimiter.Middleware(hauth.TokenHandler(authService, viewerSvc)))
 	// ログアウト: HttpOnly cookie を backend で失効させる(D-22)。冪等・
 	// 認証不要(期限切れトークンでも cookie を消せること)。POST 限定 —
 	// メソッド未制限だと <img src=".../auth/logout"> の反射 GET で被害者を
@@ -333,9 +342,17 @@ func setupRoutes(
 	hlearning.Register(privateMux, learnSvc)
 	// 書籍 PDF 管理(D-25、C-21 フラット構成)。全ルート JWT 必須。
 	hbook.Register(privateMux, bookSvc)
+	// viewer 管理 API(D-27、C-21 フラット構成)。admin 専用。
+	hviewer.Register(privateMux, viewerSvc)
+	// GET /auth/me: 認証済みユーザーの sub / role を返す(D-27 (5))。
+	// 外側の AuthzWithViewer が識別情報を context に載せる。viewer の
+	// 許可リストに含まれる数少ないルートのひとつ。
+	privateMux.Handle("GET /auth/me", hauth.MeHandler())
 
-	// Apply authentication middleware
-	protected := hauth.Authz(privateMux)
+	// Apply the role-aware authentication middleware (D-27): admin は全
+	// ルート、viewer はリクエスト毎の DB 再検証を経て許可リスト
+	// (GET /sources / GET /auth/me)のみ。既定は admin 専用。
+	protected := hauth.AuthzWithViewer(viewerSvc)(privateMux)
 
 	rootMux := http.NewServeMux()
 	rootMux.Handle("/auth/token", publicMux)

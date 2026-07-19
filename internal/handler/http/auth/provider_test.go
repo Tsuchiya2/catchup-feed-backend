@@ -40,6 +40,17 @@ func TestAdminAuthProvider_Name(t *testing.T) {
 	assert.Equal(t, "env-bcrypt", NewAdminAuthProvider().Name())
 }
 
+// TestDummyBcryptHash_CostMatchesDefaultCost pins the dummy hash to
+// bcrypt.DefaultCost, aligned with the viewer-side dummy
+// (usecase/viewer): a cost mismatch between the dummy and real hashes
+// makes the equal-work timing defence observable. If bcrypt.DefaultCost is
+// ever bumped, regenerate dummyBcryptHash.
+func TestDummyBcryptHash_CostMatchesDefaultCost(t *testing.T) {
+	cost, err := bcrypt.Cost([]byte(dummyBcryptHash))
+	require.NoError(t, err)
+	assert.Equal(t, bcrypt.DefaultCost, cost)
+}
+
 func TestAdminAuthProvider_ValidateCredentials(t *testing.T) {
 	validHash := testHash(t, testPassword)
 

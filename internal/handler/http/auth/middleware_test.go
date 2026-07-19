@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,13 +35,38 @@ func signToken(t *testing.T, secret string, claims jwt.MapClaims) string {
 	return signed
 }
 
-// adminClaims returns the claims TokenHandler issues for the administrator.
+// adminClaims returns the claims TokenHandler issues for the administrator
+// (D-27: tokens carry a role claim).
 func adminClaims() jwt.MapClaims {
 	return jwt.MapClaims{
-		"sub": testAdminUser,
-		"iat": time.Now().Unix(),
-		"exp": time.Now().Add(1 * time.Hour).Unix(),
+		"sub":  testAdminUser,
+		"role": RoleAdmin,
+		"iat":  time.Now().Unix(),
+		"exp":  time.Now().Add(1 * time.Hour).Unix(),
 	}
+}
+
+// viewerClaims returns the claims TokenHandler issues for a viewer.
+func viewerClaims(email string) jwt.MapClaims {
+	return jwt.MapClaims{
+		"sub":  email,
+		"role": RoleViewer,
+		"iat":  time.Now().Unix(),
+		"exp":  time.Now().Add(1 * time.Hour).Unix(),
+	}
+}
+
+// stubViewerVerifier is a canned ViewerVerifier for middleware tests.
+type stubViewerVerifier struct {
+	active map[string]bool
+	err    error
+}
+
+func (s *stubViewerVerifier) IsActiveViewer(_ context.Context, email string) (bool, error) {
+	if s.err != nil {
+		return false, s.err
+	}
+	return s.active[email], nil
 }
 
 // tamperSub swaps the sub claim in an already-signed token without
@@ -217,22 +244,29 @@ func TestAuthz_TokenValidation(t *testing.T) {
 	}
 }
 
-// TestAuthz_NonAdminSubjectForbidden is the regression test for C-20: a
-// validly-signed token whose subject is not the administrator — e.g. a
-// leftover viewer token from the old multi-user implementation — must be
-// rejected with 403 on every admin endpoint.
-func TestAuthz_NonAdminSubjectForbidden(t *testing.T) {
+// TestAuthz_NonAdminForbidden is the C-20 regression test re-read for the
+// two-role world (D-27): on the admin-only middleware, a validly-signed
+// token must be rejected with 403 when its role is missing (pre-D-27
+// legacy token), unknown, or viewer — and when role=admin but the subject
+// is not the administrator.
+func TestAuthz_NonAdminForbidden(t *testing.T) {
 	setAuthzEnv(t)
 	middleware := Authz(okHandler())
 
-	legacyViewerToken := signToken(t, testJWTSecret, jwt.MapClaims{
-		"sub":  "demo@example.com",
-		"role": "viewer", // 旧実装のクレーム。現在は無視され、sub のみで判定される
+	viewerToken := signToken(t, testJWTSecret, viewerClaims("demo@example.com"))
+	roleLessToken := signToken(t, testJWTSecret, jwt.MapClaims{
+		"sub": testAdminUser, // 旧トークン: 正しい管理者 sub でも role なしは 403
+		"exp": time.Now().Add(1 * time.Hour).Unix(),
+	})
+	unknownRoleToken := signToken(t, testJWTSecret, jwt.MapClaims{
+		"sub":  testAdminUser,
+		"role": "superadmin",
 		"exp":  time.Now().Add(1 * time.Hour).Unix(),
 	})
-	nonAdminToken := signToken(t, testJWTSecret, jwt.MapClaims{
-		"sub": "friend@example.com",
-		"exp": time.Now().Add(1 * time.Hour).Unix(),
+	nonAdminSubjectToken := signToken(t, testJWTSecret, jwt.MapClaims{
+		"sub":  "friend@example.com",
+		"role": RoleAdmin,
+		"exp":  time.Now().Add(1 * time.Hour).Unix(),
 	})
 
 	adminEndpoints := []struct {
@@ -247,14 +281,18 @@ func TestAuthz_NonAdminSubjectForbidden(t *testing.T) {
 		{http.MethodPost, "/subscribers/1/tokens"},
 		{http.MethodDelete, "/tokens/1"},
 		{http.MethodGet, "/access-logs"},
+		{http.MethodGet, "/viewers"},
+		{http.MethodPost, "/viewers"},
 	}
 
 	for _, token := range []struct {
 		name  string
 		value string
 	}{
-		{"legacy viewer token", legacyViewerToken},
-		{"non-admin subject token", nonAdminToken},
+		{"viewer role token", viewerToken},
+		{"role-less legacy token", roleLessToken},
+		{"unknown role token", unknownRoleToken},
+		{"non-admin subject token", nonAdminSubjectToken},
 	} {
 		for _, ep := range adminEndpoints {
 			t.Run(token.name+" "+ep.method+" "+ep.path, func(t *testing.T) {
@@ -270,25 +308,186 @@ func TestAuthz_NonAdminSubjectForbidden(t *testing.T) {
 	}
 }
 
-// TestAuthz_LegacyAdminTokenStillAccepted documents that extra legacy claims
-// (role) are ignored: what matters is the signature and the subject.
-func TestAuthz_LegacyAdminTokenStillAccepted(t *testing.T) {
+// TestAuthzWithViewer covers the role-aware outer middleware (D-27): the
+// admin passes everywhere, the viewer only reaches the read-only allowlist
+// after the per-request DB re-validation, and a deactivated / deleted
+// viewer's still-valid JWT is rejected immediately.
+func TestAuthzWithViewer(t *testing.T) {
+	const viewerEmail = "friend@example.com"
+
+	tests := []struct {
+		name     string
+		verifier ViewerVerifier
+		claims   jwt.MapClaims
+		method   string
+		path     string
+		wantCode int
+	}{
+		{
+			name:     "viewer allowed on GET /sources",
+			verifier: &stubViewerVerifier{active: map[string]bool{viewerEmail: true}},
+			claims:   viewerClaims(viewerEmail),
+			method:   http.MethodGet, path: "/sources",
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "viewer allowed on GET /auth/me",
+			verifier: &stubViewerVerifier{active: map[string]bool{viewerEmail: true}},
+			claims:   viewerClaims(viewerEmail),
+			method:   http.MethodGet, path: "/auth/me",
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "viewer forbidden on GET /sources/search",
+			verifier: &stubViewerVerifier{active: map[string]bool{viewerEmail: true}},
+			claims:   viewerClaims(viewerEmail),
+			method:   http.MethodGet, path: "/sources/search",
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "viewer forbidden on POST /sources",
+			verifier: &stubViewerVerifier{active: map[string]bool{viewerEmail: true}},
+			claims:   viewerClaims(viewerEmail),
+			method:   http.MethodPost, path: "/sources",
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "viewer forbidden on GET /subscribers",
+			verifier: &stubViewerVerifier{active: map[string]bool{viewerEmail: true}},
+			claims:   viewerClaims(viewerEmail),
+			method:   http.MethodGet, path: "/subscribers",
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "viewer forbidden on viewer management API",
+			verifier: &stubViewerVerifier{active: map[string]bool{viewerEmail: true}},
+			claims:   viewerClaims(viewerEmail),
+			method:   http.MethodPost, path: "/viewers",
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name: "deactivated viewer with valid JWT is cut off immediately",
+			// DB 再検証が false を返す = 無効化済み or 物理削除済み(D-27 (4))
+			verifier: &stubViewerVerifier{active: map[string]bool{}},
+			claims:   viewerClaims(viewerEmail),
+			method:   http.MethodGet, path: "/sources",
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "viewer re-validation failure fails closed",
+			verifier: &stubViewerVerifier{err: errors.New("db down")},
+			claims:   viewerClaims(viewerEmail),
+			method:   http.MethodGet, path: "/sources",
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			name:     "role-less legacy token forbidden even on allowlisted route",
+			verifier: &stubViewerVerifier{active: map[string]bool{viewerEmail: true}},
+			claims: jwt.MapClaims{
+				"sub": viewerEmail,
+				"exp": time.Now().Add(1 * time.Hour).Unix(),
+			},
+			method: http.MethodGet, path: "/sources",
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "unknown role forbidden even on allowlisted route",
+			verifier: &stubViewerVerifier{active: map[string]bool{viewerEmail: true}},
+			claims: jwt.MapClaims{
+				"sub":  viewerEmail,
+				"role": "editor",
+				"exp":  time.Now().Add(1 * time.Hour).Unix(),
+			},
+			method: http.MethodGet, path: "/sources",
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "admin passes admin routes",
+			verifier: &stubViewerVerifier{active: map[string]bool{}},
+			claims:   adminClaims(),
+			method:   http.MethodPost, path: "/sources",
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "admin passes viewer-allowlisted routes too",
+			verifier: &stubViewerVerifier{active: map[string]bool{}},
+			claims:   adminClaims(),
+			method:   http.MethodGet, path: "/sources",
+			wantCode: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setAuthzEnv(t)
+			middleware := AuthzWithViewer(tt.verifier)(okHandler())
+
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req.Header.Set("Authorization", "Bearer "+signToken(t, testJWTSecret, tt.claims))
+			rec := httptest.NewRecorder()
+
+			middleware.ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.wantCode, rec.Code)
+		})
+	}
+}
+
+// TestViewerAllowed pins the allowlist matching semantics, in particular
+// the single-trailing-slash normalization: "/sources/" is treated as
+// "/sources" (mirroring ServeMux redirect behaviour), while everything
+// else — subpaths, double slashes, other methods — stays denied.
+func TestViewerAllowed(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		want   bool
+	}{
+		{"GET /sources", http.MethodGet, "/sources", true},
+		{"GET /sources with single trailing slash", http.MethodGet, "/sources/", true},
+		{"GET /auth/me", http.MethodGet, "/auth/me", true},
+		{"GET /auth/me with single trailing slash", http.MethodGet, "/auth/me/", true},
+		{"double trailing slash is not normalized", http.MethodGet, "/sources//", false},
+		{"subpath of allowlisted route", http.MethodGet, "/sources/search", false},
+		{"other method on allowlisted path", http.MethodPost, "/sources", false},
+		{"HEAD is not GET", http.MethodHead, "/sources", false},
+		{"root path", http.MethodGet, "/", false},
+		{"unlisted route", http.MethodGet, "/subscribers", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, viewerAllowed(tt.method, tt.path))
+		})
+	}
+}
+
+// TestAuthzWithViewer_IdentityInContext verifies the viewer's subject and
+// role reach downstream handlers (GET /sources uses the role to force the
+// active-only listing; /auth/me echoes both).
+func TestAuthzWithViewer_IdentityInContext(t *testing.T) {
 	setAuthzEnv(t)
-	middleware := Authz(okHandler())
+	const viewerEmail = "friend@example.com"
 
-	legacyAdminToken := signToken(t, testJWTSecret, jwt.MapClaims{
-		"sub":  testAdminUser,
-		"role": "admin",
-		"exp":  time.Now().Add(1 * time.Hour).Unix(),
+	var gotSub, gotRole string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSub = SubjectFromContext(r.Context())
+		gotRole = RoleFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
 	})
+	verifier := &stubViewerVerifier{active: map[string]bool{viewerEmail: true}}
+	middleware := AuthzWithViewer(verifier)(inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/articles", nil)
-	req.Header.Set("Authorization", "Bearer "+legacyAdminToken)
+	req := httptest.NewRequest(http.MethodGet, "/sources", nil)
+	req.Header.Set("Authorization", "Bearer "+signToken(t, testJWTSecret, viewerClaims(viewerEmail)))
 	rec := httptest.NewRecorder()
 
 	middleware.ServeHTTP(rec, req)
 
-	assert.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, viewerEmail, gotSub)
+	assert.Equal(t, RoleViewer, gotRole)
 }
 
 // TestAuthz_FailsClosedWithoutAdminUser verifies that a server booted
