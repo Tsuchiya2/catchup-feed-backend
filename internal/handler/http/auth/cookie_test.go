@@ -24,7 +24,7 @@ func findAuthCookie(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie {
 // TestTokenHandler_SetsAuthCookie verifies a successful login emits a
 // correctly-attributed HttpOnly cookie carrying the JWT (D-22).
 func TestTokenHandler_SetsAuthCookie(t *testing.T) {
-	handler := TokenHandler(newTestAuthService(t))
+	handler := TokenHandler(newTestAuthService(t), nil)
 
 	body := `{"email":"` + testAdminUser + `","password":"` + testPassword + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/token", strings.NewReader(body))
@@ -71,7 +71,7 @@ func TestTokenHandler_CookieDomain(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler := TokenHandler(newTestAuthService(t))
+			handler := TokenHandler(newTestAuthService(t), nil)
 			if tt.setDomain {
 				t.Setenv(EnvCookieDomain, tt.domainEnv)
 			}
@@ -106,7 +106,7 @@ func TestTokenHandler_CookieDomain(t *testing.T) {
 // effect (the toggle was removed so gosec can prove Secure statically, and to
 // eliminate any path that ships a non-Secure auth cookie in production).
 func TestTokenHandler_CookieAlwaysSecure(t *testing.T) {
-	handler := TokenHandler(newTestAuthService(t))
+	handler := TokenHandler(newTestAuthService(t), nil)
 	// A stale env from an old deployment must not weaken the cookie.
 	t.Setenv("AUTH_COOKIE_SECURE", "false")
 
@@ -124,7 +124,7 @@ func TestTokenHandler_CookieAlwaysSecure(t *testing.T) {
 
 // TestTokenHandler_NoCookieOnFailure verifies no cookie leaks on bad creds.
 func TestTokenHandler_NoCookieOnFailure(t *testing.T) {
-	handler := TokenHandler(newTestAuthService(t))
+	handler := TokenHandler(newTestAuthService(t), nil)
 
 	body := `{"email":"` + testAdminUser + `","password":"wrong-password-123"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/token", strings.NewReader(body))

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"catchup-feed/internal/domain/entity"
+	"catchup-feed/internal/handler/http/auth"
 	"catchup-feed/internal/handler/http/source"
 	"catchup-feed/internal/repository"
 	srcUC "catchup-feed/internal/usecase/source"
@@ -26,11 +27,22 @@ func (s *stubSourceRepo) List(_ context.Context) ([]*entity.Source, error) {
 	return s.sources, s.listErr
 }
 
+// ListActive mirrors the SQL WHERE active = TRUE (D-27).
+func (s *stubSourceRepo) ListActive(_ context.Context) ([]*entity.Source, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	active := make([]*entity.Source, 0, len(s.sources))
+	for _, src := range s.sources {
+		if src.Active {
+			active = append(active, src)
+		}
+	}
+	return active, nil
+}
+
 // 以下は未使用だが、インターフェース満たすために実装
 func (s *stubSourceRepo) Get(_ context.Context, _ int64) (*entity.Source, error) {
-	return nil, nil
-}
-func (s *stubSourceRepo) ListActive(_ context.Context) ([]*entity.Source, error) {
 	return nil, nil
 }
 func (s *stubSourceRepo) Search(_ context.Context, _ string) ([]*entity.Source, error) {
@@ -117,6 +129,58 @@ func TestListHandler_Success(t *testing.T) {
 	}
 	if result[1].Kind != entity.SourceKindPodcast {
 		t.Errorf("result[1].Kind = %q, want %q", result[1].Kind, entity.SourceKindPodcast)
+	}
+}
+
+// TestListHandler_RoleFiltering は D-27 のサーバー側強制フィルタの検証:
+// viewer ロールのリクエストにはアクティブなソースのみ返り、admin と
+// ロールなし(直接ハンドラ呼び出し=既存テスト経路)は全件返る。
+func TestListHandler_RoleFiltering(t *testing.T) {
+	now := time.Now()
+	stub := &stubSourceRepo{
+		sources: []*entity.Source{
+			{ID: 1, Name: "Active Blog", FeedURL: "https://a.example.com/feed", Category: "dev", Kind: entity.SourceKindRSS, CreatedAt: now, Active: true},
+			{ID: 2, Name: "Inactive Blog", FeedURL: "https://b.example.com/feed", Category: "dev", Kind: entity.SourceKindRSS, CreatedAt: now, Active: false},
+		},
+	}
+	handler := source.ListHandler{Svc: srcUC.Service{Repo: stub}}
+
+	tests := []struct {
+		name      string
+		role      string // "" = context に role を載せない
+		wantIDs   []int64
+		wantCount int
+	}{
+		{name: "viewer sees active only", role: auth.RoleViewer, wantIDs: []int64{1}, wantCount: 1},
+		{name: "admin sees everything", role: auth.RoleAdmin, wantIDs: []int64{1, 2}, wantCount: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/sources", nil)
+			if tt.role != "" {
+				req = req.WithContext(auth.WithIdentity(req.Context(), "user@example.com", tt.role))
+			}
+			rr := httptest.NewRecorder()
+
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+			}
+			var result []source.DTO
+			if err := json.NewDecoder(rr.Body).Decode(&result); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+			if len(result) != tt.wantCount {
+				t.Fatalf("result length = %d, want %d", len(result), tt.wantCount)
+			}
+			for i, id := range tt.wantIDs {
+				if result[i].ID != id {
+					t.Errorf("result[%d].ID = %d, want %d", i, result[i].ID, id)
+				}
+			}
+		})
 	}
 }
 

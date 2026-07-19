@@ -86,6 +86,19 @@ var createTableStatements = []string{
     created_at     timestamptz NOT NULL DEFAULT now(),
     deactivated_at timestamptz              -- NULL = アクティブ
 )`,
+	// viewers: 友人向け閲覧専用アカウント(D-27)。subscribers(ポッドキャスト
+	// の視聴コントロール)とは別エンティティ — こちらは Web ダッシュボードへの
+	// アクセスコントロール。無効化は論理(deactivated_at)、削除は物理。
+	// CREATE TABLE IF NOT EXISTS なので既存 DB への追加マイグレーションとして安全。
+	`CREATE TABLE IF NOT EXISTS viewers (
+    id             bigserial PRIMARY KEY,
+    name           text NOT NULL,
+    email          text NOT NULL UNIQUE,
+    password_hash  text NOT NULL,            -- bcrypt(admin が作成時に設定)
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    updated_at     timestamptz NOT NULL DEFAULT now(),
+    deactivated_at timestamptz               -- NULL = アクティブ
+)`,
 	`CREATE TABLE IF NOT EXISTS feed_tokens (
     id            bigserial PRIMARY KEY,
     subscriber_id bigint NOT NULL REFERENCES subscribers,

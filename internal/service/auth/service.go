@@ -1,8 +1,10 @@
-// Package auth provides framework-agnostic authentication business logic.
+// Package auth provides framework-agnostic authentication business logic
+// for the administrator.
 //
-// pulse は単一管理者システム(C-7・C-20)であり、ここにはロールや複数
-// ユーザーの概念を持ち込まない。資格情報の検証方法(環境変数+bcrypt)は
-// AuthProvider の実装側に委ねる。
+// 管理者は環境変数+bcrypt のまま(C-7。users テーブルなしの原則は admin
+// について維持)。閲覧専用アカウント(viewer, D-27)の照合はここではなく
+// usecase/viewer が担い、HTTP 層(TokenHandler)が admin → viewer の順で
+// フォールバックする。
 package auth
 
 import (
