@@ -88,10 +88,12 @@ else
 fi
 
 # --- 4. books ミラー(D-25 (6)。失敗しても dump は成功扱い) ---
+# PDF は server コンテナが uid 10001・mode 600 で書くため、Pi の一般ユーザー
+# では読めない。Pi 側の rsync を sudo で動かして読む(--rsync-path)。
 if [ -n "${PULSE_PI_BOOKS_DIR:-}" ]; then
     mkdir -p "$BACKUP_DIR/books"
     log "mirroring books from $PULSE_PI_SSH:$PULSE_PI_BOOKS_DIR"
-    if rsync -a -e "ssh ${SSH_OPTS[*]}" \
+    if rsync -a -e "ssh ${SSH_OPTS[*]}" --rsync-path="sudo rsync" \
         "$PULSE_PI_SSH:$PULSE_PI_BOOKS_DIR/" "$BACKUP_DIR/books/"; then
         log "books mirror OK ($(ls "$BACKUP_DIR/books" | wc -l | tr -d ' ') files)"
     else
