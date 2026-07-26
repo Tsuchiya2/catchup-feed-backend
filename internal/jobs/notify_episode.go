@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/notify"
@@ -36,16 +35,16 @@ type notifyEpisodePayload struct {
 }
 
 // NotifyEpisodeHandler handles 'notify_episode' (§7): the admin channels
-// (Destinations, D-7) get title + show notes + episode URL, with the mp3
-// attached on Discord for small public episodes; active friends with an
-// email address get a plain-text new-episode mail (C-11) — public episodes
-// only, private ones live outside the subscriber concept (C-5).
+// (Destinations, D-29: email) get title + show notes + episode URL; active
+// friends with an email address get a plain-text new-episode mail (C-11) —
+// public episodes only, private ones live outside the subscriber concept
+// (C-5).
 //
 // 契約 (Phase 3 §12-7): radio は notify_episode ジョブを公開エピソードに
 // 対して**のみ**積む(「積まない」方式)。このハンドラは feed_kind に依らず
 // 管理チャネルへ show_notes を転送するため、私的エピソード — その show
 // notes は復習 concept 一覧などの学習コンテンツを含む — のジョブが積まれた
-// 時点で §10(学習コンテンツを Discord/Slack に流さない)に違反する。
+// 時点で §10(学習コンテンツを外部チャネルに流さない)に違反する。
 // エンキュー側の遵守が前提であり、ここに feed_kind ガードは足していない
 // (公開版の通知経路に一切差分を出さないため、§12-1)。
 type NotifyEpisodeHandler struct {
@@ -59,12 +58,7 @@ type NotifyEpisodeHandler struct {
 	// cannot exist because every public URL embeds a friend's token (C-9)
 	// and tokens are unrecoverable hashes (D-5).
 	PrivateBaseURL string
-	// AudioDir is the episodes directory (same value cleanup and the feed
-	// server use). The mp3 is offered for attachment only when
-	// episodes.audio_path resolves inside it — the same traversal guard
-	// applied everywhere a DB path touches the filesystem.
-	AudioDir string
-	Logger   *slog.Logger
+	Logger         *slog.Logger
 }
 
 // Handle sends the notifications. Failures of individual channels are
@@ -94,19 +88,6 @@ func (h *NotifyEpisodeHandler) Handle(ctx context.Context, job *entity.Job) erro
 	}
 	if h.PrivateBaseURL != "" {
 		msg.Link = fmt.Sprintf("%s/private/episodes/%d.mp3", h.PrivateBaseURL, episode.ID)
-	}
-	if episode.FeedKind == entity.FeedKindPublic {
-		// §7: Discord attaches the mp3 when it is small enough — public
-		// episodes only; the destination enforces the size limit. A path
-		// that escapes AudioDir is never handed out; the notification
-		// degrades to text-only (§8), the audio stays reachable via the feed.
-		if rel, ok := relInsideDir(h.AudioDir, episode.AudioPath); ok {
-			msg.AttachmentPath = filepath.Join(h.AudioDir, rel)
-			msg.AttachmentBytes = episode.AudioBytes
-		} else {
-			logger.Warn("notify_episode: audio path outside audio dir, notifying without attachment",
-				slog.Int64("episode_id", episode.ID), slog.String("audio_path", episode.AudioPath))
-		}
 	}
 
 	var errs []error

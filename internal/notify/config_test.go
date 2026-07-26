@@ -11,66 +11,50 @@ import (
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 func TestLoadDestinationsFromEnv(t *testing.T) {
+	mailer := NewSMTPMailer(SMTPConfig{Host: "smtp.example.com", Port: 587, From: "pulse@example.com"})
+
 	tests := []struct {
 		name      string
-		env       map[string]string
+		to        string
+		mailer    *SMTPMailer
 		wantNames []string
 	}{
 		{
-			name:      "nothing enabled",
-			env:       map[string]string{},
+			name:      "unset address disables admin notifications",
+			to:        "",
+			mailer:    mailer,
 			wantNames: nil,
 		},
 		{
-			name: "both channels enabled with valid URLs (D-7)",
-			env: map[string]string{
-				"DISCORD_ENABLED":     "true",
-				"DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/1/abc",
-				"SLACK_ENABLED":       "true",
-				"SLACK_WEBHOOK_URL":   "https://hooks.slack.com/services/T/B/x",
-			},
-			wantNames: []string{"discord", "slack"},
+			name:      "valid address with SMTP enabled (D-29)",
+			to:        "admin@example.com",
+			mailer:    mailer,
+			wantNames: []string{"email"},
 		},
 		{
-			name: "enabled flag without URL drops the channel",
-			env: map[string]string{
-				"DISCORD_ENABLED": "true",
-			},
+			name:      "address set but SMTP disabled drops the channel (縮退)",
+			to:        "admin@example.com",
+			mailer:    nil,
 			wantNames: nil,
 		},
 		{
-			name: "wrong host fails closed",
-			env: map[string]string{
-				"DISCORD_ENABLED":     "true",
-				"DISCORD_WEBHOOK_URL": "https://evil.example.com/api/webhooks/1/abc",
-				"SLACK_ENABLED":       "true",
-				"SLACK_WEBHOOK_URL":   "https://hooks.slack.com/wrong-path/x",
-			},
+			name:      "address without @ fails closed",
+			to:        "not-an-address",
+			mailer:    mailer,
 			wantNames: nil,
 		},
 		{
-			name: "http (non-TLS) fails closed",
-			env: map[string]string{
-				"SLACK_ENABLED":     "true",
-				"SLACK_WEBHOOK_URL": "http://hooks.slack.com/services/T/B/x",
-			},
-			wantNames: nil,
-		},
-		{
-			name: "URL alone without the enabled flag stays off (宣言的有効化)",
-			env: map[string]string{
-				"DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/1/abc",
-			},
+			name:      "address with whitespace fails closed",
+			to:        "admin@example.com evil@example.com",
+			mailer:    mailer,
 			wantNames: nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			for key, value := range tt.env {
-				t.Setenv(key, value)
-			}
-			destinations := LoadDestinationsFromEnv(discard())
+			t.Setenv("NOTIFY_ERROR_EMAIL_TO", tt.to)
+			destinations := LoadDestinationsFromEnv(discard(), tt.mailer)
 			var names []string
 			for _, destination := range destinations {
 				names = append(names, destination.Name())

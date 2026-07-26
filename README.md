@@ -208,11 +208,10 @@ go build -o radio ./cmd/radio
 
 | 変数 | 説明 |
 |---|---|
-| `DISCORD_ENABLED` | Discord Webhook 通知の有効化 |
-| `SLACK_ENABLED` | Slack Webhook 通知の有効化 |
-| `SMTP_ENABLED` | 友人へのメール通知(SMTP)の有効化 |
+| `SMTP_ENABLED` | メール通知(SMTP)の有効化。本人向け(D-29)と友人向け(C-11)で共用 |
+| `NOTIFY_ERROR_EMAIL_TO` | 本人向け通知(障害・新着エピソード)の宛先アドレス。空なら本人向け通知は無効 |
 
-Webhook URL・SMTP 認証情報などの機密値は `.env.example` のコメントを参照してください。秘密情報はコードやリポジトリにコミットしないでください。
+SMTP 認証情報などの機密値は `.env.example` のコメントを参照してください。秘密情報はコードやリポジトリにコミットしないでください。
 
 ---
 

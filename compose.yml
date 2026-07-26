@@ -293,13 +293,14 @@ services:
       SUMMARIZER_CHAR_LIMIT: ${SUMMARIZER_CHAR_LIMIT:-}
       SUMMARIZER_TIMEOUT: ${SUMMARIZER_TIMEOUT:-}
 
-      # Discord通知設定
-      DISCORD_ENABLED: ${DISCORD_ENABLED:-false}
-      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
-
-      # Slack通知設定
-      SLACK_ENABLED: ${SLACK_ENABLED:-false}
-      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+      # メール通知設定(D-29: 本人向け一本化 + C-11: 友人向け。SMTP_* は共用)
+      SMTP_ENABLED: ${SMTP_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      NOTIFY_ERROR_EMAIL_TO: ${NOTIFY_ERROR_EMAIL_TO:-}
 
       # アプリケーション設定
       TZ: ${TZ:-Asia/Tokyo}
