@@ -47,7 +47,7 @@ chmod 600 deploy/.env
 | `ADMIN_PASSWORD_HASH` | `make admin-hash` の出力。**`$` は `$$` にエスケープ**(U-3) |
 | `GEMINI_API_KEY` / `GROQ_API_KEY` | U-4 で取得した値 |
 | `OLLAMA_HOST` | `http://<Mac の Tailscale IP>:11434`(Mac 上で `tailscale ip -4`。mac.md 3章の後で)。**MagicDNS 名は不可**(Ollama の Host 検証が `.ts.net` を 403 で拒否。mac.md 3章参照) |
-| `SMTP_ENABLED` / `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` | メール通知(本人向け D-29+友人向け C-11 で共用)。Gmail なら `SMTP_HOST=smtp.gmail.com`・`SMTP_PORT=587`・`SMTP_USERNAME=<Gmail アドレス>`・`SMTP_PASSWORD=<アプリパスワード>`(U-11: 2 段階認証を有効にして [Google アカウント > セキュリティ > アプリパスワード] で発行)。`SMTP_FROM` は未設定なら `SMTP_USERNAME`。使う段階で `SMTP_ENABLED=true` |
+| `SMTP_ENABLED` / `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` | メール通知(本人向け D-29+友人向け C-11 で共用)。Gmail なら `SMTP_HOST=smtp.gmail.com`・`SMTP_PORT=587`・`SMTP_USERNAME=<Gmail アドレス>`・`SMTP_PASSWORD=<アプリパスワード>`(U-11: 2 段階認証を有効にして [Google アカウント > セキュリティ > アプリパスワード] で発行)。`SMTP_FROM` は未設定なら `SMTP_USERNAME`。使う段階で `SMTP_ENABLED=true`。現用は旧システムの Gmail アカウント(Pi の `~/.msmtprc` と同一資格情報)を流用(D-30-1)。無効化されたら U-11 の手順で再発行 |
 | `NOTIFY_ERROR_EMAIL_TO` | 本人向け通知(notify_error の障害通知+新着エピソード通知)の宛先アドレス(D-29)。`SMTP_ENABLED=true` が前提。空なら本人向け通知は送られない |
 
 旧 catchup-feed の DB とは **PostgreSQL サーバーごと分離**する(このスタックは専用の `catchup-feed-postgres` コンテナ、database 名 `catchup-feed`、ホスト側ポート 5433)。**旧システムの `catchup-postgres`(ハイフンの後が違うだけの別コンテナ)と取り違えない**。旧 DB からデータは移行しない — sources 定義は `internal/infra/db/seeds/sources.sql` が server 起動時に自動投入される(冪等、`ON CONFLICT DO NOTHING`)。
@@ -216,6 +216,55 @@ rm /tmp/pulse-<日時>.dump
 ```
 
 mp3 は Mac 側ミラー(`~/pulse/backups/episodes/`)から `EPISODES_DIR` へ rsync で戻す。
+
+## 9. Pi ローカル5分監視(D-30-2)
+
+`deploy/scripts/pi-health-check.sh` が正。cron(5分ごと)で3コンテナの docker health と
+server のローカル HTTP 応答(127.0.0.1:8090、2xx/4xx を正常とみなす)をチェックし、
+**状態遷移時のみ** msmtp(`~/.msmtprc` の account gmail、旧システムから流用 D-30-1)で
+`yuji2tsuchiya@gmail.com` にメールする。正常→異常は連続2回で「障害検知」1通、
+異常→正常で「復旧」1通。連続異常中は再送しない(旧 health-check.sh のスパム問題の修正)。
+pulse.service 起動から5分間は異常判定を保留(起動直後の誤検知対策)。
+
+配置とセットアップ(冪等。スクリプト更新時も同じ手順):
+
+```bash
+# 1) 配置(checkout 内を cron から直接実行しない。~/bin にコピーが実体)
+mkdir -p ~/bin
+install -m 755 ~/catchup-feed/catchup-feed-backend/deploy/scripts/pi-health-check.sh ~/bin/pi-health-check.sh
+
+# 2) ログ置き場(状態ファイル pi-health-check.state もここ)
+sudo mkdir -p /var/log/catchup && sudo chown ubuntu:ubuntu /var/log/catchup
+
+# 3) logrotate(遷移時のみ追記なので通常は増えないが保険)
+sudo tee /etc/logrotate.d/pulse-health-check >/dev/null <<'CONF'
+/var/log/catchup/pi-health-check.log {
+    monthly
+    rotate 3
+    size 1M
+    missingok
+    notifempty
+    compress
+    su ubuntu ubuntu
+}
+CONF
+
+# 4) cron 登録(既存エントリがあれば入れ替え)
+( crontab -l 2>/dev/null | grep -v "pi-health-check.sh" | grep -v "^# pulse Pi 死活監視" ;
+  echo "# pulse Pi 死活監視(D-30-2)- 5分ごと、状態遷移時のみメール送信" ;
+  echo "*/5 * * * * /home/ubuntu/bin/pi-health-check.sh >> /var/log/catchup/pi-health-check.log 2>&1" ) | crontab -
+
+# 5) 動作確認: 正常時は何も送らない(state=OK になるだけ)
+~/bin/pi-health-check.sh && cat /var/log/catchup/pi-health-check.state
+# 異常系まで試すなら(worker を短時間止める。server は止めない):
+#   PULSE_HC_SUBJECT_PREFIX="[TEST] " を付けて実行すると件名で実障害と区別できる
+#   docker stop catchup-feed-worker → スクリプト2回実行(2回目で障害メール)
+#   → docker start catchup-feed-worker → healthy 後に1回実行(復旧メール)
+```
+
+Mac 側の朝チェック(mac.md、05:45 の morning-check)が外からの死活確認、
+この5分監視が Pi 内部からの検知。両方ともメール経路は Gmail SMTP のみで、
+Cloudflare Tunnel / 公開面には何も追加しない。
 
 ## トラブル時の見方(監視スタックは無い。これで足りる)
 
