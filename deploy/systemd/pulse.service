@@ -15,7 +15,8 @@
 #   毎起動でコンテナを作り直し、壊れた状態を構造的に捨てる。イメージと
 #   ボリューム(DB データ・episodes)は再作成の影響を受けない。
 #
-# リトライ(D-28): 起動失敗時は systemd が 60 秒間隔で自動再試行し、
+# リトライ(D-28): 起動失敗時は systemd が失敗のたび 60 秒待機して再試行
+#   (RestartSec=60 は失敗後の待機時間。次の試行自体の所要時間は別に加算)、
 #   1 時間窓で計 5 回まで(StartLimit*)。無限ループにはしない。
 #   ※ systemd 244 以降、Type=oneshot でも Restart=on-failure が使える
 #   (Pi は systemd 255 で検証済み)。
@@ -27,9 +28,13 @@
 
 [Unit]
 Description=pulse stack (server + worker + postgres via docker compose)
-Requires=docker.service
+# docker.service は Requires ではなく Wants にする。Requires だと docker 側の
+# 起動失敗が「依存失敗」となり、このユニットの Restart=on-failure の再試行対象に
+# ならずスタックが落ちたままになるため。docker の readiness は ExecStartPre の
+# `docker info` 待ちで保証し、間に合わなければ**自ユニットの失敗**として
+# 60 秒待機 ×5 回のリトライの傘に入れる(D-28 停電復旧シナリオの穴埋め)。
 After=docker.service network-online.target tailscaled.service
-Wants=network-online.target tailscaled.service
+Wants=docker.service network-online.target tailscaled.service
 # リトライの有限化: 1 時間の窓の中で 5 回失敗したらそれ以上試さない
 # (窓 > 最悪所要時間 5 回 ×(TimeoutStartSec 300s + RestartSec 60s)= 30 分)
 StartLimitIntervalSec=1h
@@ -43,6 +48,8 @@ WorkingDirectory=/home/CHANGEME/pulse/catchup-feed-backend/deploy
 # After=tailscaled.service はプロセス起動順しか保証せず、tailnet IP の付与
 # 完了は保証しない。IP が実際に付くまで待ってから compose を上げる
 # (TimeoutStartSec=300 の範囲内。間に合わなければ失敗 → Restart= が再試行)。
+# docker デーモンが応答するまで待つ(Wants 化に伴う readiness 保証)
+ExecStartPre=/bin/sh -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
 ExecStartPre=/bin/sh -c 'until tailscale ip -4 >/dev/null 2>&1; do sleep 2; done'
 ExecStart=/usr/bin/docker compose -f compose.pi.yml up -d --force-recreate --remove-orphans
 ExecStop=/usr/bin/docker compose -f compose.pi.yml stop

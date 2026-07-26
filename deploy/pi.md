@@ -122,7 +122,7 @@ docker volume ls | grep catchup-feed    # 旧由来の catchup-feed_* ボリュ�
 
 コンテナ自体は `restart: unless-stopped` で自己回復するが、**ブート時だけは順序が要る**: `TAILNET_IP` へのポートバインドは tailscaled が IP を持った後でないと失敗し、Docker の再起動ポリシーは「一度も起動に成功していないコンテナ」を再試行しない。そこで tailscaled 起動後に compose を実行する oneshot ユニットを入れる。
 
-ユニットは `up -d --force-recreate --remove-orphans` で**毎起動コンテナを作り直す**(D-28)。ブレーカー断などの不正シャットダウンで残る壊れたコンテナ状態(2026-07-22 障害ではネットワーク接続喪失のまま再起動ループ)を構造的に捨てるため。起動失敗時は systemd が 60 秒間隔で最大 5 回まで自動再試行する(無限にはしない)。
+ユニットは `up -d --force-recreate --remove-orphans` で**毎起動コンテナを作り直す**(D-28)。ブレーカー断などの不正シャットダウンで残る壊れたコンテナ状態(2026-07-22 障害ではネットワーク接続喪失のまま再起動ループ)を構造的に捨てるため。起動失敗時は systemd が失敗のたび 60 秒待機してから再試行する(最大 5 回/1 時間、無限にはしない)。docker.service への依存は `Wants=` + ExecStartPre の `docker info` 待ちで表現しており、docker 未準備も「自ユニットの失敗」としてこのリトライの傘に入る。
 
 ```bash
 # WorkingDirectory を実パスに書き換えてから配置
@@ -222,8 +222,11 @@ mp3 は Mac 側ミラー(`~/pulse/backups/episodes/`)から `EPISODES_DIR` へ r
 `deploy/scripts/pi-health-check.sh` が正。cron(5分ごと)で3コンテナの docker health と
 server のローカル HTTP 応答(127.0.0.1:8090、2xx/4xx を正常とみなす)をチェックし、
 **状態遷移時のみ** msmtp(`~/.msmtprc` の account gmail、旧システムから流用 D-30-1)で
-`yuji2tsuchiya@gmail.com` にメールする。正常→異常は連続2回で「障害検知」1通、
+メールする。宛先はリポジトリに書かず、`deploy/.env` の `NOTIFY_ERROR_EMAIL_TO`
+(または環境変数 `PULSE_HC_MAIL_TO`)からスクリプトが実行時に読む。未設定なら
+送信せずログにエラーを残す。正常→異常は連続2回で「障害検知」1通、
 異常→正常で「復旧」1通。連続異常中は再送しない(旧 health-check.sh のスパム問題の修正)。
+メール送信に失敗した回は状態遷移せず、次回実行で再送する。
 pulse.service 起動から5分間は異常判定を保留(起動直後の誤検知対策)。
 
 配置とセットアップ(冪等。スクリプト更新時も同じ手順):

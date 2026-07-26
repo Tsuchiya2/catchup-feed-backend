@@ -207,7 +207,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pulse.morningcheck.p
 ```
 
 - メール送信は `~/pulse/.env` の `SMTP_*` + `NOTIFY_ERROR_EMAIL_TO`(env.mac.example 参照)。`SMTP_ENABLED=false` の間は異常でもログに ALERT を残すだけで送信しない(U-11 完了後に true へ)。
-- Mac が閉じていた日はチェックもスキップ(縮退)。外部監視 SaaS は使わない(ゼロ円)。
+- Mac の電源が入らなかった日はチェックもスキップ(縮退)。スリープ中に 05:45 を跨いだ日は launchd(StartCalendarInterval)の仕様で復帰時に1回遅延実行される。チェック内容は実行時刻に依存しないので、遅延実行でもそのまま有効。外部監視 SaaS は使わない(ゼロ円)。
 
 ---
 

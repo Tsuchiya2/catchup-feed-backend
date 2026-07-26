@@ -5,8 +5,11 @@
 
   radio(04:30)・バックアップ(05:15)の後、Mac がまだ起きている 05:45 に
   公開フィード URL を外形チェックし、異常時のみメール送信する
-  (deploy/scripts/morning-check.sh)。Mac が閉じていた日はスキップされる
-  だけ(縮退許容。検知は最大1日遅れで良い)。
+  (deploy/scripts/morning-check.sh)。Mac の電源が入らなかった日は
+  スキップされるだけ。スリープ中に 05:45 を跨いだ場合は launchd
+  (StartCalendarInterval)の仕様で**復帰時に1回遅延実行される**。
+  チェック内容は実行時刻に依存しないため、遅延実行でも外形チェックとして
+  正しく機能する(縮退許容。検知は最大1日遅れで良い)。
   CHANGEME を自分のユーザー名に置換してから使う(deploy/mac.md 10b章)。
 -->
 <plist version="1.0">

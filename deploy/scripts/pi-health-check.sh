@@ -19,7 +19,15 @@ CONTAINERS=(catchup-feed-postgres catchup-feed-server catchup-feed-worker)
 # server 公開リスナーのローカル応答確認。無効トークンなので 401/404 が返れば正常
 # (2xx/4xx = server が応答している。000/5xx = 異常)
 HTTP_URL="http://127.0.0.1:8090/feeds/deadbeef/feed.xml"
-MAIL_TO="${PULSE_HC_MAIL_TO:-yuji2tsuchiya@gmail.com}"
+# 宛先アドレスはリポジトリにコミットしない。優先順:
+#   1. 環境変数 PULSE_HC_MAIL_TO
+#   2. deploy/.env の NOTIFY_ERROR_EMAIL_TO(場所は PULSE_HC_ENV_FILE で上書き可)
+# どちらも無ければ送信せずログにエラーを残す(状態遷移もしない=解消後に再送)。
+PULSE_HC_ENV_FILE="${PULSE_HC_ENV_FILE:-/home/ubuntu/catchup-feed/catchup-feed-backend/deploy/.env}"
+MAIL_TO="${PULSE_HC_MAIL_TO:-}"
+if [ -z "$MAIL_TO" ] && [ -r "$PULSE_HC_ENV_FILE" ]; then
+  MAIL_TO=$(sed -n 's/^NOTIFY_ERROR_EMAIL_TO=//p' "$PULSE_HC_ENV_FILE" | tail -1)
+fi
 STATE_FILE="${PULSE_HC_STATE_FILE:-/var/log/catchup/pi-health-check.state}"
 LOG_FILE="${PULSE_HC_LOG_FILE:-/var/log/catchup/pi-health-check.log}"
 # テスト時に "[TEST] " 等を入れて実障害と区別する
@@ -28,7 +36,11 @@ GRACE_SECONDS=300
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$1" >>"$LOG_FILE"; }
 
-send_mail() { # $1=subject $2=body
+send_mail() { # $1=subject $2=body。送信成功時のみ 0(呼び出し側の状態遷移条件)
+  if [ -z "$MAIL_TO" ]; then
+    log "ERROR: mail recipient not configured (set PULSE_HC_MAIL_TO or NOTIFY_ERROR_EMAIL_TO in ${PULSE_HC_ENV_FILE})"
+    return 1
+  fi
   {
     printf 'To: %s\n' "$MAIL_TO"
     printf 'Subject: %s\n' "$1"
@@ -56,17 +68,23 @@ docker_now=$(docker ps --format 'table {{.Names}}\t{{.Status}}' 2>&1)
 # --- 正常時 ---
 if [ -z "$FAILURES" ]; then
   if [ "$prev" = "ALERTED" ]; then
-    send_mail "${SUBJECT_PREFIX}[pulse] 復旧: Pi ヘルスチェック正常" \
+    # 復旧メールが送れたときだけ OK に遷移する。送信失敗時は ALERTED を維持し、
+    # 次回実行で再送を試みる(送信失敗と重なると通知が永久に消える問題の修正)
+    if send_mail "${SUBJECT_PREFIX}[pulse] 復旧: Pi ヘルスチェック正常" \
 "Pi の5分監視が復旧を検知しました。対応は不要です。
 
 docker ps:
 ${docker_now}
 
-host: $(hostname) / $(date '+%Y-%m-%d %H:%M:%S %Z')" \
-      && log "RECOVERED: mail sent" \
-      || log "RECOVERED: msmtp failed (exit $?)"
+host: $(hostname) / $(date '+%Y-%m-%d %H:%M:%S %Z')"; then
+      log "RECOVERED: mail sent"
+      echo "OK" >"$STATE_FILE"
+    else
+      log "RECOVERED but mail send failed; keeping ALERTED to retry next run"
+    fi
+  else
+    echo "OK" >"$STATE_FILE"
   fi
-  echo "OK" >"$STATE_FILE"
   exit 0
 fi
 
@@ -88,7 +106,9 @@ case "$prev" in
     log "first failure (pending): $(echo "$FAILURES" | tr '\n' ' ')"
     ;;
   FAIL_PENDING)
-    send_mail "${SUBJECT_PREFIX}[pulse] 障害検知: Pi ヘルスチェック異常" \
+    # 障害メールが送れたときだけ ALERTED に遷移する。送信失敗時は FAIL_PENDING を
+    # 維持し、次回実行で再送を試みる(送信失敗と重なると通知が永久に消える問題の修正)
+    if send_mail "${SUBJECT_PREFIX}[pulse] 障害検知: Pi ヘルスチェック異常" \
 "Pi の5分監視が異常を検知しました(2回連続)。
 
 異常内容:
@@ -98,10 +118,12 @@ ${docker_now}
 
 host: $(hostname) / $(date '+%Y-%m-%d %H:%M:%S %Z')
 
-復旧すれば「復旧」メールが1通届きます。連続異常中の再送はありません。" \
-      && log "ALERT: mail sent: $(echo "$FAILURES" | tr '\n' ' ')" \
-      || log "ALERT: msmtp failed (exit $?)"
-    echo "ALERTED" >"$STATE_FILE"
+復旧すれば「復旧」メールが1通届きます。連続異常中の再送はありません。"; then
+      log "ALERT: mail sent: $(echo "$FAILURES" | tr '\n' ' ')"
+      echo "ALERTED" >"$STATE_FILE"
+    else
+      log "ALERT: mail send failed; keeping FAIL_PENDING to retry next run"
+    fi
     ;;
   ALERTED)
     # 連続異常中は送らない(ログにも毎回は書かない)
