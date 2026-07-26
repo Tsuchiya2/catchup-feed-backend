@@ -20,27 +20,24 @@ func TestNotifyErrorHandler_Handle(t *testing.T) {
 		return &entity.Job{ID: 42, Kind: entity.JobKindNotifyError, Payload: json.RawMessage(payload)}
 	}
 
-	t.Run("delivers the failure notice to every destination", func(t *testing.T) {
+	t.Run("delivers the failure notice to every destination (D-29: email)", func(t *testing.T) {
 		payload, err := jobs.NewNotifyErrorPayload("radio", "VOICEVOX unreachable")
 		require.NoError(t, err)
 
-		discord := &fakeDestination{name: "discord"}
-		slack := &fakeDestination{name: "slack"}
+		email := &fakeDestination{name: "email"}
 		handler := &jobs.NotifyErrorHandler{
-			Destinations: []notify.Destination{discord, slack},
+			Destinations: []notify.Destination{email},
 			Logger:       slog.New(slog.DiscardHandler),
 		}
 		require.NoError(t, handler.Handle(context.Background(), newJob(string(payload))))
 
-		for _, destination := range []*fakeDestination{discord, slack} {
-			require.Len(t, destination.got, 1)
-			assert.Contains(t, destination.got[0].Subject, "radio")
-			assert.Equal(t, "VOICEVOX unreachable", destination.got[0].Body)
-		}
+		require.Len(t, email.got, 1)
+		assert.Contains(t, email.got[0].Subject, "radio")
+		assert.Equal(t, "VOICEVOX unreachable", email.got[0].Body)
 	})
 
 	t.Run("delivery failure is swallowed — best-effort, never retried (§8)", func(t *testing.T) {
-		broken := &fakeDestination{name: "discord", err: errors.New("webhook down")}
+		broken := &fakeDestination{name: "email", err: errors.New("smtp down")}
 		handler := &jobs.NotifyErrorHandler{
 			Destinations: []notify.Destination{broken},
 			Logger:       slog.New(slog.DiscardHandler),

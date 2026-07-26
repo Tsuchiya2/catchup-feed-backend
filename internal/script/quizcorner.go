@@ -16,7 +16,8 @@ import (
 // verbatim (生成時点でラジオ口調).
 //
 // The corner is private-episode material only (D-16). It must never reach
-// the public feed, Discord/Slack notifications or a cloud LLM prompt (§10).
+// the public feed, episode notifications (D-29: admin email) or a cloud
+// LLM prompt (§10).
 type QuizCorner struct {
 	// Lead is the corner introduction (つなぎ文: テンプレート+項目数).
 	Lead string

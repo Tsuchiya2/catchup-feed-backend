@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  pulse 朝チェック(D-29: 死活監視は Mac 朝チェック方式)。
+
+  radio(04:30)・バックアップ(05:15)の後、Mac がまだ起きている 05:45 に
+  公開フィード URL を外形チェックし、異常時のみメール送信する
+  (deploy/scripts/morning-check.sh)。Mac が閉じていた日はスキップされる
+  だけ(縮退許容。検知は最大1日遅れで良い)。
+  CHANGEME を自分のユーザー名に置換してから使う(deploy/mac.md 10b章)。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pulse.morningcheck</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/CHANGEME/pulse/bin/morning-check.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>5</integer>
+        <key>Minute</key>
+        <integer>45</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/CHANGEME/pulse/logs/morningcheck.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/CHANGEME/pulse/logs/morningcheck.err.log</string>
+</dict>
+</plist>

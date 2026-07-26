@@ -27,8 +27,9 @@ const (
 	// load and delivers the morning notification promptly after the radio
 	// batch enqueues it (§3.3 転送検知).
 	DefaultPollInterval = 10 * time.Second
-	// DefaultJobTimeout bounds one handler execution. Cleanup walks a
-	// directory, notify may upload an mp3 to Discord — minutes, not hours.
+	// DefaultJobTimeout bounds one handler execution. Cleanup walks the
+	// episodes directory and deletes files, regenerate_feed rewrites the
+	// XML, notify fans out a handful of SMTP sends — minutes, not hours.
 	DefaultJobTimeout = 5 * time.Minute
 	// DefaultMaxAttempts is the §7 retry ceiling: a job is executed at
 	// most this many times before failing terminally.

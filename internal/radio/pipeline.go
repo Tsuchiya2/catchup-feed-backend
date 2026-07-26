@@ -294,7 +294,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	}
 	// 契約 (Phase 3 §12-7): notify_episode は公開エピソードに対して**のみ**
 	// 積む。私的版は「積んで無視」ではなく「積まない」— NotifyEpisodeHandler
-	// は feed_kind に依らず管理チャネル(Discord/Slack)へ show_notes を送る
+	// は feed_kind に依らず管理チャネル(D-29: メール)へ show_notes を送る
 	// ため、学習コンテンツ(復習 concept 一覧)を含む私的版のジョブが存在
 	// した時点で §10(学習コンテンツを外部サービスに流さない)に違反する。
 	notifyPayload, err := json.Marshal(map[string]int64{"episode_id": episode.ID})

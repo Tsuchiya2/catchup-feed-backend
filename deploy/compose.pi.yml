@@ -152,17 +152,17 @@ services:
       SUMMARIZER_CHAR_LIMIT: ${SUMMARIZER_CHAR_LIMIT:-}
       SUMMARIZER_TIMEOUT: ${SUMMARIZER_TIMEOUT:-}
 
-      # 通知(D-7: 本人=Discord+Slack、友人=メール)
-      DISCORD_ENABLED: ${DISCORD_ENABLED:-false}
-      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
-      SLACK_ENABLED: ${SLACK_ENABLED:-false}
-      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      # 通知(D-29: 本人向けもメールに一本化。Discord/Slack は廃止)
+      # SMTP_* は本人向け(D-29)と友人向け(C-11)で共用
       SMTP_ENABLED: ${SMTP_ENABLED:-false}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
+      # 本人向け通知(障害・新着エピソード)の宛先。SMTP_ENABLED=true が前提。
+      # 空なら本人向け通知は静かに無効(縮退、worker は動き続ける)
+      NOTIFY_ERROR_EMAIL_TO: ${NOTIFY_ERROR_EMAIL_TO:-}
 
       # jobs コンシューマ + D-4 cleanup(mp3 45日保持)
       JOBS_POLL_INTERVAL: ${JOBS_POLL_INTERVAL:-}

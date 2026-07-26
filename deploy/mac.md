@@ -186,6 +186,29 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pulse.backup.plist
 - 月次の実在確認(定常運用): `ls -lt ~/pulse/backups/db | head` で直近の dump があることを見るだけ(1分)。
 - Mac が閉じていた日はバックアップもスキップ(縮退)。Pi の DB は消えていないので翌晩の dump で追いつく。
 
+## 10b. 朝チェック(D-29: 死活監視)
+
+バックアップの後(05:45)に Mac から公開フィード URL を外形チェックし、**異常時のみ**メールで知らせる(`deploy/scripts/morning-check.sh`)。200/401 を正常とみなす(401 はトークン無しアクセスへの正規応答。スクリプトにフィードトークンを埋め込まないための設計)。「Pi は生きているが配信だけ死んでいる」故障モード(2026-07-22 停電障害の 502)を最大1日遅れで検知する。
+
+```bash
+# 配置(6章の bin/ と同じ流儀)
+cd <このリポジトリの checkout>
+cp deploy/scripts/morning-check.sh ~/pulse/bin/ && chmod +x ~/pulse/bin/morning-check.sh
+
+# 手動で1回流して確認(現在正常なら "OK: ... -> 401" が err ログ側に出る)
+~/pulse/bin/morning-check.sh
+# 疑似異常テスト(存在しないホスト → ALERT。SMTP 未設定ならスキップのログ)
+~/pulse/bin/morning-check.sh https://nonexistent.invalid/
+
+# launchd 登録
+sed "s/CHANGEME/$(whoami)/g" deploy/launchd/com.pulse.morningcheck.plist \
+  > ~/Library/LaunchAgents/com.pulse.morningcheck.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pulse.morningcheck.plist
+```
+
+- メール送信は `~/pulse/.env` の `SMTP_*` + `NOTIFY_ERROR_EMAIL_TO`(env.mac.example 参照)。`SMTP_ENABLED=false` の間は異常でもログに ALERT を残すだけで送信しない(U-11 完了後に true へ)。
+- Mac が閉じていた日はチェックもスキップ(縮退)。外部監視 SaaS は使わない(ゼロ円)。
+
 ---
 
 以下は Phase 2 の追加分(設計書は docs/pulse-phase2-design.md §3・§6)。
