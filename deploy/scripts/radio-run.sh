@@ -8,10 +8,19 @@
 #   3. radio を実行(引数はそのまま透過: -dry-run 等)
 #   4. 自分で起動した Engine だけ後始末する
 #
-# リトライはしない(§8: 失敗した日はエピソード欠番で正常。radio 自身が
-# notify_error ジョブを積み、worker が通知する)。
+# リトライはしない(§8: 失敗した日はエピソード欠番で正常。通知だけを
+# 確実にする)。
 #
-# 導入: deploy/mac.md 6章。~/pulse/bin/ に置いて chmod +x する。
+# 失敗通知は2経路:
+#   a. radio 自身が DB の jobs テーブルに notify_error を積み、Pi の
+#      worker がメール送信(§8。DB が生きている場合)
+#   b. radio が非ゼロ終了したら、このラッパーが Mac から SMTP 直送
+#      (alert-mail.sh)。2026-08-07 障害(tailnet 断で DB に届かず
+#      notify_error を積めない → 7日間沈黙)の恒久対策。
+#      送信失敗・SMTP 未設定でも exit code は radio のまま変えない。
+#
+# 導入: deploy/mac.md 6章。alert-mail.sh と一緒に ~/pulse/bin/ に置いて
+# chmod +x する。
 # ============================================================
 set -euo pipefail
 
@@ -25,6 +34,17 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 log() { printf '%s radio-run: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >&2; }
 
 mkdir -p "$PULSE_HOME/logs"
+
+# SMTP 直送ヘルパー(同じディレクトリに配置)。見つからない日は通知なしで
+# radio を優先する(欠番よりはマシ)— WARN を残して no-op に落とす
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR/alert-mail.sh" ]; then
+    # shellcheck source=deploy/scripts/alert-mail.sh
+    . "$SCRIPT_DIR/alert-mail.sh"
+else
+    log "WARN: $SCRIPT_DIR/alert-mail.sh がない(mac.md 6章)。失敗時の SMTP 直送は無効"
+    send_alert_mail() { log "alert-mail.sh 不在のため送信スキップ: ${1:-}"; cat >/dev/null; return 0; }
+fi
 
 if [ ! -f "$ENV_FILE" ]; then
     log "ERROR: $ENV_FILE がない。deploy/env.mac.example から作成する"
@@ -79,4 +99,34 @@ log "starting radio $*"
 rc=0
 "$RADIO_BIN" "$@" || rc=$?
 log "radio exited with code $rc"
+
+if [ "$rc" -ne 0 ]; then
+    # DB 断などで radio が notify_error ジョブを積めなくても届くよう、
+    # その場で SMTP 直送(2026-08-07 障害の恒久対策)。リトライはしない。
+    err_log="$PULSE_HOME/logs/radio.err.log"
+    err_tail="(no $err_log)"
+    if [ -f "$err_log" ]; then
+        err_tail="$(tail -n 20 "$err_log" 2>/dev/null || true)"
+    fi
+    send_alert_mail "[pulse] radio FAILED (exit $rc)" <<EOF || true
+radio batch failed on the Mac.
+
+  exit code: $rc
+  time:      $(date '+%Y-%m-%dT%H:%M:%S%z')
+  host:      $(hostname)
+
+--- tail -n 20 $err_log ---
+$err_tail
+
+Check from the Mac:
+  tailscale status                    # Pi が offline / key expired になっていないか
+  psql "\$DATABASE_URL" -c 'select 1' # DB(tailnet 越し :5433)到達性
+
+Check on the Pi:
+  ssh <pi> 'docker ps; docker logs --tail 50 catchup-feed-worker'
+  ssh <pi> 'sudo tailscale status'    # キー失効なら sudo tailscale up で再認証
+
+失敗した日はエピソード欠番で正常(§8)。翌朝も失敗が続く場合のみ対処する。
+EOF
+fi
 exit "$rc"

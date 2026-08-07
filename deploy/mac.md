@@ -92,9 +92,15 @@ go build -o ~/pulse/bin/radio ./cmd/radio
 cd <このリポジトリの checkout>
 cp deploy/env.mac.example ~/pulse/.env
 chmod 600 ~/pulse/.env
-cp deploy/scripts/radio-run.sh deploy/scripts/backup-pulse-db.sh ~/pulse/bin/
-chmod +x ~/pulse/bin/radio-run.sh ~/pulse/bin/backup-pulse-db.sh
+cp deploy/scripts/radio-run.sh deploy/scripts/backup-pulse-db.sh \
+   deploy/scripts/alert-mail.sh ~/pulse/bin/
+chmod +x ~/pulse/bin/radio-run.sh ~/pulse/bin/backup-pulse-db.sh ~/pulse/bin/alert-mail.sh
 ```
+
+`alert-mail.sh` は radio-run.sh / morning-check.sh が source する SMTP 直送ヘルパー。
+radio が非ゼロ終了した朝は、DB(jobs テーブル)経由の通知に加えて Mac から直接
+アラートメールが飛ぶ(2026-08-07 障害: tailnet 断で notify_error を積めず7日間沈黙、
+の恒久対策)。SMTP 未設定・送信失敗でも radio の exit code は変わらない。
 
 `~/pulse/.env` を編集(**値はファイルに直接記入。チャット等に貼らない**)。特に注意する3キー:
 
@@ -188,16 +194,24 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pulse.backup.plist
 
 ## 10b. 朝チェック(D-29: 死活監視)
 
-バックアップの後(05:45)に Mac から公開フィード URL を外形チェックし、**異常時のみ**メールで知らせる(`deploy/scripts/morning-check.sh`)。200/401 を正常とみなす(401 はトークン無しアクセスへの正規応答。スクリプトにフィードトークンを埋め込まないための設計)。「Pi は生きているが配信だけ死んでいる」故障モード(2026-07-22 停電障害の 502)を最大1日遅れで検知する。
+バックアップの後(05:45)に Mac から2系統を外形チェックし、**異常時のみ**メールで知らせる(`deploy/scripts/morning-check.sh`):
+
+1. **公開フィード**(Cloudflare Tunnel 経由、既定 `https://radio.catchup-feed.com/`)— 200/401 を正常とみなす(401 はトークン無しアクセスへの正規応答。スクリプトにフィードトークンを埋め込まないための設計)。「Pi は生きているが配信だけ死んでいる」故障モード(2026-07-22 停電障害の 502)を最大1日遅れで検知する。
+2. **私的フィード**(tailnet 経由 :8081、既定 `http://ubuntu.tailf91c78.ts.net:8081/private/feed.xml`、env `PULSE_PRIVATE_FEED_CHECK_URL`)— 200 のみ正常。tailnet 経路の断を検知する(2026-08-07 障害: Pi のノードキー 180 日失効で Mac→Pi 全断。公開面は生きていたため旧チェックでは7日間気づけなかった、の恒久対策)。
+
+2系統は独立に判定し(公開 OK でも私的 NG ならアラート)、メール件名で公開/私的どちらの断かを区別する。
 
 ```bash
-# 配置(6章の bin/ と同じ流儀)
+# 配置(6章の bin/ と同じ流儀。alert-mail.sh は 6章で配置済みならそのままでよい)
 cd <このリポジトリの checkout>
-cp deploy/scripts/morning-check.sh ~/pulse/bin/ && chmod +x ~/pulse/bin/morning-check.sh
+cp deploy/scripts/morning-check.sh deploy/scripts/alert-mail.sh ~/pulse/bin/
+chmod +x ~/pulse/bin/morning-check.sh ~/pulse/bin/alert-mail.sh
 
-# 手動で1回流して確認(現在正常なら "OK: ... -> 401" が err ログ側に出る)
+# 手動で1回流して確認(現在正常なら "OK: [public] ... -> 401" と
+# "OK: [private] ... -> 200" が err ログ側に出る)
 ~/pulse/bin/morning-check.sh
-# 疑似異常テスト(存在しないホスト → ALERT。SMTP 未設定ならスキップのログ)
+# 疑似異常テスト(存在しないホスト → 公開側 ALERT。SMTP 未設定ならスキップのログ。
+# 私的チェックはこの引数に関係なく実行される)
 ~/pulse/bin/morning-check.sh https://nonexistent.invalid/
 
 # launchd 登録
@@ -206,7 +220,7 @@ sed "s/CHANGEME/$(whoami)/g" deploy/launchd/com.pulse.morningcheck.plist \
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pulse.morningcheck.plist
 ```
 
-- メール送信は `~/pulse/.env` の `SMTP_*` + `NOTIFY_ERROR_EMAIL_TO`(env.mac.example 参照)。`SMTP_ENABLED=false` の間は異常でもログに ALERT を残すだけで送信しない(U-11 完了後に true へ)。
+- メール送信は `~/pulse/.env` の `SMTP_*` + `NOTIFY_ERROR_EMAIL_TO`(env.mac.example 参照)。`SMTP_ENABLED=false` の間は異常でもログに ALERT を残すだけで送信しない。資格情報は旧システムの msmtp 設定(`~/.msmtprc`)のアプリパスワードを `.env` に転記して `SMTP_ENABLED=true` にする(D-30、2026-07-26 送信テスト済み)。
 - Mac の電源が入らなかった日はチェックもスキップ(縮退)。スリープ中に 05:45 を跨いだ日は launchd(StartCalendarInterval)の仕様で復帰時に1回遅延実行される。チェック内容は実行時刻に依存しないので、遅延実行でもそのまま有効。外部監視 SaaS は使わない(ゼロ円)。
 
 ---
