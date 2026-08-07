@@ -220,7 +220,7 @@ sed "s/CHANGEME/$(whoami)/g" deploy/launchd/com.pulse.morningcheck.plist \
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pulse.morningcheck.plist
 ```
 
-- メール送信は `~/pulse/.env` の `SMTP_*` + `NOTIFY_ERROR_EMAIL_TO`(env.mac.example 参照)。`SMTP_ENABLED=false` の間は異常でもログに ALERT を残すだけで送信しない(U-11 完了後に true へ)。
+- メール送信は `~/pulse/.env` の `SMTP_*` + `NOTIFY_ERROR_EMAIL_TO`(env.mac.example 参照)。`SMTP_ENABLED=false` の間は異常でもログに ALERT を残すだけで送信しない。資格情報は旧システムの msmtp 設定(`~/.msmtprc`)のアプリパスワードを `.env` に転記して `SMTP_ENABLED=true` にする(D-30、2026-07-26 送信テスト済み)。
 - Mac の電源が入らなかった日はチェックもスキップ(縮退)。スリープ中に 05:45 を跨いだ日は launchd(StartCalendarInterval)の仕様で復帰時に1回遅延実行される。チェック内容は実行時刻に依存しないので、遅延実行でもそのまま有効。外部監視 SaaS は使わない(ゼロ円)。
 
 ---

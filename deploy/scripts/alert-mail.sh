@@ -57,24 +57,35 @@ send_alert_mail() {
     fi
 
     _msg_file="$(mktemp)"
+    _cfg_file="$(mktemp)"
+    chmod 600 "$_msg_file" "$_cfg_file"
+
+    # パスワードを argv に載せない(ps で覗かれないよう curl --config 経由)。
+    # Gmail アプリパスワードは英数字+空白のみなので " のエスケープは考えない
+    printf 'user = "%s:%s"\n' "$SMTP_USERNAME" "$SMTP_PASSWORD" >"$_cfg_file"
+
     {
         printf 'From: pulse alert <%s>\n' "$_from"
         printf 'To: %s\n' "$NOTIFY_ERROR_EMAIL_TO"
         printf 'Subject: %s\n' "$_subject"
+        printf 'MIME-Version: 1.0\n'
+        printf 'Content-Type: text/plain; charset=UTF-8\n'
         printf 'Date: %s\n' "$(date -R 2>/dev/null || date '+%a, %d %b %Y %H:%M:%S %z')"
         printf '\n'
         cat # stdin = 本文
     } >"$_msg_file"
 
+    # --crlf: heredoc 由来の bare LF を CRLF に変換(RFC 5321。Gmail は
+    # bare newline を含むメッセージを拒否するため、無いと当日 550 で沈黙する)
     # shellcheck disable=SC2086
-    if curl -sS $_tls_opt --url "$_smtp_url" \
-        --user "${SMTP_USERNAME}:${SMTP_PASSWORD}" \
+    if curl -sS --crlf $_tls_opt --url "$_smtp_url" \
+        --config "$_cfg_file" \
         --mail-from "$_from" --mail-rcpt "$NOTIFY_ERROR_EMAIL_TO" \
         --max-time 60 -T "$_msg_file"; then
         log "alert mail sent to $NOTIFY_ERROR_EMAIL_TO: $_subject"
     else
         log "ERROR: alert mail send failed(SMTP 設定・ネットワークを確認): $_subject"
     fi
-    rm -f "$_msg_file"
+    rm -f "$_msg_file" "$_cfg_file"
     return 0
 }
