@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"catchup-feed/internal/domain/entity"
@@ -85,6 +86,9 @@ func (s *Service) SearchWithFilters(ctx context.Context, keywords []string, filt
 // Create creates a new source with the provided input.
 // It validates the input data including feed URL format before creating the source.
 // Returns a ValidationError if any input field is invalid.
+// Returns ErrDuplicateSource when the feed URL is already registered on a
+// live source. If the URL belongs to a soft-deleted source, that source is
+// resurrected with the request values instead (repository contract).
 func (s *Service) Create(ctx context.Context, in CreateInput) error {
 	src := &entity.Source{
 		Name:     in.Name,
@@ -104,6 +108,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) error {
 	}
 
 	if err := s.Repo.Create(ctx, src); err != nil {
+		if errors.Is(err, repository.ErrDuplicateFeedURL) {
+			return ErrDuplicateSource
+		}
 		return fmt.Errorf("create source: %w", err)
 	}
 	return nil
@@ -158,12 +165,22 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) error {
 	return nil
 }
 
-// Delete removes a source by its ID.
+// Delete soft-deletes a source by its ID (repository contract: the row is
+// kept for the articles FK; every read path hides it afterwards).
 // Returns a ValidationError if the ID is not positive.
-// Returns an error if the repository operation fails.
+// Returns ErrSourceNotFound if the source does not exist or is already
+// deleted — the handler maps this to 404 instead of a blanket 500.
 func (s *Service) Delete(ctx context.Context, id int64) error {
 	if id <= 0 {
 		return &entity.ValidationError{Field: "id", Message: "must be positive"}
+	}
+
+	src, err := s.Repo.Get(ctx, id)
+	if err != nil {
+		return fmt.Errorf("get source: %w", err)
+	}
+	if src == nil {
+		return ErrSourceNotFound
 	}
 
 	if err := s.Repo.Delete(ctx, id); err != nil {

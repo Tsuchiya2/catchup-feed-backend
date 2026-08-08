@@ -12,6 +12,8 @@ import (
 )
 
 // sourceColumns is the §4 sources column list used by every SELECT.
+// deleted_at is deliberately not scanned: soft-deleted rows are filtered
+// out by every read path, so callers never observe a deleted source.
 const sourceColumns = "id, name, feed_url, category, lang, kind, active, created_at"
 
 type SourceRepo struct{ db *sql.DB }
@@ -59,6 +61,7 @@ func (repo *SourceRepo) Get(ctx context.Context, id int64) (*entity.Source, erro
 SELECT ` + sourceColumns + `
 FROM sources
 WHERE id = $1
+  AND deleted_at IS NULL
 LIMIT 1`
 	source, err := scanSource(repo.db.QueryRowContext(ctx, query, id))
 	if err == sql.ErrNoRows {
@@ -74,6 +77,7 @@ func (repo *SourceRepo) List(ctx context.Context) ([]*entity.Source, error) {
 	query := `
 SELECT ` + sourceColumns + `
 FROM sources
+WHERE deleted_at IS NULL
 ORDER BY id ASC`
 	return repo.querySources(ctx, "List", query)
 }
@@ -83,6 +87,7 @@ func (repo *SourceRepo) ListActive(ctx context.Context) ([]*entity.Source, error
 SELECT ` + sourceColumns + `
 FROM sources
 WHERE active = TRUE
+  AND deleted_at IS NULL
 ORDER BY id ASC`
 	return repo.querySources(ctx, "ListActive", query)
 }
@@ -91,8 +96,9 @@ func (repo *SourceRepo) Search(ctx context.Context, kw string) ([]*entity.Source
 	query := `
 SELECT ` + sourceColumns + `
 FROM sources
-WHERE name     ILIKE $1
-OR feed_url ILIKE $1
+WHERE (name     ILIKE $1
+   OR  feed_url ILIKE $1)
+  AND deleted_at IS NULL
 ORDER BY id ASC`
 	return repo.querySources(ctx, "Search", query, "%"+kw+"%")
 }
@@ -107,8 +113,8 @@ func (repo *SourceRepo) SearchWithFilters(
 	ctx, cancel := context.WithTimeout(ctx, search.DefaultSearchTimeout)
 	defer cancel()
 
-	// Build WHERE clause conditions
-	var conditions []string
+	// Build WHERE clause conditions. Soft-deleted rows are always excluded.
+	conditions := []string{"deleted_at IS NULL"}
 	var args []interface{}
 	paramIndex := 1
 
@@ -139,15 +145,20 @@ func (repo *SourceRepo) SearchWithFilters(
 	// Build final query with dynamic WHERE clause
 	query := `
 SELECT ` + sourceColumns + `
-FROM sources`
-	if len(conditions) > 0 {
-		query += "\nWHERE " + strings.Join(conditions, "\n  AND ")
-	}
-	query += "\nORDER BY id ASC"
+FROM sources
+WHERE ` + strings.Join(conditions, "\n  AND ") + `
+ORDER BY id ASC`
 
 	return repo.querySources(ctx, "SearchWithFilters", query, args...)
 }
 
+// Create inserts a new source. feed_url has a UNIQUE constraint that spans
+// soft-deleted rows too, so re-registering a previously deleted URL cannot
+// INSERT a fresh row; instead the deleted row is resurrected in place
+// (deleted_at cleared, name/category/lang/kind/active overwritten with the
+// request values — the old id is kept so past articles stay attached).
+// A conflict with a live (non-deleted) row is a real duplicate and returns
+// repository.ErrDuplicateFeedURL.
 func (repo *SourceRepo) Create(ctx context.Context, source *entity.Source) error {
 	if source.Lang == "" {
 		source.Lang = entity.DefaultSourceLang
@@ -158,10 +169,23 @@ func (repo *SourceRepo) Create(ctx context.Context, source *entity.Source) error
 	const query = `
 INSERT INTO sources (name, feed_url, category, lang, kind, active)
 VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (feed_url) DO UPDATE SET
+       name       = EXCLUDED.name,
+       category   = EXCLUDED.category,
+       lang       = EXCLUDED.lang,
+       kind       = EXCLUDED.kind,
+       active     = EXCLUDED.active,
+       deleted_at = NULL
+WHERE sources.deleted_at IS NOT NULL
 RETURNING id, created_at`
 	err := repo.db.QueryRowContext(ctx, query,
 		source.Name, source.FeedURL, source.Category, source.Lang, source.Kind, source.Active,
 	).Scan(&source.ID, &source.CreatedAt)
+	if err == sql.ErrNoRows {
+		// Conflict with a live row: the DO UPDATE ... WHERE guard filtered
+		// it out, so nothing was inserted or updated.
+		return fmt.Errorf("Create: %w", repository.ErrDuplicateFeedURL)
+	}
 	if err != nil {
 		return fmt.Errorf("Create: %w", err)
 	}
@@ -183,7 +207,8 @@ UPDATE sources SET
        lang     = $4,
        kind     = $5,
        active   = $6
-WHERE id = $7`
+WHERE id = $7
+  AND deleted_at IS NULL`
 	res, err := repo.db.ExecContext(ctx, query,
 		source.Name, source.FeedURL, source.Category,
 		source.Lang, source.Kind, source.Active, source.ID,
@@ -197,8 +222,18 @@ WHERE id = $7`
 	return nil
 }
 
+// Delete soft-deletes a source: articles keep a NOT NULL FK to sources, so
+// a physical DELETE fails with articles_source_id_fkey on any source that
+// has been crawled. The row is kept with deleted_at set (active is dropped
+// too so no read path can ever pick it up) and every read query filters on
+// deleted_at IS NULL.
 func (repo *SourceRepo) Delete(ctx context.Context, id int64) error {
-	const query = `DELETE FROM sources WHERE id = $1`
+	const query = `
+UPDATE sources SET
+       deleted_at = now(),
+       active     = FALSE
+WHERE id = $1
+  AND deleted_at IS NULL`
 	res, err := repo.db.ExecContext(ctx, query, id)
 	if err != nil {
 		return fmt.Errorf("Delete: %w", err)

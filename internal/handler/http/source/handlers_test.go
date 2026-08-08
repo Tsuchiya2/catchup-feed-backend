@@ -333,6 +333,7 @@ func TestUpdateHandler_NotFound(t *testing.T) {
 /* ───────── Delete Handler テスト ───────── */
 
 type stubDeleteRepo struct {
+	source    *entity.Source // Get が返す行(nil = 存在しない/削除済み)
 	deleteErr error
 	deleted   bool
 	deletedID int64
@@ -347,9 +348,8 @@ func (s *stubDeleteRepo) Delete(_ context.Context, id int64) error {
 	return nil
 }
 
-// 以下は未使用だが、インターフェース満たすために実装
 func (s *stubDeleteRepo) Get(_ context.Context, _ int64) (*entity.Source, error) {
-	return nil, nil
+	return s.source, nil
 }
 func (s *stubDeleteRepo) List(_ context.Context) ([]*entity.Source, error) {
 	return nil, nil
@@ -371,7 +371,7 @@ func (s *stubDeleteRepo) Update(_ context.Context, _ *entity.Source) error {
 }
 
 func TestDeleteHandler_Success(t *testing.T) {
-	stub := &stubDeleteRepo{}
+	stub := &stubDeleteRepo{source: &entity.Source{ID: 1, Name: "Test", FeedURL: "https://example.com/feed", Active: true}}
 	handler := source.DeleteHandler{Svc: srcUC.Service{Repo: stub}}
 
 	req := httptest.NewRequest(http.MethodDelete, "/sources/1", nil)
@@ -406,6 +406,43 @@ func TestDeleteHandler_InvalidID(t *testing.T) {
 
 	if stub.deleted {
 		t.Error("Delete should not be called for invalid ID")
+	}
+}
+
+// 存在しない/削除済みソースへの DELETE は 404(かつては全エラーが 500 に
+// 潰れていた)。
+func TestDeleteHandler_NotFound(t *testing.T) {
+	stub := &stubDeleteRepo{source: nil}
+	handler := source.DeleteHandler{Svc: srcUC.Service{Repo: stub}}
+
+	req := httptest.NewRequest(http.MethodDelete, "/sources/42", nil)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+	if stub.deleted {
+		t.Error("Delete should not be called for a missing source")
+	}
+}
+
+// リポジトリ障害(DB ダウン等)は引き続き 500。
+func TestDeleteHandler_RepoError(t *testing.T) {
+	stub := &stubDeleteRepo{
+		source:    &entity.Source{ID: 1, Name: "Test", FeedURL: "https://example.com/feed", Active: true},
+		deleteErr: context.DeadlineExceeded,
+	}
+	handler := source.DeleteHandler{Svc: srcUC.Service{Repo: stub}}
+
+	req := httptest.NewRequest(http.MethodDelete, "/sources/1", nil)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusInternalServerError)
 	}
 }
 

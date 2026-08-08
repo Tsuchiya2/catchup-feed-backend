@@ -2,9 +2,16 @@ package repository
 
 import (
 	"context"
+	"errors"
 
 	"catchup-feed/internal/domain/entity"
 )
+
+// ErrDuplicateFeedURL is returned by SourceRepository.Create when the feed
+// URL is already taken by a live (non-deleted) source. A conflict with a
+// soft-deleted row is not an error: the row is resurrected instead
+// (deleted_at cleared, fields overwritten with the request values).
+var ErrDuplicateFeedURL = errors.New("feed URL already exists")
 
 // SourceSearchFilters contains optional filters for source search
 type SourceSearchFilters struct {
