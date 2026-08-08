@@ -40,7 +40,8 @@ var createTableStatements = []string{
                   CONSTRAINT sources_kind_check
                   CHECK (kind IN ('rss', 'youtube', 'podcast')),  -- Phase 2 §4
     active        boolean NOT NULL DEFAULT true,
-    created_at    timestamptz NOT NULL DEFAULT now()
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    deleted_at    timestamptz               -- NULL = 未削除。記事が FK 参照するため削除は論理削除
 )`,
 	`CREATE TABLE IF NOT EXISTS articles (
     id            bigserial PRIMARY KEY,
@@ -187,6 +188,10 @@ var createTableStatements = []string{
 //     added via a DO block because PostgreSQL has no ADD CONSTRAINT IF NOT
 //     EXISTS; duplicate_object makes the re-run a no-op (fresh databases
 //     already get the constraint inline from CREATE TABLE).
+//   - sources.deleted_at: ソース削除の論理削除化。articles が sources を FK
+//     参照するため物理 DELETE は記事を持つソースで制約違反(500)になる。
+//     削除は deleted_at を立てるだけにし、読み取り経路が deleted_at IS NULL
+//     で除外する(source_repo.go)。
 //   - books.review_cursor / books.review_status (Phase 3 §7.3): book_review
 //     progress lives on the books row (専用テーブルは過剰). The canonical
 //     books CREATE TABLE is owned by catchup-feed-ai (Phase 2 §6), so the
@@ -205,6 +210,7 @@ BEGIN
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$`,
+	`ALTER TABLE sources ADD COLUMN IF NOT EXISTS deleted_at timestamptz`,
 	`ALTER TABLE books ADD COLUMN IF NOT EXISTS review_cursor int NOT NULL DEFAULT 0`,
 	`ALTER TABLE books ADD COLUMN IF NOT EXISTS review_status text NOT NULL DEFAULT 'idle'`,
 }
@@ -249,9 +255,20 @@ func MigrateUp(db *sql.DB) error {
 			return err
 		}
 	}
-	// ソース定義の手動移植(§9)。ON CONFLICT DO NOTHING で冪等。
-	if _, err := db.Exec(seedSourcesSQL); err != nil {
-		return err
+	// ソース定義の手動移植(§9)。初回セットアップ(sources が0行)のとき
+	// のみ投入する。かつては毎起動時に無条件実行していたため、ダッシュ
+	// ボードで削除したソース(当時は物理削除で行が消えており ON CONFLICT
+	// が効かない)が再起動のたびに復活していた。論理削除行も1行と数える
+	// ので、運用中の DB にシードが再投入されることはない。ON CONFLICT
+	// DO NOTHING はシード内の重複に対する保険として残す。
+	var sourceCount int
+	if err := db.QueryRow(`SELECT count(*) FROM sources`).Scan(&sourceCount); err != nil {
+		return fmt.Errorf("count sources before seeding: %w", err)
+	}
+	if sourceCount == 0 {
+		if _, err := db.Exec(seedSourcesSQL); err != nil {
+			return err
+		}
 	}
 	return nil
 }

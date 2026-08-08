@@ -129,6 +129,72 @@ func TestSourceRepo_ListActive(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestSourceRepo_ReadQueries_ExcludeSoftDeleted pins the soft-delete
+// contract on every read path: a source deleted from the dashboard must
+// never surface again — not in the admin list, not in the crawler's active
+// list, not via Get/Search.
+func TestSourceRepo_ReadQueries_ExcludeSoftDeleted(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(repository.SourceRepository) error
+		args []driver.Value
+	}{
+		{
+			name: "Get",
+			call: func(r repository.SourceRepository) error {
+				_, err := r.Get(context.Background(), 1)
+				return err
+			},
+			args: []driver.Value{int64(1)},
+		},
+		{
+			name: "List",
+			call: func(r repository.SourceRepository) error {
+				_, err := r.List(context.Background())
+				return err
+			},
+		},
+		{
+			name: "ListActive",
+			call: func(r repository.SourceRepository) error {
+				_, err := r.ListActive(context.Background())
+				return err
+			},
+		},
+		{
+			name: "Search",
+			call: func(r repository.SourceRepository) error {
+				_, err := r.Search(context.Background(), "go")
+				return err
+			},
+			args: []driver.Value{"%go%"},
+		},
+		{
+			name: "SearchWithFilters",
+			call: func(r repository.SourceRepository) error {
+				_, err := r.SearchWithFilters(context.Background(), []string{"go"}, repository.SourceSearchFilters{})
+				return err
+			},
+			args: []driver.Value{"%go%"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, mock, closeFn := newSourceRepo(t)
+			defer closeFn()
+
+			mock.ExpectQuery(regexp.QuoteMeta("deleted_at IS NULL")).
+				WithArgs(tt.args...).
+				WillReturnRows(sqlmock.NewRows(sourceCols))
+
+			require.NoError(t, tt.call(repo))
+			assert.NoError(t, mock.ExpectationsWereMet(),
+				"%s must filter on deleted_at IS NULL", tt.name)
+		})
+	}
+}
+
 func TestSourceRepo_List_ScanError(t *testing.T) {
 	repo, mock, closeFn := newSourceRepo(t)
 	defer closeFn()
@@ -287,12 +353,55 @@ func TestSourceRepo_Create_DatabaseError(t *testing.T) {
 	defer closeFn()
 
 	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO sources")).
-		WillReturnError(errors.New("duplicate key"))
+		WillReturnError(errors.New("db down"))
 
 	err := repo.Create(context.Background(), &entity.Source{
 		Name: "n", FeedURL: "u", Category: "dev",
 	})
 	assert.Error(t, err)
+}
+
+// TestSourceRepo_Create_ResurrectsSoftDeleted pins the UNIQUE(feed_url)
+// edge case of soft deletion: re-registering a URL whose row is
+// soft-deleted must resurrect that row in place (deleted_at = NULL, fields
+// overwritten, same id → past articles stay attached) instead of failing
+// the UNIQUE constraint. The regex pins the ON CONFLICT ... WHERE
+// sources.deleted_at IS NOT NULL branch that makes this work.
+func TestSourceRepo_Create_ResurrectsSoftDeleted(t *testing.T) {
+	repo, mock, closeFn := newSourceRepo(t)
+	defer closeFn()
+
+	createdAt := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC) // 元の行の created_at
+	mock.ExpectQuery(`INSERT INTO sources[\s\S]*ON CONFLICT \(feed_url\) DO UPDATE SET[\s\S]*deleted_at = NULL\s+WHERE sources\.deleted_at IS NOT NULL`).
+		WithArgs("Golang Weekly (再登録)", "https://example.com/feed.xml", "ai", "ja", "rss", true).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(7), createdAt))
+
+	src := &entity.Source{
+		Name: "Golang Weekly (再登録)", FeedURL: "https://example.com/feed.xml",
+		Category: "ai", Lang: "ja", Kind: "rss", Active: true,
+	}
+	require.NoError(t, repo.Create(context.Background(), src))
+	assert.Equal(t, int64(7), src.ID, "resurrect keeps the original row id")
+	assert.Equal(t, createdAt, src.CreatedAt)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSourceRepo_Create_DuplicateLiveURL: a conflict with a live
+// (non-deleted) row returns no row from the guarded upsert and must map to
+// repository.ErrDuplicateFeedURL — not resurrect, not overwrite.
+func TestSourceRepo_Create_DuplicateLiveURL(t *testing.T) {
+	repo, mock, closeFn := newSourceRepo(t)
+	defer closeFn()
+
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO sources")).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"})) // 0行 = live 行と競合
+
+	err := repo.Create(context.Background(), &entity.Source{
+		Name: "dup", FeedURL: "https://example.com/feed.xml", Category: "dev",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, repository.ErrDuplicateFeedURL)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestSourceRepo_Update(t *testing.T) {
@@ -324,22 +433,31 @@ func TestSourceRepo_Update_NoRowsAffected(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestSourceRepo_Delete(t *testing.T) {
+// Delete is a soft delete: articles hold a NOT NULL FK to sources, so the
+// row must stay. The statement sets deleted_at and drops active instead of
+// issuing a physical DELETE — the old DELETE FROM sources 500'd with
+// articles_source_id_fkey on any crawled source. The regex pins the full
+// statement shape, including the deleted_at IS NULL guard (double delete →
+// RowsAffected 0 → error → 404 in the handler).
+const softDeletePattern = `UPDATE sources SET\s+deleted_at = now\(\),\s+active\s+= FALSE\s+WHERE id = \$1\s+AND deleted_at IS NULL`
+
+func TestSourceRepo_Delete_SoftDeletes(t *testing.T) {
 	repo, mock, closeFn := newSourceRepo(t)
 	defer closeFn()
 
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM sources WHERE id = $1")).
+	mock.ExpectExec(softDeletePattern).
 		WithArgs(int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	require.NoError(t, repo.Delete(context.Background(), 1))
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestSourceRepo_Delete_NoRowsAffected(t *testing.T) {
 	repo, mock, closeFn := newSourceRepo(t)
 	defer closeFn()
 
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM sources WHERE id = $1")).
+	mock.ExpectExec(softDeletePattern).
 		WithArgs(int64(99)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 

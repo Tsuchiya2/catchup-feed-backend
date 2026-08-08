@@ -8,6 +8,11 @@
 -- category は台本のコーナー分け単位(§4)。初期区分は
 -- dev / ai / infra / security / community の5つ(要レビュー、
 -- ダッシュボードからいつでも変更可能)。
+--
+-- 投入タイミング: MigrateUp が「sources テーブルが0行のとき」のみ実行
+-- する(初回セットアップ限定)。毎起動時に実行すると、ダッシュボードで
+-- 削除したソースが再起動のたびに復活してしまうため。ON CONFLICT は
+-- ファイル内の feed_url 重複に対する保険。
 -- ============================================================
 
 INSERT INTO sources (name, feed_url, category, lang, active) VALUES

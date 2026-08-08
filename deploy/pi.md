@@ -50,7 +50,7 @@ chmod 600 deploy/.env
 | `SMTP_ENABLED` / `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` | メール通知(本人向け D-29+友人向け C-11 で共用)。Gmail なら `SMTP_HOST=smtp.gmail.com`・`SMTP_PORT=587`・`SMTP_USERNAME=<Gmail アドレス>`・`SMTP_PASSWORD=<アプリパスワード>`(U-11: 2 段階認証を有効にして [Google アカウント > セキュリティ > アプリパスワード] で発行)。`SMTP_FROM` は未設定なら `SMTP_USERNAME`。使う段階で `SMTP_ENABLED=true`。現用は旧システムの Gmail アカウント(Pi の `~/.msmtprc` と同一資格情報)を流用(D-30-1)。無効化されたら U-11 の手順で再発行 |
 | `NOTIFY_ERROR_EMAIL_TO` | 本人向け通知(notify_error の障害通知+新着エピソード通知)の宛先アドレス(D-29)。`SMTP_ENABLED=true` が前提。空なら本人向け通知は送られない |
 
-旧 catchup-feed の DB とは **PostgreSQL サーバーごと分離**する(このスタックは専用の `catchup-feed-postgres` コンテナ、database 名 `catchup-feed`、ホスト側ポート 5433)。**旧システムの `catchup-postgres`(ハイフンの後が違うだけの別コンテナ)と取り違えない**。旧 DB からデータは移行しない — sources 定義は `internal/infra/db/seeds/sources.sql` が server 起動時に自動投入される(冪等、`ON CONFLICT DO NOTHING`)。
+旧 catchup-feed の DB とは **PostgreSQL サーバーごと分離**する(このスタックは専用の `catchup-feed-postgres` コンテナ、database 名 `catchup-feed`、ホスト側ポート 5433)。**旧システムの `catchup-postgres`(ハイフンの後が違うだけの別コンテナ)と取り違えない**。旧 DB からデータは移行しない — sources 定義は `internal/infra/db/seeds/sources.sql` が server の**初回起動時(sources テーブルが0行のとき)のみ**自動投入される。2回目以降の起動では再投入されない(ダッシュボードで削除したソースが再起動で復活しないようにするため)。
 
 ## 3. ビルドと起動
 
@@ -61,14 +61,14 @@ docker compose -f deploy/compose.pi.yml up -d
 docker compose -f deploy/compose.pi.yml ps        # 3コンテナとも healthy になること
 ```
 
-マイグレーション(§4 スキーマ)と sources シードは `server` の起動時に自動適用される。専用コマンドは無い。
+マイグレーション(§4 スキーマ)は `server` の起動時に毎回自動適用される。sources シードは sources テーブルが空のとき(初回セットアップ)のみ投入される。専用コマンドは無い。
 
 ## 3.5. compose プロジェクト名リネーム(`pulse` → `catchup-feed`)の移行手順
 
 過去に compose プロジェクト名 `pulse`(コンテナ `pulse-*`、ボリューム `pulse_db-data`)で稼働していた
 Pi を、現行の `name: catchup-feed`(コンテナ `catchup-feed-*`、ボリューム `catchup-feed_db-data`)へ
 移行する場合の手順。**データ喪失を許容する前提**(新プロジェクトは空ボリュームで起動し、sources は
-seeds が冪等投入する)。まだ稼働していない新規 Pi ならこの節は不要で、3章のまま `up -d --build`。
+初回起動時に seeds が投入する)。まだ稼働していない新規 Pi ならこの節は不要で、3章のまま `up -d --build`。
 
 ### precondition(必ず `up` 前に確認)
 
@@ -97,7 +97,7 @@ docker volume ls | grep catchup-feed    # 旧由来の catchup-feed_* ボリュ�
    ```
 
 2. **新プロジェクトで起動**。新ボリューム `catchup-feed_db-data`(空)が作られ、**DB は初期状態**に
-   なる。sources は server 起動時に seeds が冪等投入する。
+   なる。sources は server の初回起動時(テーブルが空のとき)に seeds が投入する。
 
    ```bash
    docker compose -f deploy/compose.pi.yml up -d --build   # プロジェクト名は name: catchup-feed

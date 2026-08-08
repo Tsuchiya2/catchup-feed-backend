@@ -719,6 +719,12 @@ func TestService_Delete_success(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name:      "not found (存在しない/削除済み) は ErrSourceNotFound",
+			id:        42,
+			setupRepo: func(s *stubRepo) {},
+			wantErr:   true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -740,5 +746,29 @@ func TestService_Delete_success(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+/* 12b. Delete: 存在しないソースは ErrSourceNotFound(ハンドラが 404 に写像) */
+func TestService_Delete_notFound(t *testing.T) {
+	svc := srcUC.Service{Repo: newStub()}
+
+	err := svc.Delete(context.Background(), 42)
+	if !errors.Is(err, srcUC.ErrSourceNotFound) {
+		t.Fatalf("Delete() error = %v, want ErrSourceNotFound", err)
+	}
+}
+
+/* 12c. Create: feed_url 重複(live 行)は ErrDuplicateSource に写像される */
+func TestService_Create_duplicateFeedURL(t *testing.T) {
+	stub := newStub()
+	stub.err = repository.ErrDuplicateFeedURL
+	svc := srcUC.Service{Repo: stub}
+
+	err := svc.Create(context.Background(), srcUC.CreateInput{
+		Name: "dup", FeedURL: "https://example.com/feed", Category: "dev",
+	})
+	if !errors.Is(err, srcUC.ErrDuplicateSource) {
+		t.Fatalf("Create() error = %v, want ErrDuplicateSource", err)
 	}
 }

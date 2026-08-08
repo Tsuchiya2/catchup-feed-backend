@@ -21,7 +21,9 @@ var wantTables = []string{
 	"learning_items", "review_logs",
 }
 
-func expectFullMigration(mock sqlmock.Sqlmock) {
+// expectMigrationDDL expects the schema part of MigrateUp (extension +
+// tables + alters + indexes), without the seed step.
+func expectMigrationDDL(mock sqlmock.Sqlmock) {
 	mock.ExpectExec("CREATE EXTENSION IF NOT EXISTS vector").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	for _, table := range wantTables {
@@ -33,6 +35,9 @@ func expectFullMigration(mock sqlmock.Sqlmock) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("sources_kind_check").
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	// ソース論理削除の upgrade path: sources.deleted_at。
+	mock.ExpectExec("ALTER TABLE sources ADD COLUMN IF NOT EXISTS deleted_at").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	// Phase 3 upgrade path: books の book_review 進捗2カラム(§7.3)。
 	mock.ExpectExec("ALTER TABLE books ADD COLUMN IF NOT EXISTS review_cursor").
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -42,8 +47,23 @@ func expectFullMigration(mock sqlmock.Sqlmock) {
 		mock.ExpectExec("CREATE INDEX IF NOT EXISTS").
 			WillReturnResult(sqlmock.NewResult(0, 0))
 	}
-	mock.ExpectExec("INSERT INTO sources").
-		WillReturnResult(sqlmock.NewResult(0, 0))
+}
+
+// expectSeedCheck expects the "seed only when sources is empty" guard: a
+// COUNT query answered with existingSources, followed by the seed INSERT
+// only when the table is empty.
+func expectSeedCheck(mock sqlmock.Sqlmock, existingSources int) {
+	mock.ExpectQuery(`SELECT count\(\*\) FROM sources`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(existingSources))
+	if existingSources == 0 {
+		mock.ExpectExec("INSERT INTO sources").
+			WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+}
+
+func expectFullMigration(mock sqlmock.Sqlmock) {
+	expectMigrationDDL(mock)
+	expectSeedCheck(mock, 0)
 }
 
 func TestMigrateUp_Success(t *testing.T) {
@@ -57,8 +77,11 @@ func TestMigrateUp_Success(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestMigrateUp_Idempotent: every statement uses IF NOT EXISTS / ON CONFLICT
-// DO NOTHING, so running twice issues the same SQL and succeeds both times.
+// TestMigrateUp_Idempotent: every DDL statement uses IF NOT EXISTS, so
+// running twice issues the same SQL and succeeds both times. The seed is
+// NOT idempotent-by-rerun anymore: the first run (empty table) seeds, the
+// second run sees the seeded rows and must skip the INSERT — otherwise
+// sources deleted from the dashboard would resurrect on every restart.
 // (実 DB での冪等性は migrate_integration_test.go の
 // TestMigrateUp_RealPostgres が TEST_DATABASE_URL 指定時に検証する。)
 func TestMigrateUp_Idempotent(t *testing.T) {
@@ -66,12 +89,30 @@ func TestMigrateUp_Idempotent(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	expectFullMigration(mock)
-	expectFullMigration(mock)
+	expectMigrationDDL(mock)
+	expectSeedCheck(mock, 0) // 初回: 空 → シード投入
+	expectMigrationDDL(mock)
+	expectSeedCheck(mock, 36) // 再起動: 行がある → シードは走らない
 
 	require.NoError(t, MigrateUp(db))
 	require.NoError(t, MigrateUp(db))
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestMigrateUp_SeedSkippedWhenSourcesExist pins the restart behaviour that
+// caused the resurrection bug: with any row present — soft-deleted rows
+// count too — the seed INSERT must not be issued at all.
+func TestMigrateUp_SeedSkippedWhenSourcesExist(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	expectMigrationDDL(mock)
+	expectSeedCheck(mock, 1)
+
+	require.NoError(t, MigrateUp(db))
+	assert.NoError(t, mock.ExpectationsWereMet(),
+		"INSERT INTO sources must not run when the table has rows")
 }
 
 // TestMigrateUp_ExtensionError: on an image without pgvector the CREATE
@@ -169,10 +210,30 @@ func TestMigrateUp_SeedError(t *testing.T) {
 		mock.ExpectExec("CREATE INDEX IF NOT EXISTS").
 			WillReturnResult(sqlmock.NewResult(0, 0))
 	}
+	mock.ExpectQuery(`SELECT count\(\*\) FROM sources`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec("INSERT INTO sources").
 		WillReturnError(sql.ErrConnDone)
 
 	assert.Error(t, MigrateUp(db))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestMigrateUp_SeedCountError: the empty-check itself failing must abort
+// the migration (better a boot failure than silently skipping the seed on a
+// genuinely fresh database).
+func TestMigrateUp_SeedCountError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	expectMigrationDDL(mock)
+	mock.ExpectQuery(`SELECT count\(\*\) FROM sources`).
+		WillReturnError(sql.ErrConnDone)
+
+	err = MigrateUp(db)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sql.ErrConnDone)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -200,6 +261,7 @@ func TestSchema_MatchesDesignDoc(t *testing.T) {
 		{"sources default lang to en", "lang          text NOT NULL DEFAULT 'en'"},
 		{"sources default kind to rss (Phase 2 §4)", "kind          text NOT NULL DEFAULT 'rss'"},
 		{"sources.kind constrained to rss|youtube|podcast", "CHECK (kind IN ('rss', 'youtube', 'podcast'))"},
+		{"sources delete is logical (articles FK 保護)", "deleted_at    timestamptz"},
 		{"book_chunks reference books with NOT NULL FK (Phase 2 §6)", "book_id   bigint NOT NULL REFERENCES books"},
 		{"book_chunks embedding is 1024-dim (D-12: bge-m3)", "embedding vector(1024)"},
 		{"book_chunks unique per (book_id, position)", "UNIQUE (book_id, position)"},
