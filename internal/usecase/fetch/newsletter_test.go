@@ -314,9 +314,10 @@ func TestNewsletter_TeaserDescriptionFallsBackToIssuePage(t *testing.T) {
 	assert.Equal(t, int64(4), stats.Inserted, "号ページから抽出したリンクが展開される")
 }
 
-// 号ページ fetch が失敗しても縮退: インラインのリンクのみで処理を続ける
-// (この場合 0 リンク → 記事なしで号マーカーだけ入る)。
-func TestNewsletter_IssuePageFetchFailureDegrades(t *testing.T) {
+// ティーザー型フィードで号ページ fetch が一時エラー、かつインラインから
+// リンクが 1 本も取れなかった号は、マーカーを入れずに次サイクルへ持ち越す
+// (マーカーを入れると「抽出 0 件」が固定され号が恒久ロストするため)。
+func TestNewsletter_IssuePageFetchFailureWithNoLinksLeavesIssueForRetry(t *testing.T) {
 	issue := fetchUC.FeedItem{
 		Title: "Issue #42", URL: nlIssueURL,
 		Content:     `<p>Teaser only.</p>`,
@@ -327,11 +328,52 @@ func TestNewsletter_IssuePageFetchFailureDegrades(t *testing.T) {
 	svc := newNewsletterService(artRepo, fetcher, &stubSummarizer{}, issue)
 
 	stats, err := svc.CrawlAllSources(context.Background())
+	require.NoError(t, err, "号ページの一時エラーはクロールを止めない")
+
+	assert.Equal(t, int64(0), stats.Inserted)
+	assert.Empty(t, artRepo.articles, "マーカーも入れない → 次サイクルで号ごと再試行")
+}
+
+// fallback が成功して本当にリンク 0 件だった号は確定情報なので、マーカーを
+// 入れて次サイクル以降は再処理しない。
+func TestNewsletter_GenuinelyLinklessIssueIsMarked(t *testing.T) {
+	issue := fetchUC.FeedItem{
+		Title: "Issue #42", URL: nlIssueURL,
+		Content:     `<p>Teaser only.</p>`,
+		PublishedAt: time.Now(),
+	}
+	artRepo := &stubArticleRepo{existsMap: map[string]bool{}}
+	fetcher := &htmlPageFetcher{htmlPages: map[string]string{
+		nlIssueURL: `<p>An issue with no outbound links at all.</p>`,
+	}}
+	svc := newNewsletterService(artRepo, fetcher, &stubSummarizer{}, issue)
+
+	stats, err := svc.CrawlAllSources(context.Background())
 	require.NoError(t, err)
 
 	assert.Equal(t, int64(0), stats.Inserted)
 	require.Len(t, artRepo.articles, 1)
-	assert.Equal(t, nlIssueURL, artRepo.articles[0].URL, "リンク 0 件でも号マーカーは入る")
+	assert.Equal(t, nlIssueURL, artRepo.articles[0].URL, "リンク 0 件が確定した号はマーカーが入る")
+}
+
+// フォールバックが一時エラーでもインラインにリンクが少しでもあれば、その
+// 分だけ処理して号マーカーも入れる(取れた情報は活かす)。
+func TestNewsletter_IssuePageFetchFailureWithInlineLinksProceeds(t *testing.T) {
+	issue := fetchUC.FeedItem{
+		Title: "Issue #42", URL: nlIssueURL,
+		Content:     `<p><a href="https://alpha.dev/post1">Alpha Post</a></p>`,
+		PublishedAt: time.Now(),
+	}
+	artRepo := &stubArticleRepo{existsMap: map[string]bool{}}
+	fetcher := &htmlPageFetcher{htmlErr: errors.New("issue page 503")}
+	svc := newNewsletterService(artRepo, fetcher, &stubSummarizer{}, issue)
+
+	stats, err := svc.CrawlAllSources(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(1), stats.Inserted, "インラインの 1 リンクは処理される")
+	assert.NotNil(t, findArticleByURL(artRepo.articles, "https://alpha.dev/post1"))
+	assert.NotNil(t, findArticleByURL(artRepo.articles, nlIssueURL), "号マーカーも入る")
 }
 
 // ContentFetcher が無効(nil)の場合はリンク展開できないためソースごと

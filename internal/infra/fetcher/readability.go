@@ -107,12 +107,8 @@ func NewReadabilityFetcher(config ContentFetchConfig) *ReadabilityFetcher {
 //	    content = rssContent
 //	}
 func (f *ReadabilityFetcher) FetchContent(ctx context.Context, urlStr string) (string, error) {
-	// Step 1: Validate URL for security
-	if err := validateURL(urlStr, f.config.DenyPrivateIPs); err != nil {
-		return "", err
-	}
-
-	// Step 2: Execute fetch
+	// URL validation (SSRF) happens structurally inside fetchRawHTML, so
+	// every fetch path shares it by construction.
 	return f.doFetch(ctx, urlStr)
 }
 
@@ -170,9 +166,6 @@ func (f *ReadabilityFetcher) doFetch(ctx context.Context, urlStr string) (string
 // flatten the page to text and destroy the <a href> structure the link
 // extractor needs. Implements the optional fetch.HTMLFetcher interface.
 func (f *ReadabilityFetcher) FetchHTML(ctx context.Context, urlStr string) (string, error) {
-	if err := validateURL(urlStr, f.config.DenyPrivateIPs); err != nil {
-		return "", err
-	}
 	htmlBytes, _, err := f.fetchRawHTML(ctx, urlStr)
 	if err != nil {
 		return "", err
@@ -182,10 +175,18 @@ func (f *ReadabilityFetcher) FetchHTML(ctx context.Context, urlStr string) (stri
 
 // fetchRawHTML performs the HTTP GET shared by doFetch (readability
 // extraction) and FetchHTML (raw HTML for the newsletter link extractor):
-// per-request timeout, crawler User-Agent, status check, and the
-// MaxBodySize-limited read. Returns the body bytes and the final URL after
-// redirects (each hop already validated by the client's CheckRedirect hook).
+// entry-point URL validation (SSRF), per-request timeout, crawler
+// User-Agent, status check, and the MaxBodySize-limited read. Returns the
+// body bytes and the final URL after redirects (each hop already validated
+// by the client's CheckRedirect hook). The validateURL call lives HERE, not
+// in the public methods, so a future fetch path cannot forget it.
 func (f *ReadabilityFetcher) fetchRawHTML(ctx context.Context, urlStr string) ([]byte, *url.URL, error) {
+	// Validate URL for security (SSRF): scheme allowlist + DNS resolution
+	// against private/loopback/link-local ranges.
+	if err := validateURL(urlStr, f.config.DenyPrivateIPs); err != nil {
+		return nil, nil, err
+	}
+
 	// Apply per-request timeout from config
 	reqCtx, cancel := context.WithTimeout(ctx, f.config.Timeout)
 	defer cancel()

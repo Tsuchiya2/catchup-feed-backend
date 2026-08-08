@@ -110,7 +110,9 @@ func (s *Service) processNewsletterItems(
 // so the whole issue is retried next hour — already-persisted links are
 // dedupe-skipped then. Partial failures alongside successes are accepted
 // as lost (likely per-link permanent problems; retrying the issue forever
-// would be worse — 縮退許容).
+// would be worse — 縮退許容). A teaser-only issue whose page fallback
+// fetch failed AND yielded zero links also writes no marker — otherwise a
+// transient fetch error would permanently freeze the issue as "no links".
 func (s *Service) processNewsletterIssue(
 	ctx context.Context,
 	src *entity.Source,
@@ -126,6 +128,7 @@ func (s *Service) processNewsletterIssue(
 	// newsletters ship a teaser instead of the issue body. Fetch the issue
 	// page itself as raw HTML (readability would destroy the anchors).
 	// SSRF 防御は FetchContent と同一(HTMLFetcher の契約)。
+	fallbackFailed := false
 	if len(links) < newsletterMinInlineLinks {
 		if hf, ok := s.ContentFetcher.(HTMLFetcher); ok {
 			pageHTML, err := hf.FetchHTML(ctx, item.URL)
@@ -133,6 +136,7 @@ func (s *Service) processNewsletterIssue(
 				if ctx.Err() != nil {
 					return err
 				}
+				fallbackFailed = true
 				logger.Warn("newsletter issue page fetch failed, using inline links only",
 					slog.Int64("source_id", src.ID),
 					slog.String("issue_url", item.URL),
@@ -141,6 +145,19 @@ func (s *Service) processNewsletterIssue(
 				links = fetched
 			}
 		}
+	}
+
+	// ティーザー型フィードの号ロスト防止: 号ページの fallback fetch が失敗
+	// し、かつインラインからもリンクが 1 本も取れなかった号は、マーカーを
+	// 入れると「抽出 0 件」が確定情報として固定され二度と再試行されない。
+	// マーカーを見送って次サイクルで号ごと再試行する(恒久 404 でも毎時
+	// HTTP 1 本のコスト — §8 縮退許容の範囲)。fallback が成功して本当に
+	// リンク 0 件だった号は確定情報なので、下の通常経路でマーカーが入る。
+	if fallbackFailed && len(links) == 0 {
+		logger.Warn("newsletter issue page fetch failed with no inline links, issue left for next cycle",
+			slog.Int64("source_id", src.ID),
+			slog.String("issue_url", item.URL))
+		return nil
 	}
 
 	if len(links) > maxArticles {
