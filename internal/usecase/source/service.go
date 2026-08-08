@@ -12,7 +12,8 @@ import (
 // CreateInput represents the input parameters for creating a new source.
 // Category drives the radio script corner assignment (§4) and is required;
 // Lang defaults to 'en' when empty. Kind selects the content pipeline
-// (Phase 2 §4: rss | youtube | podcast) and defaults to 'rss' when empty.
+// (Phase 2 §4: rss | youtube | podcast | newsletter) and defaults to 'rss'
+// when empty.
 type CreateInput struct {
 	Name     string
 	FeedURL  string
@@ -156,7 +157,7 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) error {
 		src.Active = *in.Active
 	}
 	if src.Kind != "" && !entity.ValidSourceKind(src.Kind) {
-		return &entity.ValidationError{Field: "kind", Message: "must be one of rss, youtube, podcast"}
+		return &entity.ValidationError{Field: "kind", Message: "must be one of rss, youtube, podcast, newsletter"}
 	}
 
 	if err := s.Repo.Update(ctx, src); err != nil {

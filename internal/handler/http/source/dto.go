@@ -4,7 +4,7 @@ import "time"
 
 // DTO mirrors the §4 sources schema (+ Phase 2 kind). Category drives the
 // radio script corner assignment; Lang defaults to 'en'; Kind is the
-// content pipeline selector (rss | youtube | podcast).
+// content pipeline selector (rss | youtube | podcast | newsletter).
 type DTO struct {
 	ID        int64     `json:"id"`
 	Name      string    `json:"name"`
@@ -12,7 +12,7 @@ type DTO struct {
 	URL       string    `json:"url"` // Mapped from FeedURL for frontend compatibility
 	Category  string    `json:"category"`
 	Lang      string    `json:"lang"`
-	Kind      string    `json:"kind" example:"rss" enums:"rss,youtube,podcast"`
+	Kind      string    `json:"kind" example:"rss" enums:"rss,youtube,podcast,newsletter"`
 	Active    bool      `json:"active"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -24,7 +24,7 @@ type CreateRequest struct {
 	FeedURL  string `json:"feedURL" example:"https://go.dev/blog/feed.atom"`
 	Category string `json:"category" example:"go"`
 	Lang     string `json:"lang,omitempty" example:"en"`
-	Kind     string `json:"kind,omitempty" example:"rss" enums:"rss,youtube,podcast"`
+	Kind     string `json:"kind,omitempty" example:"rss" enums:"rss,youtube,podcast,newsletter"`
 }
 
 // UpdateRequest is the PUT /sources/{id} body. Empty strings keep the
@@ -34,7 +34,7 @@ type UpdateRequest struct {
 	FeedURL  string `json:"feedURL,omitempty" example:"https://go.dev/blog/feed.atom"`
 	Category string `json:"category,omitempty" example:"go"`
 	Lang     string `json:"lang,omitempty" example:"en"`
-	Kind     string `json:"kind,omitempty" example:"rss" enums:"rss,youtube,podcast"`
+	Kind     string `json:"kind,omitempty" example:"rss" enums:"rss,youtube,podcast,newsletter"`
 	Active   *bool  `json:"active,omitempty" example:"true"`
 }
 

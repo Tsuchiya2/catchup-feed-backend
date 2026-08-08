@@ -124,7 +124,8 @@ func TestService_Create_kind(t *testing.T) {
 		{name: "empty kind defaults to rss", kind: "", wantKind: entity.SourceKindRSS},
 		{name: "youtube kind is stored", kind: entity.SourceKindYouTube, wantKind: entity.SourceKindYouTube},
 		{name: "podcast kind is stored", kind: entity.SourceKindPodcast, wantKind: entity.SourceKindPodcast},
-		{name: "invalid kind is rejected", kind: "newsletter", wantErr: true},
+		{name: "newsletter kind is stored", kind: entity.SourceKindNewsletter, wantKind: entity.SourceKindNewsletter},
+		{name: "invalid kind is rejected", kind: "webring", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -200,7 +201,8 @@ func TestService_Update_kind(t *testing.T) {
 	}{
 		{name: "empty kind keeps current value", kind: "", wantKind: entity.SourceKindPodcast},
 		{name: "kind can be changed", kind: entity.SourceKindYouTube, wantKind: entity.SourceKindYouTube},
-		{name: "invalid kind is rejected", kind: "newsletter", wantErr: true},
+		{name: "kind can be changed to newsletter", kind: entity.SourceKindNewsletter, wantKind: entity.SourceKindNewsletter},
+		{name: "invalid kind is rejected", kind: "webring", wantErr: true},
 	}
 
 	for _, tt := range tests {

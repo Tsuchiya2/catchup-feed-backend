@@ -175,6 +175,8 @@ services:
       WORKER_TIMEZONE: ${WORKER_TIMEZONE:-Asia/Tokyo}
       CRAWL_TIMEOUT: ${CRAWL_TIMEOUT:-30m}
       WORKER_HEALTH_PORT: ${WORKER_HEALTH_PORT:-9091}
+      # newsletter ソースの号あたり展開記事数上限(既定 10)
+      NEWSLETTER_MAX_ARTICLES: ${NEWSLETTER_MAX_ARTICLES:-}
 
       TZ: ${TZ:-Asia/Tokyo}
       LOG_LEVEL: ${LOG_LEVEL:-info}

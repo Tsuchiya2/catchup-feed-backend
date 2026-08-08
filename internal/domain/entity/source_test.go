@@ -58,12 +58,23 @@ func TestSource_Validate(t *testing.T) {
 			wantKind: SourceKindPodcast,
 		},
 		{
+			name: "newsletter kind is accepted",
+			source: Source{
+				Name:     "Golang Weekly",
+				FeedURL:  "https://golangweekly.com/rss",
+				Category: "dev",
+				Kind:     SourceKindNewsletter,
+			},
+			wantLang: DefaultSourceLang,
+			wantKind: SourceKindNewsletter,
+		},
+		{
 			name: "invalid kind is rejected",
 			source: Source{
 				Name:     "Golang Weekly",
 				FeedURL:  "https://example.com/feed.xml",
 				Category: "dev",
-				Kind:     "newsletter",
+				Kind:     "webring",
 			},
 			wantError: "kind",
 		},
@@ -119,8 +130,9 @@ func TestValidSourceKind(t *testing.T) {
 		{SourceKindRSS, true},
 		{SourceKindYouTube, true},
 		{SourceKindPodcast, true},
+		{SourceKindNewsletter, true},
 		{"", false},
-		{"newsletter", false},
+		{"webring", false},
 		{"RSS", false}, // case-sensitive: CHECK 制約と同じ判定
 	}
 	for _, tt := range tests {

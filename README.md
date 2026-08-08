@@ -177,6 +177,7 @@ go build -o radio ./cmd/radio
 |---|---|
 | `CONTENT_FETCH_ENABLED` / `CONTENT_FETCH_THRESHOLD` / `CONTENT_FETCH_PARALLELISM` / `CONTENT_FETCH_TIMEOUT` | go-readability 本文抽出 |
 | `CONTENT_FETCH_MAX_REDIRECTS` / `CONTENT_FETCH_DENY_PRIVATE_IPS` / `CONTENT_FETCH_MAX_BODY_SIZE` | SSRF ガード・取得上限 |
+| `NEWSLETTER_MAX_ARTICLES` | newsletter ソース(リンク集型)の号あたり展開記事数上限(既定 10)。号内リンクを文書順の先頭から N 件だけ fetch → 要約する |
 | `JOBS_POLL_INTERVAL` | jobs コンシューマのポーリング間隔 |
 | `CLEANUP_CRON_SCHEDULE` | mp3 保持ジョブの投入スケジュール(既定 `30 6 * * *`) |
 

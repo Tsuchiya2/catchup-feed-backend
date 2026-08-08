@@ -210,6 +210,9 @@ func TestUpdateHandler_UpdateError(t *testing.T) {
 func (s *stubUpdateRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
 	return nil
 }
+func (s *stubUpdateRepo) CreateWithSummaryIfNew(_ context.Context, _ *entity.Article, _ *entity.Summary) (bool, error) {
+	return false, nil
+}
 func (s *stubUpdateRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
 	return nil
 }

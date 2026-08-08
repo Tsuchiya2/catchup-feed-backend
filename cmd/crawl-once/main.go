@@ -19,6 +19,7 @@ import (
 	"catchup-feed/internal/infra/scraper"
 	"catchup-feed/internal/infra/summarizer"
 	fetchUC "catchup-feed/internal/usecase/fetch"
+	pkgconfig "catchup-feed/pkg/config"
 )
 
 func main() {
@@ -120,7 +121,7 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 		Threshold:   contentFetchConfig.Threshold,
 	}
 
-	return fetchUC.NewService(
+	svc := fetchUC.NewService(
 		srcRepo,
 		artRepo,
 		sum,
@@ -128,6 +129,10 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 		contentFetcher,
 		fetchConfig,
 	)
+	// newsletter リンク展開の号あたり記事数上限(既定 10)。cmd/worker と同配線。
+	svc.NewsletterMaxArticles = pkgconfig.GetEnvInt(
+		"NEWSLETTER_MAX_ARTICLES", fetchUC.DefaultNewsletterMaxArticles)
+	return svc
 }
 
 // createSummarizer builds the Gemini -> Groq -> Ollama fallback chain from

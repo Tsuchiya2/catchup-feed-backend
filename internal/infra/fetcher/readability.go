@@ -133,63 +133,9 @@ func (f *ReadabilityFetcher) FetchContent(ctx context.Context, urlStr string) (s
 //   - string: Extracted article content (plain text)
 //   - error: Error if fetching or extraction fails
 func (f *ReadabilityFetcher) doFetch(ctx context.Context, urlStr string) (string, error) {
-	// Apply per-request timeout from config
-	reqCtx, cancel := context.WithTimeout(ctx, f.config.Timeout)
-	defer cancel()
-
-	// Create HTTP request
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, urlStr, nil)
+	htmlBytes, parsedURL, err := f.fetchRawHTML(ctx, urlStr)
 	if err != nil {
-		return "", fmt.Errorf("%w: failed to create request: %v", fetch.ErrInvalidURL, err)
-	}
-
-	// Identify ourselves with the crawler-wide User-Agent (shared with the
-	// RSS feed-fetch path; see useragent.go).
-	req.Header.Set("User-Agent", UserAgent)
-
-	// Execute HTTP request
-	resp, err := f.client.Do(req)
-	if err != nil {
-		// Check if error is timeout
-		if reqCtx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("%w: request exceeded %v", fetch.ErrTimeout, f.config.Timeout)
-		}
-		// Check if error is due to redirect validation
-		if urlErr, ok := err.(*url.Error); ok && urlErr.Err != nil {
-			return "", urlErr.Err
-		}
-		return "", fmt.Errorf("HTTP request failed: %w", err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	// Check HTTP status code
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
-	}
-
-	// Read response body with size limit
-	// This prevents memory exhaustion from oversized responses
-	limitedReader := io.LimitReader(resp.Body, f.config.MaxBodySize+1)
-	htmlBytes, err := io.ReadAll(limitedReader)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Check if response exceeded size limit
-	if int64(len(htmlBytes)) > f.config.MaxBodySize {
-		return "", fmt.Errorf("%w: response size %d bytes exceeds limit %d bytes",
-			fetch.ErrBodyTooLarge, len(htmlBytes), f.config.MaxBodySize)
-	}
-
-	// Parse the final URL (may have changed due to redirects)
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		parsedURL = nil // Readability can work without URL
-	}
-	if resp.Request != nil && resp.Request.URL != nil {
-		parsedURL = resp.Request.URL
+		return "", err
 	}
 
 	// Extract article content using Readability
@@ -214,4 +160,89 @@ func (f *ReadabilityFetcher) doFetch(ctx context.Context, urlStr string) (string
 	}
 
 	return article.TextContent, nil
+}
+
+// FetchHTML fetches the raw HTML of a page with the exact same security
+// posture as FetchContent (entry-point validateURL, per-hop SSRF redirect
+// validation, size limit, timeout) but WITHOUT the readability extraction
+// step. The newsletter link-expansion path uses it as a fallback to pull an
+// issue page whose RSS description carried too few links: readability would
+// flatten the page to text and destroy the <a href> structure the link
+// extractor needs. Implements the optional fetch.HTMLFetcher interface.
+func (f *ReadabilityFetcher) FetchHTML(ctx context.Context, urlStr string) (string, error) {
+	if err := validateURL(urlStr, f.config.DenyPrivateIPs); err != nil {
+		return "", err
+	}
+	htmlBytes, _, err := f.fetchRawHTML(ctx, urlStr)
+	if err != nil {
+		return "", err
+	}
+	return string(htmlBytes), nil
+}
+
+// fetchRawHTML performs the HTTP GET shared by doFetch (readability
+// extraction) and FetchHTML (raw HTML for the newsletter link extractor):
+// per-request timeout, crawler User-Agent, status check, and the
+// MaxBodySize-limited read. Returns the body bytes and the final URL after
+// redirects (each hop already validated by the client's CheckRedirect hook).
+func (f *ReadabilityFetcher) fetchRawHTML(ctx context.Context, urlStr string) ([]byte, *url.URL, error) {
+	// Apply per-request timeout from config
+	reqCtx, cancel := context.WithTimeout(ctx, f.config.Timeout)
+	defer cancel()
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, urlStr, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: failed to create request: %v", fetch.ErrInvalidURL, err)
+	}
+
+	// Identify ourselves with the crawler-wide User-Agent (shared with the
+	// RSS feed-fetch path; see useragent.go).
+	req.Header.Set("User-Agent", UserAgent)
+
+	// Execute HTTP request
+	resp, err := f.client.Do(req)
+	if err != nil {
+		// Check if error is timeout
+		if reqCtx.Err() == context.DeadlineExceeded {
+			return nil, nil, fmt.Errorf("%w: request exceeded %v", fetch.ErrTimeout, f.config.Timeout)
+		}
+		// Check if error is due to redirect validation
+		if urlErr, ok := err.(*url.Error); ok && urlErr.Err != nil {
+			return nil, nil, urlErr.Err
+		}
+		return nil, nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	// Check HTTP status code
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+	}
+
+	// Read response body with size limit
+	// This prevents memory exhaustion from oversized responses
+	limitedReader := io.LimitReader(resp.Body, f.config.MaxBodySize+1)
+	htmlBytes, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Check if response exceeded size limit
+	if int64(len(htmlBytes)) > f.config.MaxBodySize {
+		return nil, nil, fmt.Errorf("%w: response size %d bytes exceeds limit %d bytes",
+			fetch.ErrBodyTooLarge, len(htmlBytes), f.config.MaxBodySize)
+	}
+
+	// Parse the final URL (may have changed due to redirects)
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		parsedURL = nil // Readability can work without URL
+	}
+	if resp.Request != nil && resp.Request.URL != nil {
+		parsedURL = resp.Request.URL
+	}
+	return htmlBytes, parsedURL, nil
 }

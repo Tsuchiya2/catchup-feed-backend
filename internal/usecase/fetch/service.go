@@ -92,6 +92,12 @@ type Service struct {
 	// video is enqueued for the Mac worker. Optional like SummaryRepo:
 	// not part of NewService.
 	VideoDescriber VideoDescriber
+
+	// NewsletterMaxArticles caps how many linked articles one newsletter
+	// issue expands into (kind='newsletter', env NEWSLETTER_MAX_ARTICLES).
+	// <= 0 falls back to DefaultNewsletterMaxArticles. Optional like
+	// SummaryRepo: not part of NewService.
+	NewsletterMaxArticles int
 }
 
 // VideoDescriber is the §5.1 stage-1 backend (Gemini に動画 URL を直接入力):
@@ -330,6 +336,13 @@ func (s *Service) processSingleSource(ctx context.Context, src *entity.Source, s
 	case entity.SourceKindYouTube, entity.SourceKindPodcast:
 		if err := s.enqueueTranscribeItems(ctx, src, feedItems, existsMap, stats); err != nil {
 			return fmt.Errorf("enqueue transcribe items: %w", err)
+		}
+	case entity.SourceKindNewsletter:
+		// リンク集型ニュースレター: 1 item = 1 号を号内リンクへ展開する。
+		// 号 URL の dedupe(existsMap)と D-15b カットオフは上の共通経路を
+		// そのまま通っている。
+		if err := s.processNewsletterItems(ctx, src, feedItems, existsMap, stats); err != nil {
+			return fmt.Errorf("process newsletter items: %w", err)
 		}
 	default: // '' / 'rss': 既存挙動そのまま
 		if err := s.processFeedItems(ctx, src, feedItems, existsMap, stats); err != nil {
