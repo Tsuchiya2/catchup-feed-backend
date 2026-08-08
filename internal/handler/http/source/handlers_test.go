@@ -86,7 +86,7 @@ func TestCreateHandler_Success(t *testing.T) {
 	}
 }
 
-// TestCreateHandler_Kind: Phase 2 §4 — kind は 3値のみ受け付け、省略時 rss。
+// TestCreateHandler_Kind: Phase 2 §4 — kind は 4値のみ受け付け、省略時 rss。
 func TestCreateHandler_Kind(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -96,7 +96,8 @@ func TestCreateHandler_Kind(t *testing.T) {
 	}{
 		{name: "youtube", kind: "youtube", wantCode: http.StatusCreated, wantKind: entity.SourceKindYouTube},
 		{name: "podcast", kind: "podcast", wantCode: http.StatusCreated, wantKind: entity.SourceKindPodcast},
-		{name: "invalid kind rejected", kind: "newsletter", wantCode: http.StatusBadRequest},
+		{name: "newsletter", kind: "newsletter", wantCode: http.StatusCreated, wantKind: entity.SourceKindNewsletter},
+		{name: "invalid kind rejected", kind: "webring", wantCode: http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {

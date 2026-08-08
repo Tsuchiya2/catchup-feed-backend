@@ -30,10 +30,12 @@ func expectMigrationDDL(mock sqlmock.Sqlmock) {
 		mock.ExpectExec("CREATE TABLE IF NOT EXISTS " + table + " ").
 			WillReturnResult(sqlmock.NewResult(0, 0))
 	}
-	// Phase 2 upgrade path: ALTER TABLE sources (kind) + DO block (CHECK).
+	// Phase 2 upgrade path: ALTER TABLE sources (kind) + CHECK constraint
+	// swap (単一の ALTER TABLE で DROP IF EXISTS と ADD を統合 —
+	// newsletter 追加で値リストを広げる冪等・原子的な置換).
 	mock.ExpectExec("ALTER TABLE sources ADD COLUMN IF NOT EXISTS kind").
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("sources_kind_check").
+	mock.ExpectExec("DROP CONSTRAINT IF EXISTS sources_kind_check, ADD CONSTRAINT sources_kind_check").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	// ソース論理削除の upgrade path: sources.deleted_at。
 	mock.ExpectExec("ALTER TABLE sources ADD COLUMN IF NOT EXISTS deleted_at").
@@ -260,7 +262,7 @@ func TestSchema_MatchesDesignDoc(t *testing.T) {
 		{"sources carry the script corner category", "category      text NOT NULL"},
 		{"sources default lang to en", "lang          text NOT NULL DEFAULT 'en'"},
 		{"sources default kind to rss (Phase 2 §4)", "kind          text NOT NULL DEFAULT 'rss'"},
-		{"sources.kind constrained to rss|youtube|podcast", "CHECK (kind IN ('rss', 'youtube', 'podcast'))"},
+		{"sources.kind constrained to rss|youtube|podcast|newsletter", "CHECK (kind IN ('rss', 'youtube', 'podcast', 'newsletter'))"},
 		{"sources delete is logical (articles FK 保護)", "deleted_at    timestamptz"},
 		{"book_chunks reference books with NOT NULL FK (Phase 2 §6)", "book_id   bigint NOT NULL REFERENCES books"},
 		{"book_chunks embedding is 1024-dim (D-12: bge-m3)", "embedding vector(1024)"},

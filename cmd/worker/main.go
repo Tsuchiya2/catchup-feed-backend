@@ -221,6 +221,10 @@ func setupFetchService(logger *slog.Logger, database *sql.DB) fetchUC.Service {
 	if vd := summarizer.NewVideoDescriberFromEnv(logger); vd != nil {
 		svc.VideoDescriber = vd
 	}
+
+	// newsletter リンク展開の号あたり記事数上限(既定 10)。
+	svc.NewsletterMaxArticles = pkgconfig.GetEnvInt(
+		"NEWSLETTER_MAX_ARTICLES", fetchUC.DefaultNewsletterMaxArticles)
 	return svc
 }
 

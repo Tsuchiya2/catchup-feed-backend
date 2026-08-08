@@ -67,6 +67,7 @@ type stubArticleRepo struct {
 	summaries           map[int64]*entity.Summary
 	transcribeJobs      []transcribeJob
 	existsMap           map[string]bool
+	conflictURLs        map[string]bool // CreateWithSummaryIfNew がレース衝突として握る URL
 	existsErr           error
 	createErr           error
 	listUnsummarizedErr error
@@ -113,6 +114,34 @@ func (s *stubArticleRepo) CreateWithSummary(_ context.Context, a *entity.Article
 	}
 	s.summaries[a.ID] = sum
 	return nil
+}
+
+// CreateWithSummaryIfNew mimics ON CONFLICT (url) DO NOTHING: a URL already
+// stored (or pre-marked via conflictURLs — バッチ既存チェック後のレース模擬)
+// reports inserted=false with no error.
+func (s *stubArticleRepo) CreateWithSummaryIfNew(_ context.Context, a *entity.Article, sum *entity.Summary) (bool, error) {
+	if s.createErr != nil {
+		return false, s.createErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conflictURLs[a.URL] {
+		return false, nil
+	}
+	for _, existing := range s.articles {
+		if existing.URL == a.URL {
+			return false, nil
+		}
+	}
+	s.nextID++
+	a.ID = s.nextID
+	s.articles = append(s.articles, a)
+	sum.ArticleID = a.ID
+	if s.summaries == nil {
+		s.summaries = make(map[int64]*entity.Summary)
+	}
+	s.summaries[a.ID] = sum
+	return true, nil
 }
 
 func (s *stubArticleRepo) CreateWithTranscribeJob(_ context.Context, a *entity.Article, mediaURL, sourceKind string) error {

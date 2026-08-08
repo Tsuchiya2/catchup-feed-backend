@@ -62,6 +62,14 @@ type ArticleRepository interface {
 	// permanently unsummarized articles). Sets article.ID and
 	// summary.ArticleID.
 	CreateWithSummary(ctx context.Context, article *entity.Article, summary *entity.Summary) error
+	// CreateWithSummaryIfNew is CreateWithSummary with ON CONFLICT
+	// (articles.url) DO NOTHING semantics, for the newsletter link-expansion
+	// path where a linked article may race with (or already belong to)
+	// another source. Returns inserted=false — with no error and no summary
+	// row — when the URL already exists; the rss crawl path keeps using
+	// CreateWithSummary so its behavior is unchanged. Sets article.ID and
+	// summary.ArticleID only when inserted.
+	CreateWithSummaryIfNew(ctx context.Context, article *entity.Article, summary *entity.Summary) (inserted bool, err error)
 	// CreateWithTranscribeJob inserts the article (content NULL) and a
 	// kind='transcribe' job in one transaction (Phase 2 §5: youtube /
 	// podcast の新着検知). Either both rows land or neither, so a

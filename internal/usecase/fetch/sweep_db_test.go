@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"catchup-feed/internal/domain/entity"
 	pgRepo "catchup-feed/internal/infra/adapter/persistence/postgres"
 	"catchup-feed/internal/infra/db"
 	fetchUC "catchup-feed/internal/usecase/fetch"
@@ -167,4 +168,86 @@ INSERT INTO summaries (article_id, body, provider) VALUES ($1, 'existing body', 
 
 	assert.False(t, sum2.sawContent(transcribedContent),
 		"前サイクルで要約済みになった記事は再要約されない")
+}
+
+// TestNewsletterIssueMarker_RealPostgres pins the newsletter issue-marker
+// invariants against the real schema: the marker row (号自体、content 空 →
+// DB では NULL、要約なし) exists only for next-cycle dedupe and must stay
+// invisible to
+//   - SweepUnsummarized: ListUnsummarized requires non-NULL, non-empty
+//     content (WHERE 条件は article_repo.go), so a marker is never a sweep
+//     candidate and never reaches the summarizer
+//   - the radio selection: ListSummarizedSince INNER JOINs summaries, and
+//     the marker has no summaries row
+//
+// The marker is inserted through the exact repository call the newsletter
+// path makes (ArticleRepo.Create with Content "" → nullString → NULL).
+func TestNewsletterIssueMarker_RealPostgres(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping real-postgres newsletter marker test")
+	}
+	conn, err := sql.Open("pgx", dsn)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	require.NoError(t, conn.Ping())
+	require.NoError(t, db.MigrateUp(conn))
+
+	ctx := context.Background()
+	run := time.Now().UnixNano()
+
+	var sourceID int64
+	require.NoError(t, conn.QueryRowContext(ctx, `
+INSERT INTO sources (name, feed_url, category, kind)
+VALUES ($1, $2, 'dev', 'newsletter') RETURNING id`,
+		fmt.Sprintf("newsletter-marker-test-%d", run),
+		fmt.Sprintf("https://weekly.test/%d/rss", run),
+	).Scan(&sourceID))
+	t.Cleanup(func() {
+		_, _ = conn.Exec(`DELETE FROM summaries WHERE article_id IN (SELECT id FROM articles WHERE source_id = $1)`, sourceID)
+		_, _ = conn.Exec(`DELETE FROM articles WHERE source_id = $1`, sourceID)
+		_, _ = conn.Exec(`DELETE FROM sources WHERE id = $1`, sourceID)
+	})
+
+	artRepo := pgRepo.NewArticleRepo(conn)
+
+	// 号マーカー: newsletter 経路(processNewsletterIssue)と同一の呼び出し。
+	marker := &entity.Article{
+		SourceID:    sourceID,
+		Title:       fmt.Sprintf("Issue %d", run),
+		URL:         fmt.Sprintf("https://weekly.test/%d/issues/1", run),
+		Content:     "", // stored as NULL (nullString)
+		PublishedAt: time.Now(),
+	}
+	require.NoError(t, artRepo.Create(ctx, marker))
+
+	// content が NULL で入っていること(空文字ではなく)。
+	var contentIsNull bool
+	require.NoError(t, conn.QueryRowContext(ctx,
+		`SELECT content IS NULL FROM articles WHERE id = $1`, marker.ID).Scan(&contentIsNull))
+	assert.True(t, contentIsNull, "マーカーの content は NULL で永続化される")
+
+	// Sweep: マーカーは候補にならず、summarizer にも到達しない。
+	summaryRepo := pgRepo.NewSummaryRepo(conn)
+	sum := &recordingSummarizer{}
+	svc := fetchUC.NewService(
+		pgRepo.NewSourceRepo(conn), artRepo, sum, &stubFeedFetcher{}, nil,
+		fetchUC.ContentFetchConfig{Parallelism: 1, Threshold: 1500},
+	)
+	svc.SummaryRepo = summaryRepo
+	_, err = svc.SweepUnsummarized(ctx)
+	require.NoError(t, err)
+
+	markerSum, err := summaryRepo.GetByArticleID(ctx, marker.ID)
+	require.NoError(t, err)
+	assert.Nil(t, markerSum, "SweepUnsummarized は号マーカーを拾わない(content NULL)")
+	assert.Empty(t, sum.seen, "summarizer は号マーカーの content を一切受け取らない")
+
+	// Radio 選定: summaries INNER JOIN のため、マーカーは選定に乗らない。
+	radioRepo := pgRepo.NewRadioArticleRepo(conn)
+	selected, err := radioRepo.ListSummarizedSince(ctx, time.Now().Add(-time.Hour), 1000)
+	require.NoError(t, err)
+	for _, a := range selected {
+		assert.NotEqual(t, marker.ID, a.ID, "号マーカーが radio 選定に乗ってはならない")
+	}
 }

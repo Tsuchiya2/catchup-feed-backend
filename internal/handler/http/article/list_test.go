@@ -489,6 +489,9 @@ func TestListHandler_Pagination_ServiceError(t *testing.T) {
 func (s *stubArticleRepo) CreateWithSummary(_ context.Context, _ *entity.Article, _ *entity.Summary) error {
 	return nil
 }
+func (s *stubArticleRepo) CreateWithSummaryIfNew(_ context.Context, _ *entity.Article, _ *entity.Summary) (bool, error) {
+	return false, nil
+}
 func (s *stubArticleRepo) CreateWithTranscribeJob(_ context.Context, _ *entity.Article, _, _ string) error {
 	return nil
 }

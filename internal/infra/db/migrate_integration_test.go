@@ -191,9 +191,13 @@ func TestBooksVector_RealPostgres(t *testing.T) {
 // migration against a real PostgreSQL:
 //   - the column exists with DEFAULT 'rss' (existing rows / seeds are
 //     rescued by the default: Phase 1 完全互換)
-//   - the CHECK constraint rejects values outside rss|youtube|podcast
+//   - the CHECK constraint rejects values outside
+//     rss|youtube|podcast|newsletter
 //   - the upgrade path (Phase 1 table without kind → ALTER adds it) is
 //     covered by dropping the column and re-running MigrateUp
+//   - the constraint-widening path (pre-newsletter CHECK → DROP+ADD swap)
+//     is covered by re-installing the old three-value constraint and
+//     re-running MigrateUp — the shape the live Pi database goes through
 func TestSourcesKind_RealPostgres(t *testing.T) {
 	conn := openTestDB(t)
 	require.NoError(t, MigrateUp(conn))
@@ -206,9 +210,9 @@ func TestSourcesKind_RealPostgres(t *testing.T) {
 
 	// CHECK constraint rejects invalid kinds.
 	_, err := conn.Exec(
-		`INSERT INTO sources (name, feed_url, category, kind) VALUES ('bad', $1, 'dev', 'newsletter')`,
+		`INSERT INTO sources (name, feed_url, category, kind) VALUES ('bad', $1, 'dev', 'webring')`,
 		fmt.Sprintf("https://invalid-kind.example.com/%d", time.Now().UnixNano()))
-	require.Error(t, err, "kind outside rss|youtube|podcast must violate sources_kind_check")
+	require.Error(t, err, "kind outside rss|youtube|podcast|newsletter must violate sources_kind_check")
 	assert.Contains(t, err.Error(), "sources_kind_check")
 
 	// Valid kinds are accepted.
@@ -218,6 +222,54 @@ func TestSourcesKind_RealPostgres(t *testing.T) {
 		`INSERT INTO sources (name, feed_url, category, kind) VALUES ('pod', $1, 'dev', 'podcast') RETURNING id`,
 		feedURL).Scan(&srcID))
 	defer func() { _, _ = conn.Exec(`DELETE FROM sources WHERE id = $1`, srcID) }()
+
+	newsletterURL := fmt.Sprintf("https://weekly.example.com/%d.rss", time.Now().UnixNano())
+	var newsletterID int64
+	require.NoError(t, conn.QueryRow(
+		`INSERT INTO sources (name, feed_url, category, kind) VALUES ('weekly', $1, 'dev', 'newsletter') RETURNING id`,
+		newsletterURL).Scan(&newsletterID))
+	defer func() { _, _ = conn.Exec(`DELETE FROM sources WHERE id = $1`, newsletterID) }()
+
+	// Constraint-widening path (稼働中 Pi DB の形): a database whose
+	// sources_kind_check predates 'newsletter' must be upgraded in place by
+	// the single DROP CONSTRAINT IF EXISTS + ADD statement, without
+	// touching rows. A real article row is planted first and must survive
+	// the swap — a bare before/after count of 0 would also pass if the
+	// migration wiped every article, so the probe pins actual row survival.
+	var probeArticleID int64
+	require.NoError(t, conn.QueryRow(
+		`INSERT INTO articles (source_id, url, title, content) VALUES ($1, $2, 'probe', 'body') RETURNING id`,
+		srcID, fmt.Sprintf("https://podcast.example.com/%d/probe", time.Now().UnixNano()),
+	).Scan(&probeArticleID))
+	// defer は LIFO: この cleanup は先に登録済みの sources cleanup より先に
+	// 走るので、FK 参照(articles → sources)の削除順が保たれる。
+	defer func() { _, _ = conn.Exec(`DELETE FROM articles WHERE id = $1`, probeArticleID) }()
+
+	var articlesBefore int
+	require.NoError(t, conn.QueryRow(`SELECT count(*) FROM articles`).Scan(&articlesBefore))
+	_, err = conn.Exec(`ALTER TABLE sources DROP CONSTRAINT sources_kind_check`)
+	require.NoError(t, err)
+	_, err = conn.Exec(`ALTER TABLE sources ADD CONSTRAINT sources_kind_check
+		CHECK (kind IN ('rss', 'youtube', 'podcast'))`)
+	require.Error(t, err, "installing the pre-newsletter constraint must fail while a newsletter row exists")
+	_, err = conn.Exec(`DELETE FROM sources WHERE id = $1`, newsletterID)
+	require.NoError(t, err)
+	_, err = conn.Exec(`ALTER TABLE sources ADD CONSTRAINT sources_kind_check
+		CHECK (kind IN ('rss', 'youtube', 'podcast'))`)
+	require.NoError(t, err)
+	require.NoError(t, MigrateUp(conn), "MigrateUp on a pre-newsletter constraint (Pi 稼働 DB のアップグレード)")
+	require.NoError(t, conn.QueryRow(
+		`INSERT INTO sources (name, feed_url, category, kind) VALUES ('weekly', $1, 'dev', 'newsletter') RETURNING id`,
+		fmt.Sprintf("https://weekly2.example.com/%d.rss", time.Now().UnixNano())).Scan(&newsletterID),
+		"widened constraint must accept kind='newsletter'")
+	var articlesAfter int
+	require.NoError(t, conn.QueryRow(`SELECT count(*) FROM articles`).Scan(&articlesAfter))
+	assert.Equal(t, articlesBefore, articlesAfter, "constraint swap must not touch articles rows")
+
+	var probeAlive bool
+	require.NoError(t, conn.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1)`, probeArticleID).Scan(&probeAlive))
+	assert.True(t, probeAlive, "the planted article row must survive the constraint swap")
 
 	// Upgrade path: a Phase 1 database has the table but not the column.
 	// Dropping the column (which also drops its CHECK constraint) and
@@ -235,7 +287,7 @@ func TestSourcesKind_RealPostgres(t *testing.T) {
 	require.NoError(t, conn.QueryRow(
 		`SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sources_kind_check')`,
 	).Scan(&constraintExists))
-	assert.True(t, constraintExists, "CHECK constraint restored by the DO block")
+	assert.True(t, constraintExists, "CHECK constraint restored by the DROP+ADD pair")
 }
 
 // TestTranscribeEnqueue_RealPostgres proves the Phase 2 §5 Pi-side contract

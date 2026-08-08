@@ -406,6 +406,100 @@ func TestArticleRepo_CreateWithSummary_DefaultsProvider(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestArticleRepo_CreateWithSummaryIfNew mirrors CreateWithSummary but with
+// ON CONFLICT (url) DO NOTHING semantics (newsletter リンク展開経路):
+//   - success: article + summary land atomically, ids propagated
+//   - conflict: an existing URL suppresses the insert (DO NOTHING → no
+//     RETURNING row) and reports inserted=false with a NIL error; no
+//     summaries row is attempted
+//   - summary failure: the §8 atomicity invariant holds on this path too —
+//     a summary insert failure rolls the article back so the URL stays
+//     unknown and is retried
+func TestArticleRepo_CreateWithSummaryIfNew(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name         string
+		setupMock    func(mock sqlmock.Sqlmock)
+		article      *entity.Article
+		summary      *entity.Summary
+		wantInserted bool
+		wantErr      bool
+		verify       func(t *testing.T, art *entity.Article, sum *entity.Summary)
+	}{
+		{
+			name: "success: article and summary land atomically",
+			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(regexp.QuoteMeta("ON CONFLICT (url) DO NOTHING")).
+					WithArgs(int64(2), "Alpha Post", "https://alpha.dev/post1", "full text", now, now).
+					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(99)))
+				mock.ExpectExec(regexp.QuoteMeta("INSERT INTO summaries")).
+					WithArgs(int64(99), "日本語要約", "gemini").
+					WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
+			},
+			article: &entity.Article{
+				SourceID: 2, Title: "Alpha Post", URL: "https://alpha.dev/post1",
+				Content: "full text", PublishedAt: now, CrawledAt: now,
+			},
+			summary:      &entity.Summary{Body: "日本語要約", Provider: "gemini"},
+			wantInserted: true,
+			verify: func(t *testing.T, art *entity.Article, sum *entity.Summary) {
+				t.Helper()
+				assert.Equal(t, int64(99), art.ID)
+				assert.Equal(t, int64(99), sum.ArticleID, "summary FK is taken from the new article id")
+			},
+		},
+		{
+			name: "URL conflict is not an error (inserted=false, no summary insert)",
+			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(regexp.QuoteMeta("ON CONFLICT (url) DO NOTHING")).
+					WillReturnRows(sqlmock.NewRows([]string{"id"})) // no row: URL already exists
+				mock.ExpectRollback()
+			},
+			article: &entity.Article{SourceID: 2, Title: "t", URL: "https://u", CrawledAt: now},
+			summary: &entity.Summary{Body: "要約", Provider: "groq"},
+		},
+		{
+			name: "summary insert failure rolls the article back (§8)",
+			setupMock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(regexp.QuoteMeta("ON CONFLICT (url) DO NOTHING")).
+					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(99)))
+				mock.ExpectExec(regexp.QuoteMeta("INSERT INTO summaries")).
+					WillReturnError(errors.New("connection reset"))
+				mock.ExpectRollback()
+			},
+			article: &entity.Article{SourceID: 2, Title: "t", URL: "https://u", CrawledAt: now},
+			summary: &entity.Summary{Body: "要約", Provider: "groq"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, mock, closeFn := newArticleRepo(t)
+			defer closeFn()
+			tt.setupMock(mock)
+
+			inserted, err := repo.CreateWithSummaryIfNew(context.Background(), tt.article, tt.summary)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantInserted, inserted)
+			if tt.verify != nil {
+				tt.verify(t, tt.article, tt.summary)
+			}
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
 // TestArticleRepo_CreateWithTranscribeJob pins the Phase 2 §5 invariant:
 // the content-less article and its transcribe job land in one transaction,
 // and the payload carries {article_id, media_url, source_kind} — the

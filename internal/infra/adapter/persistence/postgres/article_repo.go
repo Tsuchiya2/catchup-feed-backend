@@ -338,6 +338,60 @@ VALUES ($1, $2, $3)`
 	return nil
 }
 
+// CreateWithSummaryIfNew inserts the article and its summary atomically
+// like CreateWithSummary, but tolerates an existing articles.url row:
+// INSERT ... ON CONFLICT (url) DO NOTHING. When the URL already exists the
+// transaction inserts nothing (no summary row either) and reports
+// inserted=false with a nil error — the newsletter link-expansion path
+// treats that as "another source got there first" and moves on (縮退許容).
+func (repo *ArticleRepo) CreateWithSummaryIfNew(ctx context.Context, article *entity.Article, summary *entity.Summary) (bool, error) {
+	if article.CrawledAt.IsZero() {
+		article.CrawledAt = time.Now()
+	}
+	if summary.Provider == "" {
+		summary.Provider = entity.SummaryProviderUnknown
+	}
+
+	tx, err := repo.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("CreateWithSummaryIfNew: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	const insertArticleIfNew = `
+INSERT INTO articles
+	   (source_id, title, url, content, published_at, crawled_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (url) DO NOTHING
+RETURNING id`
+	err = tx.QueryRowContext(ctx, insertArticleIfNew,
+		article.SourceID, article.Title, article.URL,
+		nullString(article.Content), nullTime(article.PublishedAt), article.CrawledAt,
+	).Scan(&article.ID)
+	if err == sql.ErrNoRows {
+		// URL already present: DO NOTHING suppressed the insert.
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("CreateWithSummaryIfNew: article: %w", err)
+	}
+
+	summary.ArticleID = article.ID
+	const insertSummary = `
+INSERT INTO summaries (article_id, body, provider)
+VALUES ($1, $2, $3)`
+	if _, err := tx.ExecContext(ctx, insertSummary,
+		summary.ArticleID, summary.Body, summary.Provider,
+	); err != nil {
+		return false, fmt.Errorf("CreateWithSummaryIfNew: summary: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("CreateWithSummaryIfNew: commit: %w", err)
+	}
+	return true, nil
+}
+
 // CreateWithTranscribeJob inserts the article (content NULL — the Mac
 // transcribe worker fills it later, Phase 2 §5) and its kind='transcribe'
 // job atomically, mirroring CreateWithSummary: either both rows land or
