@@ -31,12 +31,11 @@ func expectMigrationDDL(mock sqlmock.Sqlmock) {
 			WillReturnResult(sqlmock.NewResult(0, 0))
 	}
 	// Phase 2 upgrade path: ALTER TABLE sources (kind) + CHECK constraint
-	// swap (DROP IF EXISTS + ADD — newsletter 追加で値リストを広げる冪等ペア).
+	// swap (単一の ALTER TABLE で DROP IF EXISTS と ADD を統合 —
+	// newsletter 追加で値リストを広げる冪等・原子的な置換).
 	mock.ExpectExec("ALTER TABLE sources ADD COLUMN IF NOT EXISTS kind").
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("DROP CONSTRAINT IF EXISTS sources_kind_check").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("ADD CONSTRAINT sources_kind_check").
+	mock.ExpectExec("DROP CONSTRAINT IF EXISTS sources_kind_check, ADD CONSTRAINT sources_kind_check").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	// ソース論理削除の upgrade path: sources.deleted_at。
 	mock.ExpectExec("ALTER TABLE sources ADD COLUMN IF NOT EXISTS deleted_at").

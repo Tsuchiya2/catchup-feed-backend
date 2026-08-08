@@ -232,7 +232,19 @@ func TestSourcesKind_RealPostgres(t *testing.T) {
 
 	// Constraint-widening path (稼働中 Pi DB の形): a database whose
 	// sources_kind_check predates 'newsletter' must be upgraded in place by
-	// the DROP CONSTRAINT IF EXISTS + ADD pair, without touching rows.
+	// the single DROP CONSTRAINT IF EXISTS + ADD statement, without
+	// touching rows. A real article row is planted first and must survive
+	// the swap — a bare before/after count of 0 would also pass if the
+	// migration wiped every article, so the probe pins actual row survival.
+	var probeArticleID int64
+	require.NoError(t, conn.QueryRow(
+		`INSERT INTO articles (source_id, url, title, content) VALUES ($1, $2, 'probe', 'body') RETURNING id`,
+		srcID, fmt.Sprintf("https://podcast.example.com/%d/probe", time.Now().UnixNano()),
+	).Scan(&probeArticleID))
+	// defer は LIFO: この cleanup は先に登録済みの sources cleanup より先に
+	// 走るので、FK 参照(articles → sources)の削除順が保たれる。
+	defer func() { _, _ = conn.Exec(`DELETE FROM articles WHERE id = $1`, probeArticleID) }()
+
 	var articlesBefore int
 	require.NoError(t, conn.QueryRow(`SELECT count(*) FROM articles`).Scan(&articlesBefore))
 	_, err = conn.Exec(`ALTER TABLE sources DROP CONSTRAINT sources_kind_check`)
@@ -253,6 +265,11 @@ func TestSourcesKind_RealPostgres(t *testing.T) {
 	var articlesAfter int
 	require.NoError(t, conn.QueryRow(`SELECT count(*) FROM articles`).Scan(&articlesAfter))
 	assert.Equal(t, articlesBefore, articlesAfter, "constraint swap must not touch articles rows")
+
+	var probeAlive bool
+	require.NoError(t, conn.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM articles WHERE id = $1)`, probeArticleID).Scan(&probeAlive))
+	assert.True(t, probeAlive, "the planted article row must survive the constraint swap")
 
 	// Upgrade path: a Phase 1 database has the table but not the column.
 	// Dropping the column (which also drops its CHECK constraint) and

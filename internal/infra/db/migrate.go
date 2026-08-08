@@ -185,13 +185,15 @@ var createTableStatements = []string{
 //     the catalog only (PostgreSQL 11+ ADD COLUMN with a constant default
 //     does not rewrite the table); existing Phase 1 rows simply read back
 //     'rss', keeping them fully compatible. The CHECK constraint is
-//     (re)installed as a DROP CONSTRAINT IF EXISTS + ADD CONSTRAINT pair:
-//     PostgreSQL has no ADD CONSTRAINT IF NOT EXISTS, and the pair is
-//     idempotent AND upgrades databases whose constraint predates the
-//     'newsletter' kind (稼働中の Pi DB がこの経路を通る). Dropping and
-//     re-adding a CHECK constraint touches the catalog only — sources /
-//     articles / summaries rows are untouched; the ADD revalidates the
-//     existing rows, all of which satisfy the widened value list.
+//     (re)installed by a single ALTER TABLE that combines DROP CONSTRAINT
+//     IF EXISTS with ADD CONSTRAINT: PostgreSQL has no ADD CONSTRAINT IF
+//     NOT EXISTS, and the combined statement is idempotent, atomic (no
+//     window where the constraint is absent), and upgrades databases whose
+//     constraint predates the 'newsletter' kind (稼働中の Pi DB がこの経路
+//     を通る). Swapping a CHECK constraint touches the catalog only —
+//     sources / articles / summaries rows are untouched; the ADD
+//     revalidates the existing rows, all of which satisfy the widened
+//     value list.
 //   - sources.deleted_at: ソース削除の論理削除化。articles が sources を FK
 //     参照するため物理 DELETE は記事を持つソースで制約違反(500)になる。
 //     削除は deleted_at を立てるだけにし、読み取り経路が deleted_at IS NULL
@@ -207,9 +209,10 @@ var createTableStatements = []string{
 //     layer (設計書 §7.3, 管理 API の activate が担う).
 var alterTableStatements = []string{
 	`ALTER TABLE sources ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'rss'`,
-	`ALTER TABLE sources DROP CONSTRAINT IF EXISTS sources_kind_check`,
-	`ALTER TABLE sources ADD CONSTRAINT sources_kind_check
-    CHECK (kind IN ('rss', 'youtube', 'podcast', 'newsletter'))`,
+	`ALTER TABLE sources
+    DROP CONSTRAINT IF EXISTS sources_kind_check,
+    ADD CONSTRAINT sources_kind_check
+        CHECK (kind IN ('rss', 'youtube', 'podcast', 'newsletter'))`,
 	`ALTER TABLE sources ADD COLUMN IF NOT EXISTS deleted_at timestamptz`,
 	`ALTER TABLE books ADD COLUMN IF NOT EXISTS review_cursor int NOT NULL DEFAULT 0`,
 	`ALTER TABLE books ADD COLUMN IF NOT EXISTS review_status text NOT NULL DEFAULT 'idle'`,
