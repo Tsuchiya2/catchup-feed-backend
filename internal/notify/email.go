@@ -14,8 +14,8 @@ type Sender interface {
 // Email delivers admin notifications as plain-text mail (D-29: 障害通知は
 // メールに一本化 — the 7/22 outage went unnoticed for four days on webhook
 // channels, the mailbox is the one place actually checked daily). It wraps
-// the same SMTPMailer the friend channel uses (C-11), so there is exactly
-// one SMTP configuration; only the recipient differs (NOTIFY_ERROR_EMAIL_TO).
+// the shared SMTPMailer, so there is exactly one SMTP configuration; the
+// recipient is NOTIFY_ERROR_EMAIL_TO.
 type Email struct {
 	sender Sender
 	to     string

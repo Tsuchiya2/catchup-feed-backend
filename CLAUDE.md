@@ -16,4 +16,4 @@ Go 1.26.5 単一モジュール。pulse Phase 1 の中核。全体像と規約�
 - `internal/learning/` は Phase 3 学習コア: SRS 遷移純関数(§6.1)・JST 放送日ヘルパ(§12-10)・クイズパラメータ config(D-18)。radio と server が共有するため、radio/server/handler/repository へ依存させない
 
 ## 環境変数(実装時に README へ反映)
-DB 接続、JWT シークレット、管理者資格情報(bcrypt ハッシュ)、Gemini/Groq API キー、Ollama エンドポイント、VOICEVOX エンドポイント、SMTP(SMTP_* — 本人向け D-29 と友人向け C-11 で共用)、本人向け通知宛先(NOTIFY_ERROR_EMAIL_TO)、フィード公開ドメイン(D-6 決定後)。秘密情報はコードとリポジトリに置かない。
+DB 接続、JWT シークレット、管理者資格情報(bcrypt ハッシュ)、Gemini/Groq API キー、Ollama エンドポイント、VOICEVOX エンドポイント、SMTP(SMTP_* — 本人向け D-29 のみ。友人向けメールは D-32 で廃止)、本人向け通知宛先(NOTIFY_ERROR_EMAIL_TO)、フィード公開ドメイン(D-6 決定後)。秘密情報はコードとリポジトリに置かない。

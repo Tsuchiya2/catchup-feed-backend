@@ -47,49 +47,9 @@ func (g *fakeEpisodeGetter) Get(_ context.Context, id int64) (*entity.Episode, e
 	return g.episodes[id], nil
 }
 
-type fakeSubscriberLister struct {
-	subscribers []*entity.Subscriber
-	err         error
-}
-
-func (l *fakeSubscriberLister) List(_ context.Context) ([]*entity.Subscriber, error) {
-	return l.subscribers, l.err
-}
-
-type sentMail struct{ to, subject, body string }
-
-type fakeMailer struct {
-	mu   sync.Mutex
-	err  error
-	sent []sentMail
-}
-
-func (m *fakeMailer) Send(_ context.Context, to, subject, body string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.err != nil {
-		return m.err
-	}
-	m.sent = append(m.sent, sentMail{to: to, subject: subject, body: body})
-	return nil
-}
-
-func strPtr(s string) *string { return &s }
-
 func episodeJob(id int64) *entity.Job {
 	payload, _ := json.Marshal(map[string]int64{"episode_id": id})
 	return &entity.Job{ID: 1, Kind: entity.JobKindNotifyEpisode, Payload: payload, Attempts: 1}
-}
-
-func testSubscribers() []*entity.Subscriber {
-	deactivated := &entity.Subscriber{ID: 3, Name: "ex-friend", Email: strPtr("ex@example.com")}
-	t := deactivated.CreatedAt
-	deactivated.DeactivatedAt = &t
-	return []*entity.Subscriber{
-		{ID: 1, Name: "friend-with-mail", Email: strPtr("friend@example.com")},
-		{ID: 2, Name: "friend-no-mail"},
-		deactivated,
-	}
 }
 
 func TestNotifyEpisodeHandler_Handle(t *testing.T) {
@@ -102,63 +62,70 @@ func TestNotifyEpisodeHandler_Handle(t *testing.T) {
 		ShowNotes: "secret notes", AudioPath: "/data/episodes/p.mp3", AudioBytes: 1024,
 	}
 
-	t.Run("public episode notifies destinations and mails active friends (§7)", func(t *testing.T) {
-		destination := &fakeDestination{name: "email"}
-		mailer := &fakeMailer{}
-		handler := &jobs.NotifyEpisodeHandler{
-			Episodes:       &fakeEpisodeGetter{episodes: map[int64]*entity.Episode{7: publicEpisode}},
-			Subscribers:    &fakeSubscriberLister{subscribers: testSubscribers()},
-			Destinations:   []notify.Destination{destination},
-			Mailer:         mailer,
-			PrivateBaseURL: "http://pi.tailnet:8081",
-			Logger:         slog.New(slog.DiscardHandler),
-		}
-		require.NoError(t, handler.Handle(context.Background(), episodeJob(7)))
+	// Success cases: admin destinations only, regardless of feed_kind
+	// (§7 / D-32: no friend mail).
+	successCases := []struct {
+		name           string
+		episode        *entity.Episode
+		privateBaseURL string
+		hasDestination bool
+		wantSubject    string
+		wantBody       string
+		wantLink       string
+	}{
+		{
+			name:           "public episode notifies admin destinations (§7 / D-32: no friend mail)",
+			episode:        publicEpisode,
+			privateBaseURL: "http://pi.tailnet:8081",
+			hasDestination: true,
+			wantSubject:    "pulse 2026-07-05",
+			wantBody:       "notes",
+			wantLink:       "http://pi.tailnet:8081/private/episodes/7.mp3",
+		},
+		{
+			name:           "private episode also notifies admin destinations (feed_kind に依らず)",
+			episode:        privateEpisode,
+			hasDestination: true,
+			wantSubject:    "private ep",
+			wantBody:       "secret notes",
+			wantLink:       "", // no PrivateBaseURL configured, no link
+		},
+		{
+			name:           "no destinations configured is a no-op success",
+			episode:        publicEpisode,
+			hasDestination: false,
+		},
+	}
+	for _, tc := range successCases {
+		t.Run(tc.name, func(t *testing.T) {
+			destination := &fakeDestination{name: "email"}
+			handler := &jobs.NotifyEpisodeHandler{
+				Episodes:       &fakeEpisodeGetter{episodes: map[int64]*entity.Episode{tc.episode.ID: tc.episode}},
+				PrivateBaseURL: tc.privateBaseURL,
+				Logger:         slog.New(slog.DiscardHandler),
+			}
+			if tc.hasDestination {
+				handler.Destinations = []notify.Destination{destination}
+			}
+			require.NoError(t, handler.Handle(context.Background(), episodeJob(tc.episode.ID)))
 
-		require.Len(t, destination.got, 1)
-		msg := destination.got[0]
-		assert.Equal(t, "pulse 2026-07-05", msg.Subject)
-		assert.Equal(t, "notes", msg.Body)
-		assert.Equal(t, "http://pi.tailnet:8081/private/episodes/7.mp3", msg.Link)
-
-		require.Len(t, mailer.sent, 1, "only the active friend with an email is mailed")
-		assert.Equal(t, "friend@example.com", mailer.sent[0].to)
-		assert.Equal(t, "pulse 2026-07-05", mailer.sent[0].subject)
-		assert.Contains(t, mailer.sent[0].body, "notes")
-	})
-
-	t.Run("private episode: no friend mail (C-5)", func(t *testing.T) {
-		destination := &fakeDestination{name: "email"}
-		mailer := &fakeMailer{}
-		handler := &jobs.NotifyEpisodeHandler{
-			Episodes:     &fakeEpisodeGetter{episodes: map[int64]*entity.Episode{8: privateEpisode}},
-			Subscribers:  &fakeSubscriberLister{subscribers: testSubscribers()},
-			Destinations: []notify.Destination{destination},
-			Mailer:       mailer,
-			Logger:       slog.New(slog.DiscardHandler),
-		}
-		require.NoError(t, handler.Handle(context.Background(), episodeJob(8)))
-
-		require.Len(t, destination.got, 1)
-		assert.Empty(t, destination.got[0].Link, "no PrivateBaseURL configured, no link")
-		assert.Empty(t, mailer.sent)
-	})
-
-	t.Run("nil mailer disables the email channel", func(t *testing.T) {
-		handler := &jobs.NotifyEpisodeHandler{
-			Episodes:    &fakeEpisodeGetter{episodes: map[int64]*entity.Episode{7: publicEpisode}},
-			Subscribers: &fakeSubscriberLister{subscribers: testSubscribers()},
-			Logger:      slog.New(slog.DiscardHandler),
-		}
-		require.NoError(t, handler.Handle(context.Background(), episodeJob(7)))
-	})
+			if !tc.hasDestination {
+				assert.Empty(t, destination.got)
+				return
+			}
+			require.Len(t, destination.got, 1)
+			msg := destination.got[0]
+			assert.Equal(t, tc.wantSubject, msg.Subject)
+			assert.Equal(t, tc.wantBody, msg.Body)
+			assert.Equal(t, tc.wantLink, msg.Link)
+		})
+	}
 
 	t.Run("destination failure is returned for a queue retry, others still delivered", func(t *testing.T) {
 		broken := &fakeDestination{name: "email", err: errors.New("smtp down")}
 		working := &fakeDestination{name: "second"}
 		handler := &jobs.NotifyEpisodeHandler{
 			Episodes:     &fakeEpisodeGetter{episodes: map[int64]*entity.Episode{7: publicEpisode}},
-			Subscribers:  &fakeSubscriberLister{},
 			Destinations: []notify.Destination{broken, working},
 			Logger:       slog.New(slog.DiscardHandler),
 		}
@@ -168,24 +135,10 @@ func TestNotifyEpisodeHandler_Handle(t *testing.T) {
 		assert.Len(t, working.got, 1)
 	})
 
-	t.Run("mail failure for one friend does not stop the others", func(t *testing.T) {
-		mailer := &fakeMailer{err: errors.New("smtp down")}
-		handler := &jobs.NotifyEpisodeHandler{
-			Episodes:    &fakeEpisodeGetter{episodes: map[int64]*entity.Episode{7: publicEpisode}},
-			Subscribers: &fakeSubscriberLister{subscribers: testSubscribers()},
-			Mailer:      mailer,
-			Logger:      slog.New(slog.DiscardHandler),
-		}
-		err := handler.Handle(context.Background(), episodeJob(7))
-		require.Error(t, err)
-		assert.False(t, jobs.IsPermanent(err))
-	})
-
 	t.Run("missing episode is permanent (no retry)", func(t *testing.T) {
 		handler := &jobs.NotifyEpisodeHandler{
-			Episodes:    &fakeEpisodeGetter{episodes: map[int64]*entity.Episode{}},
-			Subscribers: &fakeSubscriberLister{},
-			Logger:      slog.New(slog.DiscardHandler),
+			Episodes: &fakeEpisodeGetter{episodes: map[int64]*entity.Episode{}},
+			Logger:   slog.New(slog.DiscardHandler),
 		}
 		err := handler.Handle(context.Background(), episodeJob(999))
 		require.Error(t, err)
@@ -194,9 +147,8 @@ func TestNotifyEpisodeHandler_Handle(t *testing.T) {
 
 	t.Run("malformed payload is permanent", func(t *testing.T) {
 		handler := &jobs.NotifyEpisodeHandler{
-			Episodes:    &fakeEpisodeGetter{},
-			Subscribers: &fakeSubscriberLister{},
-			Logger:      slog.New(slog.DiscardHandler),
+			Episodes: &fakeEpisodeGetter{},
+			Logger:   slog.New(slog.DiscardHandler),
 		}
 		for _, payload := range []string{`not json`, `{}`, `{"episode_id":0}`} {
 			err := handler.Handle(context.Background(), &entity.Job{ID: 1, Payload: json.RawMessage(payload)})
@@ -207,9 +159,8 @@ func TestNotifyEpisodeHandler_Handle(t *testing.T) {
 
 	t.Run("episode lookup error retries", func(t *testing.T) {
 		handler := &jobs.NotifyEpisodeHandler{
-			Episodes:    &fakeEpisodeGetter{err: errors.New("db down")},
-			Subscribers: &fakeSubscriberLister{},
-			Logger:      slog.New(slog.DiscardHandler),
+			Episodes: &fakeEpisodeGetter{err: errors.New("db down")},
+			Logger:   slog.New(slog.DiscardHandler),
 		}
 		err := handler.Handle(context.Background(), episodeJob(7))
 		require.Error(t, err)

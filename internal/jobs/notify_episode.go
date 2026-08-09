@@ -11,22 +11,10 @@ import (
 	"catchup-feed/internal/notify"
 )
 
-// Mailer is the slice of notify.SMTPMailer the episode handler needs —
-// one plain-text mail to one friend (C-11).
-type Mailer interface {
-	Send(ctx context.Context, to, subject, body string) error
-}
-
 // EpisodeGetter is the slice of repository.EpisodeRepository this handler
 // needs.
 type EpisodeGetter interface {
 	Get(ctx context.Context, id int64) (*entity.Episode, error)
-}
-
-// SubscriberLister is the slice of repository.SubscriberRepository this
-// handler needs.
-type SubscriberLister interface {
-	List(ctx context.Context) ([]*entity.Subscriber, error)
 }
 
 // notifyEpisodePayload is the §6-5 contract with the radio batch.
@@ -35,10 +23,10 @@ type notifyEpisodePayload struct {
 }
 
 // NotifyEpisodeHandler handles 'notify_episode' (§7): the admin channels
-// (Destinations, D-29: email) get title + show notes + episode URL; active
-// friends with an email address get a plain-text new-episode mail (C-11) —
-// public episodes only, private ones live outside the subscriber concept
-// (C-5).
+// (Destinations, D-29: email) get title + show notes + episode URL. This
+// mail is a delivery-confirmation for the admin only — the friend fan-out
+// was removed by D-32 (友人への周知はポッドキャストアプリの購読のみで
+// 足りる、C-11 の読み替え).
 //
 // 契約 (Phase 3 §12-7): radio は notify_episode ジョブを公開エピソードに
 // 対して**のみ**積む(「積まない」方式)。このハンドラは feed_kind に依らず
@@ -49,10 +37,7 @@ type notifyEpisodePayload struct {
 // (公開版の通知経路に一切差分を出さないため、§12-1)。
 type NotifyEpisodeHandler struct {
 	Episodes     EpisodeGetter
-	Subscribers  SubscriberLister
 	Destinations []notify.Destination
-	// Mailer sends friend mail; nil = email channel disabled.
-	Mailer Mailer
 	// PrivateBaseURL builds the admin-facing episode link
 	// ({base}/private/episodes/{id}.mp3). Empty = no link: a public link
 	// cannot exist because every public URL embeds a friend's token (C-9)
@@ -100,36 +85,7 @@ func (h *NotifyEpisodeHandler) Handle(ctx context.Context, job *entity.Job) erro
 		}
 	}
 
-	if episode.FeedKind == entity.FeedKindPublic && h.Mailer != nil {
-		errs = append(errs, h.mailFriends(ctx, logger, episode)...)
-	}
 	return errors.Join(errs...)
-}
-
-// mailFriends sends the new-episode mail to every active subscriber with
-// an email address. The body carries the show notes but no feed URL: the
-// subscription URL embeds the friend's token, which only exists as a hash
-// (D-5) — the episode reaches them through their podcast app.
-func (h *NotifyEpisodeHandler) mailFriends(ctx context.Context, logger *slog.Logger, episode *entity.Episode) []error {
-	subscribers, err := h.Subscribers.List(ctx)
-	if err != nil {
-		return []error{fmt.Errorf("notify_episode: list subscribers: %w", err)}
-	}
-	body := episode.ShowNotes + "\n\n---\nポッドキャストアプリに新しいエピソードが届いています。"
-
-	var errs []error
-	for _, subscriber := range subscribers {
-		if !subscriber.IsActive() || subscriber.Email == nil || *subscriber.Email == "" {
-			continue
-		}
-		if err := h.Mailer.Send(ctx, *subscriber.Email, episode.Title, body); err != nil {
-			errs = append(errs, fmt.Errorf("notify_episode: email subscriber %d: %w", subscriber.ID, err))
-			continue
-		}
-		logger.Info("jobs: episode mail sent",
-			slog.Int64("subscriber_id", subscriber.ID), slog.Int64("episode_id", episode.ID))
-	}
-	return errs
 }
 
 func (h *NotifyEpisodeHandler) logger() *slog.Logger {

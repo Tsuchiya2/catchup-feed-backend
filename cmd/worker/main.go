@@ -121,9 +121,9 @@ func initDatabase(logger *slog.Logger) *sql.DB {
 	return database
 }
 
-// setupJobsConsumer wires the §3.3 consumer: the shared SMTP mailer feeds
-// both the friend channel (C-11) and the admin email destination (D-29:
-// 本人向け通知はメールに一本化), plus the four Phase 1 handlers. Feed config
+// setupJobsConsumer wires the §3.3 consumer: the SMTP mailer feeds the
+// admin email destination (D-29: 本人向け通知はメールに一本化 — friend
+// fan-out removed by D-32), plus the four Phase 1 handlers. Feed config
 // supplies the audio dir (D-4 cleanup) and the private base URL used for
 // the admin-facing episode link.
 func setupJobsConsumer(logger *slog.Logger, database *sql.DB) *jobs.Consumer {
@@ -134,13 +134,9 @@ func setupJobsConsumer(logger *slog.Logger, database *sql.DB) *jobs.Consumer {
 
 	episodeHandler := &jobs.NotifyEpisodeHandler{
 		Episodes:       episodeRepo,
-		Subscribers:    pgRepo.NewSubscriberRepo(database),
 		Destinations:   destinations,
 		PrivateBaseURL: feedCfg.PrivateBaseURL,
 		Logger:         logger,
-	}
-	if mailer != nil {
-		episodeHandler.Mailer = mailer
 	}
 
 	return &jobs.Consumer{
