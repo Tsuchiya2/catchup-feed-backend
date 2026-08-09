@@ -62,44 +62,64 @@ func TestNotifyEpisodeHandler_Handle(t *testing.T) {
 		ShowNotes: "secret notes", AudioPath: "/data/episodes/p.mp3", AudioBytes: 1024,
 	}
 
-	t.Run("public episode notifies admin destinations (§7 / D-32: no friend mail)", func(t *testing.T) {
-		destination := &fakeDestination{name: "email"}
-		handler := &jobs.NotifyEpisodeHandler{
-			Episodes:       &fakeEpisodeGetter{episodes: map[int64]*entity.Episode{7: publicEpisode}},
-			Destinations:   []notify.Destination{destination},
-			PrivateBaseURL: "http://pi.tailnet:8081",
-			Logger:         slog.New(slog.DiscardHandler),
-		}
-		require.NoError(t, handler.Handle(context.Background(), episodeJob(7)))
+	// Success cases: admin destinations only, regardless of feed_kind
+	// (§7 / D-32: no friend mail).
+	successCases := []struct {
+		name           string
+		episode        *entity.Episode
+		privateBaseURL string
+		hasDestination bool
+		wantSubject    string
+		wantBody       string
+		wantLink       string
+	}{
+		{
+			name:           "public episode notifies admin destinations (§7 / D-32: no friend mail)",
+			episode:        publicEpisode,
+			privateBaseURL: "http://pi.tailnet:8081",
+			hasDestination: true,
+			wantSubject:    "pulse 2026-07-05",
+			wantBody:       "notes",
+			wantLink:       "http://pi.tailnet:8081/private/episodes/7.mp3",
+		},
+		{
+			name:           "private episode also notifies admin destinations (feed_kind に依らず)",
+			episode:        privateEpisode,
+			hasDestination: true,
+			wantSubject:    "private ep",
+			wantBody:       "secret notes",
+			wantLink:       "", // no PrivateBaseURL configured, no link
+		},
+		{
+			name:           "no destinations configured is a no-op success",
+			episode:        publicEpisode,
+			hasDestination: false,
+		},
+	}
+	for _, tc := range successCases {
+		t.Run(tc.name, func(t *testing.T) {
+			destination := &fakeDestination{name: "email"}
+			handler := &jobs.NotifyEpisodeHandler{
+				Episodes:       &fakeEpisodeGetter{episodes: map[int64]*entity.Episode{tc.episode.ID: tc.episode}},
+				PrivateBaseURL: tc.privateBaseURL,
+				Logger:         slog.New(slog.DiscardHandler),
+			}
+			if tc.hasDestination {
+				handler.Destinations = []notify.Destination{destination}
+			}
+			require.NoError(t, handler.Handle(context.Background(), episodeJob(tc.episode.ID)))
 
-		require.Len(t, destination.got, 1)
-		msg := destination.got[0]
-		assert.Equal(t, "pulse 2026-07-05", msg.Subject)
-		assert.Equal(t, "notes", msg.Body)
-		assert.Equal(t, "http://pi.tailnet:8081/private/episodes/7.mp3", msg.Link)
-	})
-
-	t.Run("private episode also notifies admin destinations (feed_kind に依らず)", func(t *testing.T) {
-		destination := &fakeDestination{name: "email"}
-		handler := &jobs.NotifyEpisodeHandler{
-			Episodes:     &fakeEpisodeGetter{episodes: map[int64]*entity.Episode{8: privateEpisode}},
-			Destinations: []notify.Destination{destination},
-			Logger:       slog.New(slog.DiscardHandler),
-		}
-		require.NoError(t, handler.Handle(context.Background(), episodeJob(8)))
-
-		require.Len(t, destination.got, 1)
-		assert.Equal(t, "private ep", destination.got[0].Subject)
-		assert.Empty(t, destination.got[0].Link, "no PrivateBaseURL configured, no link")
-	})
-
-	t.Run("no destinations configured is a no-op success", func(t *testing.T) {
-		handler := &jobs.NotifyEpisodeHandler{
-			Episodes: &fakeEpisodeGetter{episodes: map[int64]*entity.Episode{7: publicEpisode}},
-			Logger:   slog.New(slog.DiscardHandler),
-		}
-		require.NoError(t, handler.Handle(context.Background(), episodeJob(7)))
-	})
+			if !tc.hasDestination {
+				assert.Empty(t, destination.got)
+				return
+			}
+			require.Len(t, destination.got, 1)
+			msg := destination.got[0]
+			assert.Equal(t, tc.wantSubject, msg.Subject)
+			assert.Equal(t, tc.wantBody, msg.Body)
+			assert.Equal(t, tc.wantLink, msg.Link)
+		})
+	}
 
 	t.Run("destination failure is returned for a queue retry, others still delivered", func(t *testing.T) {
 		broken := &fakeDestination{name: "email", err: errors.New("smtp down")}
