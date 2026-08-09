@@ -43,10 +43,11 @@ func LoadDestinationsFromEnv(logger *slog.Logger, mailer *SMTPMailer) []Destinat
 	return []Destination{NewEmail(mailer, to)}
 }
 
-// LoadSMTPFromEnv builds the shared SMTP mailer — friend mail (C-11) and,
-// combined with NOTIFY_ERROR_EMAIL_TO, admin notifications (D-29). Returns
-// nil when SMTP_ENABLED is not "true" or the configuration is incomplete —
-// email silently off, podcast delivery unaffected.
+// LoadSMTPFromEnv builds the SMTP mailer that, combined with
+// NOTIFY_ERROR_EMAIL_TO, carries admin notifications (D-29; friend mail
+// was removed by D-32). Returns nil when SMTP_ENABLED is not "true" or
+// the configuration is incomplete — email silently off, podcast delivery
+// unaffected.
 //
 // Environment variables:
 //   - SMTP_ENABLED: "true" to enable

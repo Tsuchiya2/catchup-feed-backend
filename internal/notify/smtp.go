@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// SMTPConfig points at an existing free SMTP relay (C-11 / ゼロ円運用:
+// SMTPConfig points at an existing free SMTP relay (ゼロ円運用:
 // e.g. Gmail SMTP with an app password — no new SaaS). Port 465 selects
 // implicit TLS; anything else dials plain and upgrades via STARTTLS when
 // the server offers it.
@@ -27,10 +27,10 @@ type SMTPConfig struct {
 	Timeout  time.Duration // whole-session ceiling
 }
 
-// SMTPMailer sends plain-text mail over SMTP — the friend notification
-// channel (C-11: 友人=メール). Deliberately naive: one connection per
-// message, text/plain UTF-8, no HTML, no queueing. Friends number in the
-// single digits and retries are the jobs queue's concern (§7).
+// SMTPMailer sends plain-text mail over SMTP — the transport under the
+// admin email destination (D-29). Deliberately naive: one connection per
+// message, text/plain UTF-8, no HTML, no queueing. Recipients number in
+// the single digits and retries are the jobs queue's concern (§7).
 type SMTPMailer struct {
 	cfg SMTPConfig
 }

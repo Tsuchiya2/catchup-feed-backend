@@ -47,7 +47,7 @@ chmod 600 deploy/.env
 | `ADMIN_PASSWORD_HASH` | `make admin-hash` の出力。**`$` は `$$` にエスケープ**(U-3) |
 | `GEMINI_API_KEY` / `GROQ_API_KEY` | U-4 で取得した値 |
 | `OLLAMA_HOST` | `http://<Mac の Tailscale IP>:11434`(Mac 上で `tailscale ip -4`。mac.md 3章の後で)。**MagicDNS 名は不可**(Ollama の Host 検証が `.ts.net` を 403 で拒否。mac.md 3章参照) |
-| `SMTP_ENABLED` / `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` | メール通知(本人向け D-29+友人向け C-11 で共用)。Gmail なら `SMTP_HOST=smtp.gmail.com`・`SMTP_PORT=587`・`SMTP_USERNAME=<Gmail アドレス>`・`SMTP_PASSWORD=<アプリパスワード>`(U-11: 2 段階認証を有効にして [Google アカウント > セキュリティ > アプリパスワード] で発行)。`SMTP_FROM` は未設定なら `SMTP_USERNAME`。使う段階で `SMTP_ENABLED=true`。現用は旧システムの Gmail アカウント(Pi の `~/.msmtprc` と同一資格情報)を流用(D-30-1)。無効化されたら U-11 の手順で再発行 |
+| `SMTP_ENABLED` / `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` | メール通知(本人向け D-29。友人向けメールは D-32 で廃止)。Gmail なら `SMTP_HOST=smtp.gmail.com`・`SMTP_PORT=587`・`SMTP_USERNAME=<Gmail アドレス>`・`SMTP_PASSWORD=<アプリパスワード>`(U-11: 2 段階認証を有効にして [Google アカウント > セキュリティ > アプリパスワード] で発行)。`SMTP_FROM` は未設定なら `SMTP_USERNAME`。使う段階で `SMTP_ENABLED=true`。現用は旧システムの Gmail アカウント(Pi の `~/.msmtprc` と同一資格情報)を流用(D-30-1)。無効化されたら U-11 の手順で再発行 |
 | `NOTIFY_ERROR_EMAIL_TO` | 本人向け通知(notify_error の障害通知+新着エピソード通知)の宛先アドレス(D-29)。`SMTP_ENABLED=true` が前提。空なら本人向け通知は送られない |
 
 旧 catchup-feed の DB とは **PostgreSQL サーバーごと分離**する(このスタックは専用の `catchup-feed-postgres` コンテナ、database 名 `catchup-feed`、ホスト側ポート 5433)。**旧システムの `catchup-postgres`(ハイフンの後が違うだけの別コンテナ)と取り違えない**。旧 DB からデータは移行しない — sources 定義は `internal/infra/db/seeds/sources.sql` が server の**初回起動時(sources テーブルが0行のとき)のみ**自動投入される。2回目以降の起動では再投入されない(ダッシュボードで削除したソースが再起動で復活しないようにするため)。

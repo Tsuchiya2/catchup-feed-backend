@@ -293,7 +293,7 @@ services:
       SUMMARIZER_CHAR_LIMIT: ${SUMMARIZER_CHAR_LIMIT:-}
       SUMMARIZER_TIMEOUT: ${SUMMARIZER_TIMEOUT:-}
 
-      # メール通知設定(D-29: 本人向け一本化 + C-11: 友人向け。SMTP_* は共用)
+      # メール通知設定(D-29: 本人向けのみ。友人向けメールは D-32 で廃止)
       SMTP_ENABLED: ${SMTP_ENABLED:-false}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-}

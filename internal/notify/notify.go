@@ -1,7 +1,7 @@
 // Package notify implements the §7 notification layer: a destination-type
 // interface whose only Phase 1 implementation is admin email (D-29: 本人向け
-// 通知はメールに一本化 — Discord/Slack 廃止), plus the plain SMTP mailer the
-// friend channel reuses (C-11: 友人=メール). Destinations are deliberately
+// 通知はメールに一本化 — Discord/Slack 廃止), plus the plain SMTP mailer it
+// rides on (friend mail was removed by D-32). Destinations are deliberately
 // single-shot — no circuit breaker, no internal retry loops (設計原則1:
 // 右サイズ). Delivery failures are handled by the jobs queue retry
 // (§7: attempts 上限 3), and the notify_error path is best-effort.
