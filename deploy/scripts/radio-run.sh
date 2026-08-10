@@ -4,12 +4,20 @@
 # ============================================================
 # やること:
 #   1. ~/pulse/.env を読み込む(launchd は環境変数を持たないため)
-#   2. VOICEVOX Engine が起動していなければ起動し、応答を待つ
-#   3. radio を実行(引数はそのまま透過: -dry-run 等)
-#   4. 自分で起動した Engine だけ後始末する
+#   2. tailnet プリフライト: DB ホストに到達できなければ tailscale up で
+#      自己修復を試みる(2 秒間隔 × 30 回まで再チェック)。復旧しても
+#      しなくても先へ進む
+#   3. VOICEVOX Engine が起動していなければ起動し、応答を待つ
+#   4. radio を実行(引数はそのまま透過: -dry-run 等)
+#   5. 自分で起動した Engine だけ後始末する
 #
 # リトライはしない(§8: 失敗した日はエピソード欠番で正常。通知だけを
 # 確実にする)。
+#
+# tailnet プリフライトは 2026-08-10 障害(Mac の不意の再起動後に Tailscale
+# 未接続のまま → MagicDNS 名前解決失敗で人手介入まで毎朝 exit 1)の恒久
+# 対策。「壊れても翌日勝手に戻る」(§8)ための自己修復で、radio 自体の
+# リトライはしない。
 #
 # 失敗通知は2経路:
 #   a. radio 自身が DB の jobs テーブルに notify_error を積み、Pi の
@@ -59,6 +67,62 @@ if [ ! -x "$RADIO_BIN" ]; then
     log "ERROR: $RADIO_BIN がない。mac.md 5章の手順でビルドする"
     exit 1
 fi
+
+# --- tailnet プリフライト(2026-08-10 障害の恒久対策) -----------------
+# DATABASE_URL のホスト(tailnet MagicDNS)に届かなければ tailscale up で
+# 自己修復を試みる。復旧しなくても radio へ進む(失敗すれば従来どおり
+# 非ゼロ終了 → SMTP 直送。§8: radio 自体のリトライはしない)
+# 対応するのは URL 形式のみ。keyword DSN(host=... port=...)の場合は抽出
+# できず、デフォルトホスト・ポートへのフォールバックになる
+TAILNET_HOST="ubuntu.tailf91c78.ts.net"
+TAILNET_PORT="5433"
+_hp="$(printf '%s' "${DATABASE_URL:-}" | sed -nE 's#^[^:/]+://([^@/]*@)?([^/?]+).*$#\2#p')"
+if [ -n "$_hp" ]; then
+    TAILNET_HOST="${_hp%%:*}"
+    case "$_hp" in *:*) TAILNET_PORT="${_hp##*:}" ;; esac
+fi
+unset _hp
+
+tailnet_reachable() {
+    # DNS 解決(radio と同じくシステムリゾルバ経由)か TCP 到達のどちらか
+    # が通れば OK
+    dscacheutil -q host -a name "$TAILNET_HOST" 2>/dev/null | grep -q '^ip_address:' && return 0
+    nc -z -G 3 "$TAILNET_HOST" "$TAILNET_PORT" >/dev/null 2>&1
+}
+
+if tailnet_reachable; then
+    log "tailnet preflight: $TAILNET_HOST reachable"
+else
+    log "tailnet preflight: unreachable, attempting tailscale up"
+    # GUI アプリが落ちていると CLI だけでは繋がらないことがあるので先に起こす
+    open -ga Tailscale 2>/dev/null || true
+    TS_CLI="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+    if [ ! -x "$TS_CLI" ]; then
+        TS_CLI="$(command -v tailscale || true)"
+    fi
+    if [ -n "$TS_CLI" ]; then
+        # 認証切れ(ログアウト・キー失効)だと up は認証 URL を出して完了まで
+        # ブロックする。無人実行で無期限ハングしないよう有界化する
+        "$TS_CLI" up --timeout=30s >/dev/null 2>&1 || true
+    else
+        log "WARN: tailnet preflight: tailscale CLI が見つからない(open -ga のみで待つ)"
+    fi
+    # 2 秒間隔 × 30 回まで到達性を再チェック(nc の接続待ち込みで最長 2 分半程度)
+    recovered=0
+    for _ in $(seq 1 30); do
+        if tailnet_reachable; then
+            recovered=1
+            break
+        fi
+        sleep 2
+    done
+    if [ "$recovered" -eq 1 ]; then
+        log "tailnet preflight: recovered, $TAILNET_HOST reachable"
+    else
+        log "WARN: tailnet preflight: still unreachable — radio へ進む(失敗時は既存の通知経路)"
+    fi
+fi
+# -----------------------------------------------------------------------
 
 VOICEVOX_URL="${VOICEVOX_URL:-http://127.0.0.1:50021}"
 ENGINE_PID=""
