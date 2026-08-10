@@ -79,7 +79,11 @@ TAILNET_PORT="5433"
 _hp="$(printf '%s' "${DATABASE_URL:-}" | sed -nE 's#^[^:/]+://([^@/]*@)?([^/?]+).*$#\2#p')"
 if [ -n "$_hp" ]; then
     TAILNET_HOST="${_hp%%:*}"
-    case "$_hp" in *:*) TAILNET_PORT="${_hp##*:}" ;; esac
+    case "$_hp" in
+        *:*) TAILNET_PORT="${_hp##*:}" ;;
+        # URL 形式でポート省略なら libpq の実際の接続先(標準 5432)に合わせる
+        *) TAILNET_PORT="5432" ;;
+    esac
 fi
 unset _hp
 
