@@ -2,6 +2,8 @@
 
 This directory contains automation scripts for deployment, monitoring, and maintenance of the CatchUp Feed application.
 
+> **注記(現行 Pi 運用との関係)**: 現行 Pi の監視・バックアップは `deploy/scripts/` 側(`pi-health-check.sh` / `backup-pulse-db.sh`)が正であり、本ディレクトリは compose ベースの **legacy ユーティリティ**。Pi ではリポジトリルートに `.env` が無いため、`docker compose exec` / `ps` を使うスクリプト(backup / restore / health-check)はそのままでは動かない。
+
 ---
 
 ## Table of Contents
@@ -371,7 +373,7 @@ docker compose exec -T postgres psql -U catchup-feed < ~/backups/db_20240115_020
 **Environment Variables**:
 
 ```bash
-API_ENDPOINT=http://localhost:8080/health  # API health endpoint
+API_ENDPOINT=http://localhost:8090/health  # API health endpoint
 API_TIMEOUT=5                              # API timeout (seconds)
 EMAIL_ENABLED=true                         # Enable/disable email
 ```
@@ -622,7 +624,7 @@ EMAIL_LOG_DIR=/var/log/catchup                 # Log directory
 ### Monitoring Configuration
 
 ```bash
-API_ENDPOINT=http://localhost:8080/health      # Health check endpoint
+API_ENDPOINT=http://localhost:8090/health      # Health check endpoint
 API_TIMEOUT=5                                  # API timeout (seconds)
 ```
 
@@ -631,6 +633,8 @@ API_TIMEOUT=5                                  # API timeout (seconds)
 ## Cron Schedule Recommendations
 
 ### Production Environment (Raspberry Pi 5)
+
+> **legacy**: 現行 Pi ではこの cron 構成は使わない(冒頭の注記のとおり、監視・バックアップは `deploy/scripts/` 側が正。Pi ではルート `.env` が無く exec/ps 系は動かない)。以下は compose ベース運用時代の参考値。
 
 ```cron
 # Email system is already configured, no need to re-run setup

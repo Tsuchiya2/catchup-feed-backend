@@ -295,9 +295,16 @@ compose.pi.yml が単体で完結していた構成(`docker compose -f deploy/co
 ```bash
 cd ~/catchup-feed/catchup-feed-backend
 
+# 0) pgvector ピン(0.8.5)がダウングレードにならないことの事前確認(停止前に実行)。
+#    0.8.5 以下なら安全。超えていたら compose.yml のピンを実バージョンに合わせてから進む
+docker exec catchup-feed-postgres psql -U catchup-feed -d catchup-feed \
+  -c "select extversion from pg_extension where extname='vector';"
+
 # 1) 旧構成のまま停止(git pull の前に行う。pull 後の compose.pi.yml は
 #    override 専用になり単体では -f 指定できないため。pull を先にしてしまった
-#    場合は代わりに `docker compose -p catchup-feed down` でプロジェクト名指定で落とす)
+#    場合は代わりに `docker compose -p catchup-feed down` でプロジェクト名指定で落とす。
+#    それも :? の補間エラーで失敗する場合は、compose ファイルの無いディレクトリに
+#    cd してから同コマンドを実行する(ラベルベースで停止できる)
 docker compose -f deploy/compose.pi.yml down
 
 # 2) 取り込み
