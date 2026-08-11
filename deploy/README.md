@@ -15,7 +15,7 @@ Phase 2 設計書 §3・§6・§7(transcribe worker / Open WebUI / pgvector)の�
 
 ```
 deploy/
-├── compose.pi.yml            # Pi 用 compose(pulse スタック。旧スタックと共存可)
+├── compose.pi.yml            # Pi 固有 override(ルート compose.yml に重ねる。旧スタックと共存可)
 ├── env.pi.example            # Pi 側 .env の雛形(キーのみ。値は書かない)
 ├── env.mac.example           # Mac 側 ~/pulse/.env の雛形(同上)
 ├── cloudflared/

@@ -1,23 +1,26 @@
 # ============================================================
-# catchup-feed(後継 pulse)— 開発 Mac 用スタック(server + worker + PostgreSQL)
+# catchup-feed(後継 pulse)— ベース compose(server + worker + PostgreSQL)
 # ============================================================
-# 本番(Raspberry Pi 5)の正は deploy/compose.pi.yml。このファイルはそれと
-# 同じサービス構成・コンテナ名・環境変数キーを保った開発 Mac 向けの写しで、
-# 意図的な差分は以下だけに限定する:
+# 単独では開発 Mac 用スタックとして動く。本番(Raspberry Pi 5)は
+# deploy/compose.pi.yml を override として重ねる:
+#   docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env up -d
+# Pi 固有差分(TAILNET_IP バインド、EPISODES_DIR/BOOKS_DIR の必須化)は
+# すべて override 側にあり、このファイルが両環境共通の正。
+#
+# 開発 Mac 単独時の挙動(= Pi との意図的な差分):
 #   - TAILNET_IP を要求しない。ポート公開は 127.0.0.1 バインドのみ
 #     (API_PORT 既定 8090 / POSTGRES_PORT 既定 5433 — Pi と同じ既定値)。
 #     私的リスナー(8081)はコンテナ内で listen するがホストへは公開しない
 #   - EPISODES_DIR / BOOKS_DIR の既定はリポジトリ内 ./data/*(gitignore 済み)
-#   - build context はリポジトリルート(compose.pi.yml は ..)
 #   - lint / テスト用の dev サービス(profiles: dev、Makefile が参照)を持つ
-# compose.pi.yml 側を変更したら、このファイルにも同じ変更を反映すること。
+#     (Pi では profiles 不活性のため起動しない)
 #
-# 使い方:
+# 使い方(開発 Mac):
 #   cp .env.example .env   # 値を記入(POSTGRES_PASSWORD / JWT_SECRET / ADMIN_PASSWORD_HASH は必須)
 #   docker compose up -d --build
 #
 # server の healthcheck は Dockerfile の HEALTHCHECK(curl -f http://localhost:8080/health)
-# に依存する(compose.pi.yml と同じ)。worker の depends_on はこれを条件にしている。
+# に依存する。worker の depends_on はこれを条件にしている。
 
 name: catchup-feed
 
@@ -32,7 +35,11 @@ volumes:
 
 services:
   postgres:
-    image: pgvector/pgvector:pg18
+    # pgvector 0.8.5 on PostgreSQL 18(旧 compose から継承したピン)。
+    # PG メジャーは 18 に固定 — db-data ボリューム(/var/lib/postgresql)は
+    # メジャーを跨ぐと移行が必要になる。メジャーを上げるときは必ず
+    # ボリューム移行手順(pg_dump/restore 等)の文書化とセットで行うこと。
+    image: pgvector/pgvector:0.8.5-pg18
     container_name: catchup-feed-postgres
     restart: unless-stopped
     environment:

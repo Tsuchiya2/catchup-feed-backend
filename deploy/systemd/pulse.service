@@ -21,6 +21,11 @@
 #   ※ systemd 244 以降、Type=oneshot でも Restart=on-failure が使える
 #   (Pi は systemd 255 で検証済み)。
 #
+# compose の呼び出し形(override 構成):
+#   ルート compose.yml + deploy/compose.pi.yml の 2 枚重ね。project directory は
+#   最初の -f のディレクトリ(= リポジトリルート)になるため、deploy/.env は
+#   自動では読まれない。--env-file deploy/.env の明示が必須(pi.md 3章と同じ形)。
+#
 # 導入(pi.md 4章):
 #   1. WorkingDirectory のパスを実際のリポジトリ位置に書き換える
 #   2. sudo cp deploy/systemd/pulse.service /etc/systemd/system/
@@ -43,16 +48,17 @@ StartLimitBurst=5
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# リポジトリの deploy/ ディレクトリ(compose.pi.yml と .env がある場所)に書き換える
-WorkingDirectory=/home/CHANGEME/pulse/catchup-feed-backend/deploy
+# リポジトリのルート(compose.yml がある場所)に書き換える。
+# override の deploy/compose.pi.yml と deploy/.env は相対パスで参照する
+WorkingDirectory=/home/CHANGEME/pulse/catchup-feed-backend
 # After=tailscaled.service はプロセス起動順しか保証せず、tailnet IP の付与
 # 完了は保証しない。IP が実際に付くまで待ってから compose を上げる
 # (TimeoutStartSec=300 の範囲内。間に合わなければ失敗 → Restart= が再試行)。
 # docker デーモンが応答するまで待つ(Wants 化に伴う readiness 保証)
 ExecStartPre=/bin/sh -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
 ExecStartPre=/bin/sh -c 'until tailscale ip -4 >/dev/null 2>&1; do sleep 2; done'
-ExecStart=/usr/bin/docker compose -f compose.pi.yml up -d --force-recreate --remove-orphans
-ExecStop=/usr/bin/docker compose -f compose.pi.yml stop
+ExecStart=/usr/bin/docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env up -d --force-recreate --remove-orphans
+ExecStop=/usr/bin/docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env stop
 Restart=on-failure
 RestartSec=60
 # 初回のイメージビルドは事前に手動で済ませる前提(pi.md 3章)

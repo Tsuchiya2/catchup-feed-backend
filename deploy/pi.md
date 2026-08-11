@@ -54,11 +54,27 @@ chmod 600 deploy/.env
 
 ## 3. ビルドと起動
 
+Pi の compose は **ルート `compose.yml`(ベース)+ `deploy/compose.pi.yml`(Pi 固有 override)の 2 枚重ね**。
+本書のすべての compose コマンドは次の形で、**必ずリポジトリルートから**実行する:
+
+```bash
+docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env <サブコマンド>
+```
+
+`--env-file deploy/.env` は省略不可。複数 `-f` 指定時の project directory は最初の `-f` の
+ディレクトリ(= リポジトリルート)になるため、`deploy/.env` は自動では読まれない
+(ルートに開発用 `.env` があるとそちらが読まれてしまう)。毎回打つのが面倒なら
+`~/.bashrc` に alias を足してよい(以降の例は素の形で書く):
+
+```bash
+alias dcpi='docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env'
+```
+
 ```bash
 cd ~/catchup-feed/catchup-feed-backend
-docker compose -f deploy/compose.pi.yml build     # Pi ネイティブ arm64 ビルド。初回は時間がかかる
-docker compose -f deploy/compose.pi.yml up -d
-docker compose -f deploy/compose.pi.yml ps        # 3コンテナとも healthy になること
+docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env build   # Pi ネイティブ arm64 ビルド。初回は時間がかかる
+docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env up -d
+docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env ps      # 3コンテナとも healthy になること
 ```
 
 マイグレーション(§4 スキーマ)は `server` の起動時に毎回自動適用される。sources シードは sources テーブルが空のとき(初回セットアップ)のみ投入される。専用コマンドは無い。
@@ -85,7 +101,7 @@ docker volume ls | grep catchup-feed    # 旧由来の catchup-feed_* ボリュ�
 
 ### 手順
 
-1. **旧プロジェクトを明示的に落とす**。compose ファイルを編集した後は、`docker compose -f ...` は
+1. **旧プロジェクトを明示的に落とす**。compose ファイルを編集した後は、`docker compose` は
    新プロジェクト名 `catchup-feed` で動くため、`-p pulse` を付けないと旧 `pulse-*` コンテナ・
    `pulse_db-data` ボリュームを掴めない。
 
@@ -93,15 +109,15 @@ docker volume ls | grep catchup-feed    # 旧由来の catchup-feed_* ボリュ�
    # データを引き継ぎたい場合は、落とす前にここで退避(任意)
    docker exec pulse-postgres pg_dump -U catchup-feed -Fc catchup-feed > /tmp/pre-rename.dump
 
-   docker compose -p pulse -f deploy/compose.pi.yml down
+   docker compose -p pulse -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env down
    ```
 
 2. **新プロジェクトで起動**。新ボリューム `catchup-feed_db-data`(空)が作られ、**DB は初期状態**に
    なる。sources は server の初回起動時(テーブルが空のとき)に seeds が投入する。
 
    ```bash
-   docker compose -f deploy/compose.pi.yml up -d --build   # プロジェクト名は name: catchup-feed
-   docker compose -f deploy/compose.pi.yml ps              # catchup-feed-* が healthy に
+   docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env up -d --build   # プロジェクト名は name: catchup-feed
+   docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env ps              # catchup-feed-* が healthy に
    ```
 
 3. **データを引き継ぐ場合(任意)**。1 で取った dump を新スタックへ流し込む。
@@ -114,8 +130,8 @@ docker volume ls | grep catchup-feed    # 旧由来の catchup-feed_* ボリュ�
 旧 `pulse_db-data` ボリュームは 2 の起動後も残る(自動削除されない)。引き継ぎ確認が済んだら
 `docker volume rm pulse_db-data` で回収してよい。
 
-> 注: systemd unit 名は `pulse.service` のまま(改名しない)。unit は `docker compose -f
-> compose.pi.yml up -d` を呼ぶだけで、compose プロジェクト名とは独立。旧システムの
+> 注: systemd unit 名は `pulse.service` のまま(改名しない)。unit は compose の
+> `up -d` を呼ぶだけで、compose プロジェクト名とは独立。旧システムの
 > `catchup-feed.service` と衝突させないため、あえて据え置いている(4章の注意も参照)。
 
 ## 4. systemd による常時稼働化
@@ -269,8 +285,44 @@ Mac 側の朝チェック(mac.md、05:45 の morning-check)が外からの死活
 この5分監視が Pi 内部からの検知。両方ともメール経路は Gmail SMTP のみで、
 Cloudflare Tunnel / 公開面には何も追加しない。
 
+## 10. Pi での切替手順(単一ファイル構成 → override 構成)
+
+compose.pi.yml が単体で完結していた構成(`docker compose -f deploy/compose.pi.yml ...`)で
+稼働中の Pi を、本書 3 章の 2 枚重ね構成へ切り替える手順。プロジェクト名(`catchup-feed`)・
+コンテナ名・ポート・ボリュームはすべて不変なので **DB・mp3 に影響はない**。レンダリング結果の
+差分は pgvector イメージのピン(`pg18` → `0.8.5-pg18`。実体は同じ PG 18 系)のみ。
+
+```bash
+cd ~/catchup-feed/catchup-feed-backend
+
+# 1) 旧構成のまま停止(git pull の前に行う。pull 後の compose.pi.yml は
+#    override 専用になり単体では -f 指定できないため。pull を先にしてしまった
+#    場合は代わりに `docker compose -p catchup-feed down` でプロジェクト名指定で落とす)
+docker compose -f deploy/compose.pi.yml down
+
+# 2) 取り込み
+git pull
+
+# 3) 新コマンドで起動(pgvector イメージの pull が入る)
+docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env up -d --build
+docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env ps   # 3コンテナ healthy
+
+# 4) systemd unit を差し替え(ExecStart が新コマンドに変わっている。
+#    WorkingDirectory はリポジトリ「ルート」に変更された点に注意)
+sed "s|/home/CHANGEME/pulse|$HOME/catchup-feed|" deploy/systemd/pulse.service | \
+  sudo tee /etc/systemd/system/pulse.service >/dev/null
+sudo systemctl daemon-reload
+systemctl cat pulse.service | grep -E 'WorkingDirectory|ExecStart'   # 目視確認
+
+# 5) 次回ブートを待たずに unit 経由の起動も確認しておく(D-28 の復旧経路の検証)
+sudo systemctl restart pulse.service
+systemctl status pulse.service   # active (exited) なら正常
+```
+
+切替後の動作確認は 7 章と同じ(health・公開フィード・私的フィード・worker ログ)。
+
 ## トラブル時の見方(監視スタックは無い。これで足りる)
 
-- コンテナ状態: `docker compose -f deploy/compose.pi.yml ps` / `docker logs catchup-feed-server|catchup-feed-worker`
+- コンテナ状態: `docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env ps` / `docker logs catchup-feed-server|catchup-feed-worker`
 - 要約フォールバックの発生: `summaries.provider` を見る(`docker exec -it catchup-feed-postgres psql -U catchup-feed -c "select provider, count(*) from summaries group by 1"`)
 - 朝エピソードが無い日: 正常系の欠番(Mac 不在)か、radio の失敗通知(notify_error のメール、D-29)かをまず確認
