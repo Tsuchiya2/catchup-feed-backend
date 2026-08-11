@@ -90,7 +90,7 @@ admin-hash: ## Generate bcrypt hash for ADMIN_PASSWORD_HASH (reads password from
 # ────────────────────────────────────────────────────────────
 build: ## Build application inside Docker
 	@echo "🔨 Building application in Docker..."
-	docker compose build app worker
+	docker compose build server worker
 	@echo "✅ Build completed"
 
 build-dev: ## Build development container
@@ -101,11 +101,11 @@ build-dev: ## Build development container
 # ────────────────────────────────────────────────────────────
 # Application Control
 # ────────────────────────────────────────────────────────────
-up: ## Start all services (app, worker, postgres)
+up: ## Start all services (server, worker, postgres)
 	@echo "🚀 Starting all services..."
 	docker compose up -d
 	@echo "✅ All services started"
-	@echo "   API: http://localhost:8080"
+	@echo "   API: http://127.0.0.1:8090"
 
 down: ## Stop all services
 	@echo "🛑 Stopping all services..."
@@ -120,8 +120,8 @@ restart: down up ## Restart all services
 logs: ## Show logs from all services
 	docker compose logs -f
 
-logs-app: ## Show logs from API server
-	docker compose logs -f app
+logs-server: ## Show logs from API server
+	docker compose logs -f server
 
 logs-worker: ## Show logs from worker
 	docker compose logs -f worker
@@ -134,7 +134,7 @@ logs-db: ## Show logs from PostgreSQL
 # ────────────────────────────────────────────────────────────
 db-shell: ## Enter PostgreSQL shell
 	@echo "🗄️ Entering PostgreSQL shell..."
-	docker compose exec postgres psql -U catchup -d catchup
+	docker compose exec postgres psql -U catchup-feed -d catchup-feed
 
 # マイグレーション専用ターゲットはない: スキーマは冪等 SQL
 # (internal/infra/db.MigrateUp)として cmd/server の起動時に毎回自動適用

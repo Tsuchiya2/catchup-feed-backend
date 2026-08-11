@@ -3,6 +3,15 @@
 .env.*
 !.env.example
 
+# Local dev data (compose.yml の EPISODES_DIR / BOOKS_DIR 既定)
+data/*
+!data/episodes
+!data/books
+data/episodes/*
+!data/episodes/.gitkeep
+data/books/*
+!data/books/.gitkeep
+
 # Environment-specific configs
 config/environments/*.env
 !config/environments/README.md
