@@ -105,7 +105,7 @@ log_info "Backup file: $BACKUP_FILE"
 
 if [ "$COMPRESS" = true ]; then
     # 圧縮バックアップ
-    if docker compose exec -T postgres pg_dumpall -U catchup | gzip > "$BACKUP_PATH"; then
+    if docker compose exec -T postgres pg_dumpall -U catchup-feed | gzip > "$BACKUP_PATH"; then
         log_success "Backup completed (compressed)"
     else
         log_error "Backup failed!"
@@ -114,7 +114,7 @@ if [ "$COMPRESS" = true ]; then
     fi
 else
     # 非圧縮バックアップ
-    if docker compose exec -T postgres pg_dumpall -U catchup > "$BACKUP_PATH"; then
+    if docker compose exec -T postgres pg_dumpall -U catchup-feed > "$BACKUP_PATH"; then
         log_success "Backup completed"
     else
         log_error "Backup failed!"
@@ -155,8 +155,8 @@ echo ""
 # リストア手順を表示
 log_info "To restore this backup, run:"
 if [ "$COMPRESS" = true ]; then
-    echo "  gunzip -c $BACKUP_PATH | docker compose exec -T postgres psql -U catchup"
+    echo "  gunzip -c $BACKUP_PATH | docker compose exec -T postgres psql -U catchup-feed"
 else
-    echo "  docker compose exec -T postgres psql -U catchup < $BACKUP_PATH"
+    echo "  docker compose exec -T postgres psql -U catchup-feed < $BACKUP_PATH"
 fi
 echo ""

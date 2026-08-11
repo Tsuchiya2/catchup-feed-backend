@@ -236,8 +236,8 @@ Setup Complete! Email system is ready.
 **Environment Variables**:
 
 ```bash
-POSTGRES_USER=catchup         # PostgreSQL username
-POSTGRES_DB=catchup           # Database name
+POSTGRES_USER=catchup-feed         # PostgreSQL username
+POSTGRES_DB=catchup-feed           # Database name
 EMAIL_ENABLED=true            # Enable/disable email
 EMAIL_FROM=...                # Sender email
 EMAIL_TO=...                  # Recipient email
@@ -286,10 +286,10 @@ Troubleshooting:
 ```bash
 # Restore compressed backup
 gunzip -c ~/backups/db_20240115_020005.sql.gz | \
-  docker compose exec -T postgres psql -U catchup
+  docker compose exec -T postgres psql -U catchup-feed
 
 # Restore uncompressed backup
-docker compose exec -T postgres psql -U catchup < ~/backups/db_20240115_020005.sql
+docker compose exec -T postgres psql -U catchup-feed < ~/backups/db_20240115_020005.sql
 ```
 
 **Cron Example**:
@@ -349,7 +349,7 @@ docker compose exec -T postgres psql -U catchup < ~/backups/db_20240115_020005.s
 
 **Monitored Services**:
 1. Docker daemon status
-2. Container health (app, worker, postgres)
+2. Container health (server, worker, postgres)
 3. PostgreSQL connectivity (`pg_isready`)
 4. API endpoint availability (HTTP health check)
 5. Worker process status
@@ -382,20 +382,20 @@ EMAIL_ENABLED=true                         # Enable/disable email
 Subject: ❌ Health Check Failed on raspberrypi
 
 Failed Services (2):
-- app Container
+- server Container
 - API Endpoint
 
 All Services Status:
 ✓ Docker Daemon: Running
-✗ app Container: Not running (status: exited)
+✗ server Container: Not running (status: exited)
 ✓ worker Container: Running
 ✓ postgres Container: Running (health: healthy)
 ✗ API Endpoint: Connection failed
 ✓ Worker Process: Running
 
 Troubleshooting:
-1. Check container logs: docker compose logs --tail=50 app
-2. Restart failed services: docker compose restart app
+1. Check container logs: docker compose logs --tail=50 server
+2. Restart failed services: docker compose restart server
 3. Check service status: docker compose ps
 ```
 
@@ -602,8 +602,8 @@ All scripts use the following environment variables (defined in `.env`):
 ### Database Configuration
 
 ```bash
-POSTGRES_USER=catchup          # PostgreSQL username
-POSTGRES_DB=catchup            # Database name
+POSTGRES_USER=catchup-feed          # PostgreSQL username
+POSTGRES_DB=catchup-feed            # Database name
 POSTGRES_PASSWORD=...          # Database password
 ```
 
