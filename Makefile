@@ -151,7 +151,7 @@ logs-db: ## Show logs from PostgreSQL
 # ────────────────────────────────────────────────────────────
 db-shell: ## Enter PostgreSQL shell
 	@echo "🗄️ Entering PostgreSQL shell..."
-	docker compose exec postgres psql -U catchup-feed -d catchup-feed
+	docker compose exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
 
 # マイグレーション専用ターゲットはない: スキーマは冪等 SQL
 # (internal/infra/db.MigrateUp)として cmd/server の起動時に毎回自動適用
