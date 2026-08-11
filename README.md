@@ -122,6 +122,8 @@ curl -f http://127.0.0.1:8090/health
 
 server は起動時に PostgreSQL のマイグレーションを冪等適用してから待ち受けます(ホスト公開は `127.0.0.1:${API_PORT:-8090}` のみ。私的フィードリスナー 8081 は開発ではホストへ公開されません)。mp3 / 書籍 PDF はリポジトリ内 `./data/episodes` / `./data/books`(gitignore 済み)にマウントされます。
 
+> **旧スタックからの移行メモ**: compose プロジェクト名を `catchup-feed` に変更したため、旧プロジェクト名 `catchup-feed-backend` で作られたコンテナ(`catchup-*`)・ボリューム(`catchup-feed-backend_db-data` 等)は `make down` / `make clean` の管理外に残ります。一度だけ `docker compose -p catchup-feed-backend down` で旧コンテナを掃除してください(**`-v` は付けない**。旧ボリュームの削除はデータ不要を確認したうえで `docker volume rm` で任意に)。
+
 ### radio(Mac、夜間バッチ)
 
 radio は Mac ネイティブでビルドし、launchd で 04:30 JST に起動します。tailnet 越しに Pi の PostgreSQL へ直接接続します。
