@@ -21,6 +21,10 @@
 # 未設定時のみ補うので、シェルで export 済みの実値はそのまま使われる。
 # test 系は対象外: dev サービスは常に DATABASE_URL を設定し、TestOpen_* が
 # 実接続する(DATABASE_URL 未設定時のみ skip)ため、実 .env と postgres が必要。
+# 【注意】compose の変数解決は OS 環境変数 > .env の順なので、この
+# プレースホルダ(OS env として注入)は .env の実値より優先される。
+# DB を使うターゲットに COMPOSE_DEV を流用してはならない(実 DB に
+# placeholder パスワードで繋ごうとして落ちる/挙動が化ける)。
 COMPOSE_DEV := POSTGRES_PASSWORD=$${POSTGRES_PASSWORD:-placeholder} \
                JWT_SECRET=$${JWT_SECRET:-placeholder} \
                ADMIN_PASSWORD_HASH=$${ADMIN_PASSWORD_HASH:-placeholder} \
