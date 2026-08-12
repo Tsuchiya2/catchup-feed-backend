@@ -1,6 +1,7 @@
 package script
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -59,7 +60,7 @@ func TestBuildWeeklyReview(t *testing.T) {
 			},
 			wantOK: true,
 			want: lead + "今週学んだ項目は、A、B、C の3つです。" +
-				"また、今週は2つの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
+				"また、2つの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
 		},
 		{
 			name: "concepts + reintroduction",
@@ -90,7 +91,7 @@ func TestBuildWeeklyReview(t *testing.T) {
 			},
 			wantOK: true,
 			want: lead + "今週学んだ項目は、A、B、C の3つです。" +
-				"また、今週は2つの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" +
+				"また、2つの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" +
 				"いっぽうで「難しい概念」は一度忘れてしまったため、もう一度おさらいのリストに戻しています。" + closing,
 		},
 		{
@@ -101,7 +102,7 @@ func TestBuildWeeklyReview(t *testing.T) {
 			},
 			wantOK: true,
 			want: lead + "今週学んだ項目は、A、B、C、D、E、F、G、H、I、J の10個です。" +
-				"また、今週は10個の項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
+				"また、10個の項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
 		},
 	}
 	for _, tt := range tests {
@@ -119,6 +120,34 @@ func TestBuildWeeklyReview(t *testing.T) {
 			assert.NotContains(t, body, "！", "アナウンサー調: 感嘆符を使わない (D-37 (2))")
 			assert.NotContains(t, body, "このうち",
 				"卒業した項目は「今週学んだ項目」の部分集合ではない (format.go weeklyReviewGraduated)")
+		})
+	}
+}
+
+// TestWeeklyReviewGraduatedVariesOnlyByOpening fixes the invariant behind the
+// B-1 修正 as structure rather than as a banned word: afterConcepts が変えて
+// よいのは【文頭だけ】で、事実を述べる部分は両分岐で1文字も違わない。
+//
+// 語句の NotContains(「このうち」)は「そのうち」「うち2つが」と書き換えれば
+// すり抜けるが、この等式は文頭以外に差分を入れた時点で必ず落ちる。卒業件数が
+// 「今週学んだ項目」の部分集合であるかのような修飾は、どんな言い換えであれ
+// 本文側の差分になるため、ここで止まる。
+func TestWeeklyReviewGraduatedVariesOnlyByOpening(t *testing.T) {
+	// 文頭そのものも固定する(片方の文頭に事実を混ぜる逃げ道を塞ぐ)。
+	assert.Equal(t, "また、", weeklyReviewGraduatedOpening(true),
+		"concepts の文に続くときは接続詞だけで受ける(「今週」の3連を避ける)")
+	assert.Equal(t, "今週は", weeklyReviewGraduatedOpening(false),
+		"先行文が無いときはこの文が週の範囲を示す")
+
+	for _, n := range []int{1, 2, 9, 10} {
+		t.Run(fmt.Sprintf("%d件", n), func(t *testing.T) {
+			body := weeklyReviewGraduatedBody(n)
+			assert.Equal(t, weeklyReviewGraduatedOpening(true)+body, weeklyReviewGraduated(n, true))
+			assert.Equal(t, weeklyReviewGraduatedOpening(false)+body, weeklyReviewGraduated(n, false))
+			assert.Equal(t,
+				strings.TrimPrefix(weeklyReviewGraduated(n, true), weeklyReviewGraduatedOpening(true)),
+				strings.TrimPrefix(weeklyReviewGraduated(n, false), weeklyReviewGraduatedOpening(false)),
+				"afterConcepts は文頭の選択にしか使えない — 事実部分は両分岐で同一")
 		})
 	}
 }

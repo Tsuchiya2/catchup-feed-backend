@@ -143,21 +143,24 @@ const openingHandoff = "それでは、最初のニュースです。"
 // inside the same corner as the previous article.
 const newsLeadContinued = "続いてのニュースです。"
 
-// newsLeadCorner is the fixed first sentence of a segment that opens a corner.
-// 1本目にもこれを使う — オープニングはコーナー名を紹介するだけで、最初の
-// コーナーに入る宣言はしていないため。
+// cornerLead is the fixed first sentence of a segment that opens a corner —
+// ニュースだけでなく復習コーナーも書籍コーナーもこの1関数を通る。番組の
+// 「コーナーの入り方」はこれ1つで、ここを変えると全コーナーが揃って変わる
+// (D-37 (9))。ニュースの1本目にもこれを使う — オープニングはコーナー名を
+// 紹介するだけで、最初のコーナーに入る宣言はしていないため。
 //
-// ニュース以外のコーナー(復習・書籍)もこの1関数を通す。コーナーの入り方の
-// 言い回しを増やさないための集約点であり、ここを変えると全コーナーが揃って
-// 変わる (D-37 (9))。
-func newsLeadCorner(corner string) string {
+// 【この関数に引数やフラグを足さないこと】コーナーごとに違う枠(例: 書籍だけ
+// 別の入り方にしたい)が必要になったら、ここに if を足すのではなく format.go
+// に別の関数を足すこと。分岐を増やすと「どのコーナーがどの枠か」がこの1関数
+// の中に埋もれ、集約の意味が失われる。
+func cornerLead(corner string) string {
 	return fmt.Sprintf("ここからは、%sのコーナーです。", corner)
 }
 
 // bookReviewLead is the fixed first sentence of the §7.3 書籍コーナー. It is
 // the same corner-opening 定型句 as every other corner; bookreview.tmpl gets
 // it as a template variable so the wording exists in exactly one place.
-func bookReviewLead() string { return newsLeadCorner("いま読んでいる本") }
+func bookReviewLead() string { return cornerLead("いま読んでいる本") }
 
 // newsLead picks the fixed opening sentence for articles[i] (D-37 (6)):
 // コーナーが切り替わるなら「ここからは、○○のコーナーです。」、同じコーナーが
@@ -171,7 +174,7 @@ func newsLead(articles []repository.RadioArticle, i int, corner string) string {
 	if i > 0 && articles[i-1].Category == articles[i].Category {
 		return newsLeadContinued
 	}
-	return newsLeadCorner(corner)
+	return cornerLead(corner)
 }
 
 // signOff is the program's closing signature, shared by every episode kind so
@@ -189,9 +192,9 @@ const closingSignOff = "詳しいリンクは番組情報欄に掲載してい�
 
 // quizCornerLead is the 復習コーナー introduction read (§7.2). コーナーの
 // 入り方はニュースのコーナーと同じ定型句を使う — 言い回しの実体は
-// newsLeadCorner ただ1つ (D-37 (9))。
+// cornerLead ただ1つ (D-37 (9))。
 func quizCornerLead(itemCount int) string {
-	return newsLeadCorner("復習") + fmt.Sprintf(
+	return cornerLead("復習") + fmt.Sprintf(
 		"これまでの放送でお伝えした内容から、今日は%d問おさらいします。問題のあとに少し間をあけますので、頭の中で答えてみてください。",
 		itemCount)
 }
@@ -220,9 +223,23 @@ const quizOnlyOutroScript = "今日のおさらいは以上です。" + signOff
 // quizOnlyShowNotesBase opens the quiz-only episode's show notes.
 const quizOnlyShowNotesBase = "今日は新しい記事がなかったため、復習のみお届けしました。"
 
-// --- ショーノートの見出し(§7.5、私的版のみ) ---
+// --- ショーノートの見出し(§4 episodes.show_notes) ---
+//
+// 音声にはならないが、通知メールとポッドキャストアプリの番組情報欄に出る
+// 「番組の文言」なので、読み上げ文と同じくここに集約する。
 
 const (
+	// 公開版・私的版に共通の記事セクション (§6-1)。
+	notesFeaturedHeading = "今日紹介した記事:\n"
+	notesOverflowHeading = "\n紹介しきれなかった記事:\n"
+
+	// notesVoicevoxCreditPrefix is the U-13 credit line prefix: VOICEVOX の
+	// 利用規約上、生成音声の配布には「VOICEVOX:話者名」の表記が必須であり、
+	// 配信する全エピソードがこの行を持つ(§6-7)。表記を変えるとクレジット
+	// 要件を外しうるので、変更時は U-13 を読み直すこと。
+	notesVoicevoxCreditPrefix = "\n\n音声合成: VOICEVOX:"
+
+	// 私的版のみの学習セクション (§7.5)。
 	quizNotesHeading     = "\n\n今日の復習:\n"
 	quizNotesGradePrefix = "\n採点はこちら: "
 
@@ -264,13 +281,31 @@ func weeklyReviewConcepts(concepts []string) string {
 // 卒業」のような破綻も起きる。渡されていない事実を作らないという D-37 (5) の
 // 方針は、LLM だけでなくテンプレート側にも同じく効く。
 //
-// afterConcepts は接続詞の選択にだけ使う(先行文があれば「また、」で受ける)。
+// afterConcepts が変えてよいのは【文頭だけ】。事実を述べる部分は
+// weeklyReviewGraduatedBody 1箇所から両分岐が共有しており、分岐が事実を
+// 書き換える余地は構造的に無い(テストで等式として固定してある)。
 func weeklyReviewGraduated(count int, afterConcepts bool) string {
-	sentence := fmt.Sprintf("今週は%sの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。", itemCount(count))
+	return weeklyReviewGraduatedOpening(afterConcepts) + weeklyReviewGraduatedBody(count)
+}
+
+// weeklyReviewGraduatedBody is the factual half of the graduation sentence —
+// identical in both branches.
+func weeklyReviewGraduatedBody(count int) string {
+	return fmt.Sprintf("%sの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。", itemCount(count))
+}
+
+// weeklyReviewGraduatedOpening picks the sentence opening only.
+//
+// concepts の文に続くときは「今週は」を落として接続詞だけで受ける: リードが
+// 「ここで、今週の学びを振り返ります。」、concepts が「今週学んだ項目は、…」
+// なので、ここでも言うと「今週」が3文続き、落ち着いたアナウンサー調
+// (D-37 (2))から外れる。週の範囲はリードが確定させているので事実は落ちない。
+// 先行文が無いときは、この文が週の範囲を示す必要があるので「今週は」を残す。
+func weeklyReviewGraduatedOpening(afterConcepts bool) string {
 	if afterConcepts {
-		return "また、" + sentence
+		return "また、"
 	}
-	return sentence
+	return "今週は"
 }
 
 // weeklyReviewReintroduced is the "went back to the list" sentence. 先行文が

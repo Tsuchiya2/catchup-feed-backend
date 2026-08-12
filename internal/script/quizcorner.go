@@ -30,8 +30,8 @@ type QuizCorner struct {
 type QuizRead struct {
 	ItemID    int64
 	ArticleID *int64 // 元記事があれば設定 (§7.2-4); nil for kind='book'
-	Question  string // 「第N問。」+ learning_items.question
-	Answer    string // 「答え。」+ learning_items.answer
+	Question  string // quizReadQuestion(番号, learning_items.question)
+	Answer    string // quizReadAnswer(learning_items.answer)
 }
 
 // BuildQuizCorner renders the corner for the given due items; an empty
@@ -54,7 +54,7 @@ func BuildQuizCorner(items []learning.Item) QuizCorner {
 		corner.Items = append(corner.Items, QuizRead{
 			ItemID:    item.ID,
 			ArticleID: articleID,
-			// The numbering / 「答え。」 cues are part of the read text and
+			// The numbering and answer cues are part of the read text and
 			// therefore part of the archived segment script — segments must
 			// record exactly what went on air (§4 設計メモ: script カラムに
 			// 読み上げ全文が残る). 文言は format.go (D-37 (9)).
