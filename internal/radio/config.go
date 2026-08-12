@@ -83,6 +83,14 @@ type Config struct {
 	BookReviewChunks int
 	// PrivateEpisodeMax caps the private episode length; over it book_review
 	// is deferred (PRIVATE_EPISODE_MAX_MINUTES as minutes, §7.1).
+	//
+	// The measured length checked against this cap includes the §6-4 jingles
+	// (≒22秒): the cap bounds how long the listener is asked to sit with the
+	// episode, and the jingles are part of the mp3 that plays — the same
+	// reason they are counted into episodes.duration_sec. They are already
+	// decoded and measured by the time the guard runs (see
+	// publishPrivateEpisode), so this costs no estimate; on a run where the
+	// jingles degraded they contribute zero and the guard simply loosens.
 	PrivateEpisodeMax time.Duration
 }
 

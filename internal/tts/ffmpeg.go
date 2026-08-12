@@ -43,6 +43,8 @@ type ID3 struct {
 
 // FFmpeg combines sentence WAVs into the final episode mp3 (§6-4):
 // concat demuxer -> loudnorm -> 64 kbps mono 44.1 kHz mp3 with ID3 tags.
+// It also decodes the embedded opening/ending jingles into that same concat
+// list's format (see jingle.go).
 type FFmpeg struct {
 	// Path is the ffmpeg binary (FFMPEG_PATH, default "ffmpeg" on PATH —
 	// Mac 側は brew の ffmpeg 前提).
@@ -56,10 +58,33 @@ func NewFFmpeg() *FFmpeg {
 	return &FFmpeg{Path: pkgconfig.GetEnvString("FFMPEG_PATH", "ffmpeg")}
 }
 
-// ConcatToMP3 concatenates the WAV files (all VOICEVOX output, identical
-// format) into outPath. The concat list file is written next to outPath,
-// which the radio batch keeps inside its temp dir (§6-6: 生成途中の失敗は
-// テンポラリディレクトリ内で完結).
+// runner resolves the command executor: the injected seam, or the real one.
+func (f *FFmpeg) runner() RunFunc {
+	if f.Run != nil {
+		return f.Run
+	}
+	return execRun
+}
+
+// binary resolves the ffmpeg executable, defaulting to PATH lookup.
+func (f *FFmpeg) binary() string {
+	if f.Path != "" {
+		return f.Path
+	}
+	return "ffmpeg"
+}
+
+// ConcatToMP3 concatenates the WAV files into outPath. Every input must
+// share one PCM format, which holds by construction (§12-5): the sentences
+// are VOICEVOX output, and the fabricated silences (silence.go) and decoded
+// jingles (jingle.go) are both built from a measured engine output's format.
+// The concat list file is written next to outPath, which the radio batch
+// keeps inside its temp dir (§6-6: 生成途中の失敗はテンポラリディレクトリ内
+// で完結).
+//
+// loudnorm runs once over the whole concatenation, so the jingle music and
+// the speech receive the same normalization — deliberate (§6-4 のフィルタ
+// チェーンはそのまま).
 func (f *FFmpeg) ConcatToMP3(ctx context.Context, wavPaths []string, outPath string, tags ID3) error {
 	if len(wavPaths) == 0 {
 		return fmt.Errorf("ffmpeg: no input files")
@@ -84,15 +109,7 @@ func (f *FFmpeg) ConcatToMP3(ctx context.Context, wavPaths []string, outPath str
 		outPath,
 	}
 
-	run := f.Run
-	if run == nil {
-		run = execRun
-	}
-	path := f.Path
-	if path == "" {
-		path = "ffmpeg"
-	}
-	if err := run(ctx, path, args...); err != nil {
+	if err := f.runner()(ctx, f.binary(), args...); err != nil {
 		return fmt.Errorf("ffmpeg: encode %s: %w", filepath.Base(outPath), err)
 	}
 	return nil
