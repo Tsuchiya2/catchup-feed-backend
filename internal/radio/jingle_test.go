@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,34 +176,63 @@ func TestPipeline_Run_JinglesAloneAreNotAnEpisode(t *testing.T) {
 }
 
 // TestPipeline_Run_JingleInvalidPairRejected pins the Encoder boundary
-// check: an implementation that hands back a zero-value pair with a nil
-// error would otherwise put an empty filename into the ffmpeg concat list
-// and add zero seconds to duration_sec. The pipeline treats it exactly like
-// a failed decode (§8) rather than trusting the interface.
+// check. An implementation may return a nil error alongside values the
+// pipeline cannot use, and each field fails differently: an empty path
+// becomes an empty filename in the ffmpeg concat list, a zero duration
+// leaves duration_sec under-reporting the mp3 that ships. Both take the §8
+// route instead of being trusted.
 func TestPipeline_Run_JingleInvalidPairRejected(t *testing.T) {
-	d := defaultDeps()
-	d.encoder.jingleZero = true
-	p := learningPipeline(t, d, &fakeLearning{due: sampleDueItems()})
-	logs := captureLogs(p)
-
-	require.NoError(t, p.Run(context.Background(), radio.RunOptions{}))
-
-	require.Len(t, d.encoder.calls, 2)
-	for _, call := range d.encoder.calls {
-		assertNoJingle(t, call.wavPaths)
-		assert.NotContains(t, call.wavPaths, "", "空パスが concat リストに入らない")
+	tests := []struct {
+		name    string
+		mutate  func(*fakeEncoder)
+		wantSub string
+	}{
+		{
+			name:    "パスが空",
+			mutate:  func(e *fakeEncoder) { e.jingleZero = true },
+			wantSub: "no wav path",
+		},
+		{
+			name:    "尺がゼロ",
+			mutate:  func(e *fakeEncoder) { e.jingleSilent = true },
+			wantSub: "non-positive duration",
+		},
 	}
-	pub, _ := d.episodes.byKind(entity.FeedKindPublic)
-	require.NotNil(t, pub)
-	assert.Equal(t, 120, pub.DurationSec, "尺ゼロのジングルを加算しない")
-	assert.Contains(t, logs.String(), "jingle decode failed")
-	assert.Contains(t, logs.String(), "no wav path", "却下の理由がログに残る")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := defaultDeps()
+			tt.mutate(d.encoder)
+			p := learningPipeline(t, d, &fakeLearning{due: sampleDueItems()})
+			logs := captureLogs(p)
+
+			require.NoError(t, p.Run(context.Background(), radio.RunOptions{}))
+
+			require.Len(t, d.encoder.calls, 2)
+			for _, call := range d.encoder.calls {
+				assertNoJingle(t, call.wavPaths)
+				assert.NotContains(t, call.wavPaths, "", "空パスが concat リストに入らない")
+			}
+			pub, _ := d.episodes.byKind(entity.FeedKindPublic)
+			require.NotNil(t, pub)
+			assert.Equal(t, 120, pub.DurationSec, "却下したジングルの尺は加算しない")
+
+			// デコード自体は成功しているので "decode failed" とは言わない
+			// — 読む人を ffmpeg ではなく Encoder 実装に向ける。
+			assert.Contains(t, logs.String(), "unusable pair")
+			assert.NotContains(t, logs.String(), "jingle decode failed")
+			assert.Contains(t, logs.String(), tt.wantSub, "却下の理由がログに残る")
+		})
+	}
 }
 
 // TestPipeline_Run_JingleUnreadableEngineFormat pins that the parse failure
 // is reported where it happens (§8). Downstream the only symptom would be
 // DecodeJingles refusing a zero WavFormat — "non-PCM target format tag 0" —
 // which says nothing about the actual cause.
+//
+// It is reported ONCE. An engine emitting unreadable headers emits them for
+// every sentence, and a real episode is hundreds of sentences: warning per
+// audio buries the very cause the warning exists to surface.
 func TestPipeline_Run_JingleUnreadableEngineFormat(t *testing.T) {
 	d := defaultDeps()
 	d.tts.badWav = true
@@ -220,8 +250,12 @@ func TestPipeline_Run_JingleUnreadableEngineFormat(t *testing.T) {
 	pub, _ := d.episodes.byKind(entity.FeedKindPublic)
 	require.NotNil(t, pub)
 	assert.Equal(t, 120, pub.DurationSec)
-	assert.Contains(t, logs.String(), "VOICEVOX wav header unreadable",
-		"真因が Warn に残る")
+
+	// 4 セグメント全部が壊れたヘッダを返しているが、Warn は1本。
+	require.Equal(t, 4, d.tts.calls)
+	assert.Equal(t, 1, strings.Count(logs.String(), "VOICEVOX wav header unreadable"),
+		"真因は残しつつ、1 run 1行に絞る")
+	assert.Contains(t, logs.String(), "first_bad_segment=1")
 }
 
 // TestPipeline_Run_JingleDecodedOncePerRun pins that the twin reuses the

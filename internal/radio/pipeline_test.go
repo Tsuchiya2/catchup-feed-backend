@@ -315,8 +315,13 @@ type fakeEncoder struct {
 	jingleErr error
 	// jingleZero returns a zero-value pair with a NIL error — a contract
 	// violation tts.FFmpeg never commits, but Encoder is an interface and the
-	// pipeline must not put `file ''` into a concat list on anyone's say-so.
+	// pipeline must not put an empty filename into a concat list on anyone's
+	// say-so.
 	jingleZero bool
+	// jingleSilent returns real paths with zero durations and a nil error:
+	// the same contract violation one field over, where the concat list would
+	// be fine but duration_sec would silently under-report the mp3.
+	jingleSilent bool
 	// jingleFormats records the wav format each decode was asked for: it must
 	// be the format this run's engine actually produced (§12-5).
 	jingleFormats []tts.WavFormat
@@ -350,10 +355,12 @@ func (f *fakeEncoder) DecodeJingles(_ context.Context, dir string, format tts.Wa
 	if f.jingleZero {
 		return tts.Jingles{}, nil
 	}
-	return tts.Jingles{
-		Opening: tts.Jingle{Path: filepath.Join(dir, "jingle_opening.wav"), Duration: fakeOpeningJingle},
-		Ending:  tts.Jingle{Path: filepath.Join(dir, "jingle_ending.wav"), Duration: fakeEndingJingle},
-	}, nil
+	opening := tts.Jingle{Path: filepath.Join(dir, "jingle_opening.wav"), Duration: fakeOpeningJingle}
+	ending := tts.Jingle{Path: filepath.Join(dir, "jingle_ending.wav"), Duration: fakeEndingJingle}
+	if f.jingleSilent {
+		opening.Duration, ending.Duration = 0, 0
+	}
+	return tts.Jingles{Opening: opening, Ending: ending}, nil
 }
 
 type fakeTransfer struct {

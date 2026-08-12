@@ -112,11 +112,19 @@ func TestFFmpeg_DecodeJingles_CommandAssembly(t *testing.T) {
 	}
 }
 
-// TestFFmpeg_DecodeJingles_EmbeddedSources pins that the embedded mp3s are
-// real files (a zero-byte asset still compiles), that ffmpeg is pointed at
-// the copies written into the run's temp dir, and that the two embeds are
-// distinct — swapping the //go:embed lines would otherwise pass every test
-// while putting the ending on the front of every episode.
+// TestFFmpeg_DecodeJingles_EmbeddedSources pins the embedded assets without
+// needing ffmpeg — CI has no ffmpeg, so TestFFmpeg_DecodeJingles_RealFFmpeg
+// skips there and this is the only check that runs.
+//
+// It pins that both mp3s are real files (a zero-byte asset still compiles),
+// that ffmpeg is pointed at the copies written into the run's temp dir, and
+// that the two embeds are neither identical nor swapped. The swap check
+// leans on the assets' byte sizes (opening 177,100 < ending 209,283): the
+// real distinguishing property is their length, but reading that needs a
+// decoder, and a size comparison holds deterministically everywhere.
+// Replacing an asset with one that inverts the size order will fail here —
+// see assets/README.md, which lists this alongside the other expectations a
+// swap has to update.
 func TestFFmpeg_DecodeJingles_EmbeddedSources(t *testing.T) {
 	dir := t.TempDir()
 	format := voicevoxFormat()
@@ -137,7 +145,10 @@ func TestFFmpeg_DecodeJingles_EmbeddedSources(t *testing.T) {
 		sources[i] = src
 	}
 	assert.NotEqual(t, sources[0], sources[1],
-		"opening と ending が同じバイト列 = //go:embed の取り違え")
+		"opening と ending が同じバイト列 = //go:embed の重複")
+	assert.Less(t, len(sources[0]), len(sources[1]),
+		"opening (177,100 bytes) は ending (209,283 bytes) より小さい — "+
+			"逆転していれば //go:embed の入れ替わり(またはアセット差し替えの反映漏れ)")
 }
 
 // TestFFmpeg_DecodeJingles_RealFFmpeg runs the actual binary over the actual
@@ -343,7 +354,12 @@ func TestJingles_WrapKeepsEmptyEmpty(t *testing.T) {
 			assert.Empty(t, jingles.Wrap(tt.in), "ジングルだけの番組は作らない")
 
 			// end to end: the guard it protects is still reachable.
-			f := &tts.FFmpeg{Path: "ffmpeg", Run: (&fakeFFmpeg{}).run}
+			// The fake is given a usable duration even though a passing run
+			// never invokes it: on a regression it WOULD be invoked, and a
+			// zero-value fake would panic on its own durations slice instead
+			// of letting the assertion below report the real problem.
+			runner := &fakeFFmpeg{format: voicevoxFormat(), durations: []time.Duration{time.Second}}
+			f := &tts.FFmpeg{Path: "ffmpeg", Run: runner.run}
 			err := f.ConcatToMP3(context.Background(), jingles.Wrap(tt.in),
 				filepath.Join(t.TempDir(), "out.mp3"), tts.ID3{})
 			require.Error(t, err)

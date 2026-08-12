@@ -23,11 +23,16 @@ import (
 // speech-only without any branching at the call sites.
 func (p *Pipeline) prepareJingles(ctx context.Context, logger *slog.Logger, dir string, format tts.WavFormat) *tts.Jingles {
 	jingles, err := p.Encoder.DecodeJingles(ctx, dir, format)
-	if err == nil {
-		err = validJinglePair(jingles)
-	}
 	if err != nil {
 		logger.Warn("jingle decode failed, shipping the episode without jingles (§8 縮退)",
+			slog.Any("error", err))
+		return nil
+	}
+	// Distinct message on purpose: here the decode SUCCEEDED and the result
+	// was refused. Reporting it as a decode failure would send whoever reads
+	// the log at ffmpeg instead of at the Encoder implementation.
+	if err := validJinglePair(jingles); err != nil {
+		logger.Warn("jingle decode returned an unusable pair, shipping the episode without jingles (§8 縮退)",
 			slog.Any("error", err))
 		return nil
 	}

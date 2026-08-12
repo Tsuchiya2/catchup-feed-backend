@@ -1034,6 +1034,13 @@ func (p *Pipeline) synthesize(ctx context.Context, logger *slog.Logger, dir stri
 	groups := make([][]string, 0, len(segments))
 	var format tts.WavFormat
 	var total time.Duration
+	// An engine returning unreadable headers returns them for every sentence,
+	// and an episode is hundreds of sentences. Warn once — the point is to
+	// name the cause, and the hundredth copy of the same line only buries it
+	// in the nightly log. The count of affected sentences is not worth
+	// carrying: the format is a per-run property, so one failure and all of
+	// them cost exactly the same thing (this run's jingles).
+	warnedBadHeader := false
 	for i, segment := range segments {
 		audios, err := p.TTS.SynthesizeScript(ctx, segment.Script)
 		if err != nil {
@@ -1043,14 +1050,16 @@ func (p *Pipeline) synthesize(ctx context.Context, logger *slog.Logger, dir stri
 		for j, audio := range audios {
 			if format.AudioFormat == 0 {
 				parsed, err := tts.ParseWavFormat(audio.Data)
-				if err != nil {
+				switch {
+				case err == nil:
+					format = parsed
+				case !warnedBadHeader:
 					// Logged where it happens: downstream the only symptom is
 					// DecodeJingles rejecting a zero WavFormat, which reads as
 					// "non-PCM target format tag 0" and hides the real cause.
+					warnedBadHeader = true
 					logger.Warn("VOICEVOX wav header unreadable — jingles will be skipped this run (§8)",
-						slog.Int("segment", i+1), slog.Any("error", err))
-				} else {
-					format = parsed
+						slog.Int("first_bad_segment", i+1), slog.Any("error", err))
 				}
 			}
 			path := filepath.Join(dir, fmt.Sprintf("seg_%03d_%03d.wav", i, j))
