@@ -112,7 +112,7 @@ make dev-down                 # 停止
 
 ### server + worker(ローカル / Pi)
 
-ルートの `compose.yml` は開発 Mac 用スタックで、本番 Pi の `deploy/compose.pi.yml` と同じサービス構成(`postgres` / `server` / `worker`、コンテナ名 `catchup-feed-*`)を持ちます(Pi での起動は `deploy/pi.md` 参照)。
+ルートの `compose.yml` が開発・本番共通のベース(`postgres` / `server` / `worker`、コンテナ名 `catchup-feed-*`)で、本番 Pi では `deploy/compose.pi.yml` を override として重ねます(`docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env up -d`。詳細は `deploy/pi.md`)。
 
 ```bash
 cp .env.example .env          # POSTGRES_PASSWORD / JWT_SECRET / ADMIN_PASSWORD_HASH は必須

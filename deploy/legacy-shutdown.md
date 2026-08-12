@@ -53,7 +53,7 @@ crontab -l          # 旧 catchup-feed 行を確認
 crontab -e          # 該当行を削除またはコメントアウト
 ```
 
-停止後 pulse が無事なことを確認: `docker compose -f ~/pulse/catchup-feed-backend/deploy/compose.pi.yml ps`(3コンテナ healthy)、公開フィードがスマホから取得できること。
+停止後 pulse が無事なことを確認: リポジトリルートで `docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env ps`(3コンテナ healthy)、公開フィードがスマホから取得できること。
 
 ## 4. Cloudflare Tunnel の旧ルート削除【ユーザー作業】
 

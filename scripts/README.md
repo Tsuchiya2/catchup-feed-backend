@@ -2,6 +2,8 @@
 
 This directory contains automation scripts for deployment, monitoring, and maintenance of the CatchUp Feed application.
 
+> **注記(現行 Pi 運用との関係)**: 現行 Pi の監視・バックアップは `deploy/scripts/` 側(`pi-health-check.sh` / `backup-pulse-db.sh`)が正であり、本ディレクトリは compose ベースの **legacy ユーティリティ**。Pi ではリポジトリルートに `.env` が無いため、`docker compose exec` / `ps` を使うスクリプト(backup / restore / health-check)はそのままでは動かない。
+
 ---
 
 ## Table of Contents
@@ -236,8 +238,8 @@ Setup Complete! Email system is ready.
 **Environment Variables**:
 
 ```bash
-POSTGRES_USER=catchup         # PostgreSQL username
-POSTGRES_DB=catchup           # Database name
+POSTGRES_USER=catchup-feed         # PostgreSQL username
+POSTGRES_DB=catchup-feed           # Database name
 EMAIL_ENABLED=true            # Enable/disable email
 EMAIL_FROM=...                # Sender email
 EMAIL_TO=...                  # Recipient email
@@ -286,10 +288,10 @@ Troubleshooting:
 ```bash
 # Restore compressed backup
 gunzip -c ~/backups/db_20240115_020005.sql.gz | \
-  docker compose exec -T postgres psql -U catchup
+  docker compose exec -T postgres psql -U catchup-feed
 
 # Restore uncompressed backup
-docker compose exec -T postgres psql -U catchup < ~/backups/db_20240115_020005.sql
+docker compose exec -T postgres psql -U catchup-feed < ~/backups/db_20240115_020005.sql
 ```
 
 **Cron Example**:
@@ -349,7 +351,7 @@ docker compose exec -T postgres psql -U catchup < ~/backups/db_20240115_020005.s
 
 **Monitored Services**:
 1. Docker daemon status
-2. Container health (app, worker, postgres)
+2. Container health (server, worker, postgres)
 3. PostgreSQL connectivity (`pg_isready`)
 4. API endpoint availability (HTTP health check)
 5. Worker process status
@@ -371,7 +373,7 @@ docker compose exec -T postgres psql -U catchup < ~/backups/db_20240115_020005.s
 **Environment Variables**:
 
 ```bash
-API_ENDPOINT=http://localhost:8080/health  # API health endpoint
+API_ENDPOINT=http://localhost:8090/health  # API health endpoint
 API_TIMEOUT=5                              # API timeout (seconds)
 EMAIL_ENABLED=true                         # Enable/disable email
 ```
@@ -382,20 +384,20 @@ EMAIL_ENABLED=true                         # Enable/disable email
 Subject: ❌ Health Check Failed on raspberrypi
 
 Failed Services (2):
-- app Container
+- server Container
 - API Endpoint
 
 All Services Status:
 ✓ Docker Daemon: Running
-✗ app Container: Not running (status: exited)
+✗ server Container: Not running (status: exited)
 ✓ worker Container: Running
 ✓ postgres Container: Running (health: healthy)
 ✗ API Endpoint: Connection failed
 ✓ Worker Process: Running
 
 Troubleshooting:
-1. Check container logs: docker compose logs --tail=50 app
-2. Restart failed services: docker compose restart app
+1. Check container logs: docker compose logs --tail=50 server
+2. Restart failed services: docker compose restart server
 3. Check service status: docker compose ps
 ```
 
@@ -602,8 +604,8 @@ All scripts use the following environment variables (defined in `.env`):
 ### Database Configuration
 
 ```bash
-POSTGRES_USER=catchup          # PostgreSQL username
-POSTGRES_DB=catchup            # Database name
+POSTGRES_USER=catchup-feed          # PostgreSQL username
+POSTGRES_DB=catchup-feed            # Database name
 POSTGRES_PASSWORD=...          # Database password
 ```
 
@@ -622,7 +624,7 @@ EMAIL_LOG_DIR=/var/log/catchup                 # Log directory
 ### Monitoring Configuration
 
 ```bash
-API_ENDPOINT=http://localhost:8080/health      # Health check endpoint
+API_ENDPOINT=http://localhost:8090/health      # Health check endpoint
 API_TIMEOUT=5                                  # API timeout (seconds)
 ```
 
@@ -631,6 +633,8 @@ API_TIMEOUT=5                                  # API timeout (seconds)
 ## Cron Schedule Recommendations
 
 ### Production Environment (Raspberry Pi 5)
+
+> **legacy**: 現行 Pi ではこの cron 構成は使わない(冒頭の注記のとおり、監視・バックアップは `deploy/scripts/` 側が正。Pi ではルート `.env` が無く exec/ps 系は動かない)。以下は compose ベース運用時代の参考値。
 
 ```cron
 # Email system is already configured, no need to re-run setup

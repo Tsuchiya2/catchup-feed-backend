@@ -81,15 +81,15 @@ fi
 
 # 接続中のクライアントを切断
 log_info "Disconnecting all clients..."
-docker compose exec -T postgres psql -U catchup -d postgres -c \
-    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'catchup' AND pid <> pg_backend_pid();" \
+docker compose exec -T postgres psql -U catchup-feed -d postgres -c \
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'catchup-feed' AND pid <> pg_backend_pid();" \
     || log_warn "Could not disconnect all clients"
 
 # データベースを削除して再作成
 log_info "Dropping and recreating database..."
-docker compose exec -T postgres psql -U catchup -d postgres <<-EOSQL
-    DROP DATABASE IF EXISTS catchup;
-    CREATE DATABASE catchup;
+docker compose exec -T postgres psql -U catchup-feed -d postgres <<-EOSQL
+    DROP DATABASE IF EXISTS "catchup-feed";
+    CREATE DATABASE "catchup-feed";
 EOSQL
 
 # リストア実行
@@ -98,7 +98,7 @@ log_info "Restoring from backup..."
 if [[ "$BACKUP_FILE" == *.gz ]]; then
     # gzip圧縮ファイル
     log_info "Decompressing and restoring..."
-    if gunzip -c "$BACKUP_FILE" | docker compose exec -T postgres psql -U catchup -d catchup; then
+    if gunzip -c "$BACKUP_FILE" | docker compose exec -T postgres psql -U catchup-feed -d catchup-feed; then
         log_success "Restore completed"
     else
         log_error "Restore failed!"
@@ -106,7 +106,7 @@ if [[ "$BACKUP_FILE" == *.gz ]]; then
     fi
 else
     # 非圧縮ファイル
-    if docker compose exec -T postgres psql -U catchup -d catchup < "$BACKUP_FILE"; then
+    if docker compose exec -T postgres psql -U catchup-feed -d catchup-feed < "$BACKUP_FILE"; then
         log_success "Restore completed"
     else
         log_error "Restore failed!"
@@ -116,17 +116,17 @@ fi
 
 # データベースサイズ確認
 log_info "Checking database size..."
-DB_SIZE=$(docker compose exec -T postgres psql -U catchup -d catchup -t -c \
-    "SELECT pg_size_pretty(pg_database_size('catchup'));" | tr -d ' ')
+DB_SIZE=$(docker compose exec -T postgres psql -U catchup-feed -d catchup-feed -t -c \
+    "SELECT pg_size_pretty(pg_database_size('catchup-feed'));" | tr -d ' ')
 log_info "Database size: $DB_SIZE"
 
 # テーブル数確認
-TABLE_COUNT=$(docker compose exec -T postgres psql -U catchup -d catchup -t -c \
+TABLE_COUNT=$(docker compose exec -T postgres psql -U catchup-feed -d catchup-feed -t -c \
     "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';" | tr -d ' ')
 log_info "Tables: $TABLE_COUNT"
 
 echo ""
 log_success "Database restored successfully!"
 log_warn "Please restart the application to ensure consistency"
-echo "  docker compose restart app worker"
+echo "  docker compose restart server worker"
 echo ""

@@ -24,8 +24,8 @@
 #   --no-email        Disable email notifications
 #
 # Environment Variables:
-#   POSTGRES_USER: PostgreSQL username (default: catchup)
-#   POSTGRES_DB: PostgreSQL database name (default: catchup)
+#   POSTGRES_USER: PostgreSQL username (default: catchup-feed)
+#   POSTGRES_DB: PostgreSQL database name (default: catchup-feed)
 #   EMAIL_ENABLED: Enable/disable email (default: true)
 #   EMAIL_FROM: Sender email address
 #   EMAIL_TO: Recipient email address
@@ -64,8 +64,8 @@ RETENTION_DAYS=7
 OUTPUT_DIR="${HOME}/backups"
 COMPRESS=true
 SEND_EMAIL=true
-POSTGRES_USER="${POSTGRES_USER:-catchup}"
-POSTGRES_DB="${POSTGRES_DB:-catchup}"
+POSTGRES_USER="${POSTGRES_USER:-catchup-feed}"
+POSTGRES_DB="${POSTGRES_DB:-catchup-feed}"
 
 # Log file
 LOG_FILE="${OUTPUT_DIR}/backup.log"

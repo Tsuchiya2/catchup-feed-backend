@@ -11,7 +11,7 @@ Mac が閉じている・電源が無い夜は文字起こしが**翌夜に持�
 
 - mac.md 1〜10章 完了(Homebrew / Tailscale / Ollama / radio / launchd 2本が動いている)
 - Pi 側が Phase 2 のコードで動いている(sources.kind マイグレーション+transcribe enqueue+§5.2b スイープ。
-  更新は pi.md 3章と同じ: `docker compose -f deploy/compose.pi.yml build && docker compose -f deploy/compose.pi.yml up -d`)
+  更新は pi.md 3章と同じ: `docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env up -d --build`)
 - catchup-feed-ai は main マージ済み: https://github.com/Tsuchiya2/catchup-feed-ai
 
 ---
@@ -308,7 +308,7 @@ Pi worker の毎時 cron が「content 有り・summary 無し」の記事を掃
 - **Postgres に繋がらない**(`connection refused` / タイムアウトで即死)
   1. Tailscale が動いているか: `tailscale status`(メニューバーのアプリが落ちていることがある)
   2. Pi に届くか: `ping <pi の MagicDNS 名>` / `nc -z <pi の MagicDNS 名> 5433`
-  3. Pi 側のコンテナ: `docker compose -f deploy/compose.pi.yml ps`(pi.md トラブル節)
+  3. Pi 側のコンテナ: `docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env ps`(pi.md トラブル節)
   4. どれでもなければ `~/pulse/.env` の DATABASE_URL(radio が動いているなら値は正しいはず)
 - **モデルのダウンロード失敗**(初回のみ。Hugging Face への到達性)
   ネットワーク回復後に再実行するだけ(部分DLは再開される)。ジョブは失敗しても attempts 3 の

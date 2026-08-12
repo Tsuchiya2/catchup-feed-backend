@@ -6,7 +6,7 @@
 #
 # Monitors:
 #   1. Docker daemon status
-#   2. Container health (app, worker, postgres)
+#   2. Container health (server, worker, postgres)
 #   3. PostgreSQL connectivity
 #   4. API endpoint availability
 #   5. Worker process status
@@ -44,7 +44,7 @@ EMAIL_FUNCTIONS="${SCRIPT_DIR}/lib/email-functions.sh"
 cd "$PROJECT_ROOT" || { echo "ERROR: Cannot change to project directory: ${PROJECT_ROOT}" >&2; exit 1; }
 
 # Environment variables (with defaults)
-API_ENDPOINT="${API_ENDPOINT:-http://localhost:8080/health}"
+API_ENDPOINT="${API_ENDPOINT:-http://localhost:8090/health}"
 API_TIMEOUT="${API_TIMEOUT:-5}"
 EMAIL_ENABLED="${EMAIL_ENABLED:-true}"
 
@@ -126,18 +126,18 @@ check_containers() {
     log_message "INFO" "Checking container health..."
 
     # List of containers to check
-    local containers=("app" "worker" "postgres")
+    local containers=("server" "worker" "postgres")
 
     for container in "${containers[@]}"; do
-        local container_name="catchup-${container}"
+        local container_name="catchup-feed-${container}"
 
         # Skip if container is postgres (different name format)
         if [ "$container" = "postgres" ]; then
-            container_name="catchup-postgres"
-        elif [ "$container" = "app" ]; then
-            container_name="catchup-server"
+            container_name="catchup-feed-postgres"
+        elif [ "$container" = "server" ]; then
+            container_name="catchup-feed-server"
         elif [ "$container" = "worker" ]; then
-            container_name="catchup-worker"
+            container_name="catchup-feed-worker"
         fi
 
         # Get container status
@@ -173,12 +173,12 @@ check_containers() {
 check_postgres() {
     log_message "INFO" "Checking PostgreSQL connectivity..."
 
-    if docker compose exec -T postgres pg_isready -U "${POSTGRES_USER:-catchup}" >/dev/null 2>&1; then
+    if docker compose exec -T postgres pg_isready -U "${POSTGRES_USER:-catchup-feed}" >/dev/null 2>&1; then
         add_check_result "PostgreSQL" "healthy" "Accepting connections"
         return 0
     else
         local error_msg
-        error_msg=$(docker compose exec -T postgres pg_isready -U "${POSTGRES_USER:-catchup}" 2>&1 || echo "Connection failed")
+        error_msg=$(docker compose exec -T postgres pg_isready -U "${POSTGRES_USER:-catchup-feed}" 2>&1 || echo "Connection failed")
         add_check_result "PostgreSQL" "unhealthy" "Not accepting connections: ${error_msg}"
         return 1
     fi
@@ -215,14 +215,14 @@ check_worker_process() {
     if docker compose ps worker --format json 2>/dev/null | grep -q "\"State\":\"running\""; then
         # Get container details
         local uptime
-        uptime=$(docker inspect --format='{{.State.Status}}' catchup-worker 2>/dev/null || echo "unknown")
+        uptime=$(docker inspect --format='{{.State.Status}}' catchup-feed-worker 2>/dev/null || echo "unknown")
         add_check_result "Worker Process" "healthy" "Running"
         return 0
     else
         local status
         local exit_code
         status=$(docker compose ps worker --format '{{.State}}' 2>/dev/null || echo "not found")
-        exit_code=$(docker inspect --format='{{.State.ExitCode}}' catchup-worker 2>/dev/null || echo "unknown")
+        exit_code=$(docker inspect --format='{{.State.ExitCode}}' catchup-feed-worker 2>/dev/null || echo "unknown")
         add_check_result "Worker Process" "unhealthy" "Not running (status: ${status}, exit code: ${exit_code})"
         return 1
     fi
@@ -290,10 +290,10 @@ Error Details:
     body+="
 Troubleshooting:
 1. Check container logs:
-   docker compose logs --tail=50 app worker
+   docker compose logs --tail=50 server worker
 
 2. Restart failed services:
-   docker compose restart app worker
+   docker compose restart server worker
 
 3. Check full service status:
    docker compose ps
@@ -302,7 +302,7 @@ Troubleshooting:
    docker info
 
 5. Check database connectivity:
-   docker compose exec postgres pg_isready -U catchup
+   docker compose exec postgres pg_isready -U catchup-feed
 
 6. View API health endpoint:
    curl -v ${API_ENDPOINT}
