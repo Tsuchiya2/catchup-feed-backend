@@ -405,6 +405,21 @@ func artworkRoutes() []artworkRoute {
 			path:         func(*fixture) string { return "/private/artwork.jpg" },
 			cacheControl: "public, max-age=86400",
 		},
+		// D-33(4): 正準でない {fp} も画像は返すが immutable は付かない。
+		// URL が内容に紐づいていない以上、1年 immutable の根拠がないため。
+		{
+			name:         "public fingerprinted with a stale fp",
+			handler:      public,
+			path:         func(f *fixture) string { return "/feeds/" + f.plaintext + "/artwork/deadbeef.jpg" },
+			cacheControl: "public, max-age=86400",
+			wantLookups:  1,
+		},
+		{
+			name:         "private fingerprinted with a stale fp",
+			handler:      private,
+			path:         func(*fixture) string { return "/private/artwork/deadbeef.jpg" },
+			cacheControl: "public, max-age=86400",
+		},
 	}
 }
 
@@ -418,8 +433,9 @@ func TestArtwork_Serves(t *testing.T) {
 			require.Equal(t, http.StatusOK, rec.Code)
 			assert.Equal(t, "image/jpeg", rec.Header().Get("Content-Type"))
 			assert.Equal(t, fmt.Sprint(len(artworkJPEG)), rec.Header().Get("Content-Length"))
-			// フィンガープリント付き URL だけが immutable。素の /artwork.jpg は
-			// 中身が変わりうるので 1 日で切れる。
+			// D-33(4): immutable が付くのは現在の fingerprint と一致する
+			// 正準 URL だけ。旧 /artwork.jpg も陳腐化した {fp} も、URL が
+			// 内容に紐づいていないので 1 日で切れる。
 			assert.Equal(t, tt.cacheControl, rec.Header().Get("Cache-Control"))
 			assert.Equal(t, artworkETag, rec.Header().Get("ETag"))
 			assert.Equal(t, artworkJPEG, rec.Body.Bytes())
@@ -458,6 +474,11 @@ func TestArtwork_ConditionalGet(t *testing.T) {
 				require.Equal(t, c.wantStatus, rec.Code)
 				assert.Equal(t, artworkETag, rec.Header().Get("ETag"),
 					"304 でも検証子は返す")
+				// 再検証パスでもキャッシュ方針の出し分けは維持される
+				// (304 は既存のキャッシュエントリの TTL を更新するため、
+				// ここで immutable / 86400 を取り違えると 200 経路の
+				// 出し分けが無意味になる)。
+				assert.Equal(t, route.cacheControl, rec.Header().Get("Cache-Control"))
 				if c.wantStatus == http.StatusNotModified {
 					assert.Empty(t, rec.Body.Bytes(), "304 must not carry the image")
 				} else {
@@ -469,8 +490,9 @@ func TestArtwork_ConditionalGet(t *testing.T) {
 	}
 }
 
-// 縮退許容: 古いフィンガープリントを握ったアプリに 404 を返さない。URL が
-// 古くても現在の画像が返るほうが、チャンネル画像が消えるより良い。
+// D-33(3) 縮退許容: 古いフィンガープリントを握ったアプリに 404 を返さない。
+// URL が古くても現在の画像が返るほうが、チャンネル画像が消えるより良い。
+// ただし D-33(4) により、そこに immutable は付かない。
 func TestArtwork_StaleFingerprintServesCurrentImage(t *testing.T) {
 	files := []string{"deadbeef.jpg", "00000000.jpg", "artwork.jpg", "whatever"}
 	for _, file := range files {
@@ -481,11 +503,57 @@ func TestArtwork_StaleFingerprintServesCurrentImage(t *testing.T) {
 			require.Equal(t, http.StatusOK, pub.Code)
 			assert.Equal(t, artworkJPEG, pub.Body.Bytes())
 			assert.Equal(t, artworkETag, pub.Header().Get("ETag"), "検証子は常に現在の画像のもの")
+			assert.Equal(t, "public, max-age=86400", pub.Header().Get("Cache-Control"),
+				"正準でない URL に immutable を付けない")
 
 			priv := f.get(t, f.server.PrivateHandler(), "/private/artwork/"+file, nil)
 			require.Equal(t, http.StatusOK, priv.Code)
 			assert.Equal(t, artworkJPEG, priv.Body.Bytes())
+			assert.Equal(t, "public, max-age=86400", priv.Header().Get("Cache-Control"))
 
+			assert.Empty(t, f.accessLogs.records)
+		})
+	}
+}
+
+// http.ServeContent 委譲の副作用として artwork にも Range が効く(D-33 の
+// 「害はない」判断のピン留め)。mp3 側の C-10 と同じ形で検証する。
+func TestArtwork_RangeRequest(t *testing.T) {
+	for _, route := range artworkRoutes() {
+		t.Run(route.name, func(t *testing.T) {
+			f := newFixture(t, Config{})
+
+			rec := f.get(t, route.handler(f), route.path(f), map[string]string{"Range": "bytes=0-9"})
+
+			require.Equal(t, http.StatusPartialContent, rec.Code)
+			assert.Equal(t, "bytes", rec.Header().Get("Accept-Ranges"))
+			assert.Equal(t, fmt.Sprintf("bytes 0-9/%d", len(artworkJPEG)), rec.Header().Get("Content-Range"))
+			assert.Equal(t, artworkJPEG[:10], rec.Body.Bytes())
+			assert.Equal(t, artworkETag, rec.Header().Get("ETag"))
+			assert.Empty(t, f.accessLogs.records)
+		})
+	}
+}
+
+// ポッドキャストアプリはアートワークに HEAD を投げることがある。GET
+// パターンが HEAD も拾うのは Go 1.22+ の ServeMux の仕様であり、将来
+// ハンドラ側に r.Method ガードが入ると静かに壊れるため固定する。
+func TestArtwork_HeadRequest(t *testing.T) {
+	for _, route := range artworkRoutes() {
+		t.Run(route.name, func(t *testing.T) {
+			f := newFixture(t, Config{})
+
+			req := httptest.NewRequest(http.MethodHead, route.path(f), nil)
+			rec := httptest.NewRecorder()
+			route.handler(f).ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, "image/jpeg", rec.Header().Get("Content-Type"))
+			assert.Equal(t, fmt.Sprint(len(artworkJPEG)), rec.Header().Get("Content-Length"),
+				"HEAD でも本体サイズを申告する")
+			assert.Equal(t, route.cacheControl, rec.Header().Get("Cache-Control"))
+			assert.Equal(t, artworkETag, rec.Header().Get("ETag"))
+			assert.Empty(t, rec.Body.Bytes(), "HEAD must not carry the image")
 			assert.Empty(t, f.accessLogs.records)
 		})
 	}

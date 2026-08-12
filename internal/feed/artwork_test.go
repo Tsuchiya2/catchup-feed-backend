@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"image"
+	"image/color"
 	_ "image/jpeg" // registers the JPEG decoder for image.DecodeConfig
 	"testing"
 
@@ -13,24 +14,35 @@ import (
 )
 
 // TestArtworkAsset_MeetsPodcastRequirements pins the embedded asset
-// against the podcast-app cover-art rules: a square JPEG of at least
-// 1400x1400 (Apple Podcasts' minimum). Oversized/undersized art is simply
+// against the cover-art rules in docs/podcast-artwork.md: a square RGB
+// JPEG between 1400x1400 and 3000x3000. Art that violates them is simply
 // ignored by the apps rather than reported as an error, so the check has
 // to live in CI.
+//
+// The bounds are deliberately a range, not the current 1536x1536: moving
+// to another size inside Apple's window is a legitimate change that this
+// test must not veto.
 //
 // What it deliberately does NOT check is composition. A square canvas
 // whose artwork is letterboxed inside black bars satisfies every
 // automated rule while wasting a third of the thumbnail — exactly the
-// 2026-08-12 defect this asset was re-cropped to fix. Judging that stays
-// a human review step; only dimensions and format are machine-checkable.
+// 2026-08-12 defect this asset was re-cropped to fix (D-34). Judging that
+// stays a human review step; only dimensions, format and colour space are
+// machine-checkable.
 func TestArtworkAsset_MeetsPodcastRequirements(t *testing.T) {
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(artworkJPEG))
 	require.NoError(t, err, "the embedded artwork must be a decodable image")
 
-	assert.Equal(t, "jpeg", format, "the RSS enclosure type and Content-Type both claim JPEG")
-	assert.Equal(t, cfg.Height, cfg.Width, "cover art must be square")
+	assert.Equal(t, "jpeg", format, "the RSS image tags and Content-Type both claim JPEG")
+	assert.Equal(t, cfg.Width, cfg.Height, "cover art must be square")
 	assert.GreaterOrEqual(t, cfg.Width, 1400, "Apple Podcasts requires at least 1400x1400")
-	assert.Equal(t, 1536, cfg.Width, "§5.1 で規定した 1536x1536(縮小事故の検知)")
+	assert.LessOrEqual(t, cfg.Width, 3000, "Apple Podcasts caps cover art at 3000x3000")
+
+	// 色空間 RGB の要件。CMYK の JPEG は Apple に弾かれる。image/jpeg は
+	// RGB エンコードの JPEG を YCbCr として報告し、CMYK なら
+	// color.CMYKModel、グレースケールなら color.GrayModel を返す。
+	assert.Equal(t, color.YCbCrModel, cfg.ColorModel,
+		"cover art must be RGB — CMYK is rejected by Apple Podcasts")
 }
 
 // TestArtworkFingerprint_DerivedFromEmbeddedBytes is the regression guard

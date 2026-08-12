@@ -54,14 +54,17 @@ func artworkFileName() string {
 }
 
 const (
-	// artworkCacheControl applies to the legacy fixed /artwork.jpg URL,
-	// whose content can change under it. One day is long enough to make
-	// refetches rare, short enough that a rebuild propagates.
+	// artworkCacheControl applies wherever the URL is not bound to the
+	// bytes it returns: the legacy fixed /artwork.jpg, and any
+	// fingerprinted URL carrying a fingerprint other than the current one.
+	// One day is long enough to make refetches rare, short enough that a
+	// rebuild propagates.
 	artworkCacheControl = "public, max-age=86400"
 
-	// artworkImmutableCacheControl applies to the fingerprinted URL. The
-	// URL is bound to the content, so it can be cached forever: a new
-	// image arrives as a new URL, never as a new body at the old one.
+	// artworkImmutableCacheControl applies to the one canonical URL whose
+	// fingerprint matches the bytes served. That URL is bound to its
+	// content, so it can be cached forever: a new image arrives as a new
+	// URL, never as a new body at the old one.
 	artworkImmutableCacheControl = "public, max-age=31536000, immutable"
 )
 
@@ -78,13 +81,23 @@ func (s *Server) handleArtwork(w http.ResponseWriter, r *http.Request) {
 // content-addressed URL (/feeds/{token}/artwork/{file},
 // /private/artwork/{file}).
 //
-// The {file} segment is deliberately NOT checked against the current
-// fingerprint: an app holding a stale URL gets the current image rather
-// than a 404 (縮退許容 — a slightly wrong cache key beats a missing
-// image). The segment exists only to make the URL change when the bytes
-// change.
+// The {file} segment is deliberately NOT checked for serving purposes: an
+// app holding a stale URL gets the current image rather than a 404
+// (D-33(3), 縮退許容 — a slightly wrong cache key beats a missing image).
+//
+// It IS checked to pick the caching policy (D-33(4)). "immutable" is only
+// justified where the URL is bound to the content, which holds for the
+// current fingerprint alone; every other {file} value is just another
+// alias for whatever the binary happens to embed today, so it gets the
+// same one-day TTL as the legacy fixed URL. This also stops a token
+// holder from minting unbounded distinct URLs that each pin a year-long
+// edge-cache entry.
 func (s *Server) handleArtworkFingerprinted(w http.ResponseWriter, r *http.Request) {
-	s.serveArtwork(w, r, artworkImmutableCacheControl)
+	cacheControl := artworkCacheControl
+	if r.PathValue("file") == artworkFileName() {
+		cacheControl = artworkImmutableCacheControl
+	}
+	s.serveArtwork(w, r, cacheControl)
 }
 
 // serveArtwork writes the artwork with the given caching policy.
