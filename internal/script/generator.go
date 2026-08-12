@@ -23,24 +23,26 @@ type LLM interface {
 // parse-free: whatever a provider returns is the script verbatim, so the
 // Ollama fallback needs no structured-output discipline.
 type Generator struct {
-	llm      LLM
-	showName string
-	logger   *slog.Logger
+	llm    LLM
+	logger *slog.Logger
 }
 
-// NewGenerator creates a Generator. showName appears in every prompt as the
-// program name; a nil logger falls back to slog.Default().
-func NewGenerator(llm LLM, showName string, logger *slog.Logger) *Generator {
+// NewGenerator creates a Generator; a nil logger falls back to slog.Default().
+//
+// 番組名は引数に取らない: 台本に出る番組名は format.go の spokenShowName に
+// 固定されており、RADIO_SHOW_NAME(ASCII、エピソードタイトルと ID3 用)を
+// プロンプトへ流し込む経路をここで断っている (D-37 (3))。
+func NewGenerator(llm LLM, logger *slog.Logger) *Generator {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Generator{llm: llm, showName: showName, logger: logger}
+	return &Generator{llm: llm, logger: logger}
 }
 
 // GenerateEpisode produces the ordered segments for one episode: intro,
-// one news segment per featured article (with a transition referencing the
-// previous corner — つなぎ文), and outro. Positions are 1-based. Any LLM
-// failure aborts the whole episode (§8: 縮退はエピソード単位 — 当日スキップ).
+// one news segment per featured article (each opened by the fixed corner
+// 定型句 — D-37 (6): つなぎ文は廃止), and outro. Positions are 1-based. Any
+// LLM failure aborts the whole episode (§8: 縮退はエピソード単位 — 当日スキップ).
 //
 // quizCount > 0 piggybacks the Phase 3 learning-item request onto the
 // outro call (D-19: 相乗り、LLM 呼び出し回数の増分ゼロ — Phase 3 §12-3):
@@ -55,14 +57,18 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 		return nil, nil, fmt.Errorf("script: no articles to script")
 	}
 
-	dateStr := formatDate(date)
+	g.warnUnknownCorners(ctx, articles)
+
+	dateStr := spokenDate(date)
+	cornerList := cornerNames(articles)
 	segments := make([]*entity.Segment, 0, len(articles)+2)
 
 	introPrompt, err := renderPrompt("intro.tmpl", introData{
-		ShowName:     g.showName,
 		Date:         dateStr,
-		Corners:      corners(articles),
+		Corners:      cornerList,
 		ArticleCount: len(articles),
+		Lead:         openingLead(date),
+		Handoff:      openingHandoff,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -78,19 +84,15 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 	})
 
 	for i, article := range articles {
-		prevTitle := ""
-		if i > 0 {
-			prevTitle = articles[i-1].Title
-		}
+		corner := cornerName(article.Category)
 		newsPrompt, err := renderPrompt("news.tmpl", newsData{
-			ShowName:  g.showName,
-			Category:  article.Category,
-			Source:    article.SourceName,
-			Title:     article.Title,
-			Summary:   article.Summary, // C-12: 要約のみ。原文は渡らない
-			PrevTitle: prevTitle,
-			Position:  i + 1,
-			Total:     len(articles),
+			Corner:   corner,
+			Source:   article.SourceName,
+			Title:    article.Title,
+			Summary:  article.Summary, // C-12: 要約のみ。原文は渡らない
+			Lead:     newsLead(articles, i, corner),
+			Position: i + 1,
+			Total:    len(articles),
 		})
 		if err != nil {
 			return nil, nil, err
@@ -108,15 +110,12 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 		})
 	}
 
-	titles := make([]string, len(articles))
-	for i, a := range articles {
-		titles[i] = a.Title
-	}
 	outroScript, drafts, err := g.generateOutro(ctx, outroData{
-		ShowName: g.showName,
-		Date:     dateStr,
-		Titles:   titles,
-		Quiz:     quizPrompt(articles, quizCount),
+		Date:         dateStr,
+		Corners:      cornerList,
+		ArticleCount: len(articles),
+		SignOff:      closingSignOff,
+		Quiz:         quizPrompt(articles, quizCount),
 	}, articles, quizCount)
 	if err != nil {
 		return nil, nil, err
@@ -255,6 +254,23 @@ func (g *Generator) generateOutro(ctx context.Context, data outroData, articles 
 		slog.Int("script_chars", len([]rune(body))),
 		slog.Int("learning_items", len(drafts)))
 	return body, drafts, nil
+}
+
+// warnUnknownCorners logs the category slugs missing from the spoken-name
+// table (D-37 (4)). Unknown slugs fall through to the raw slug — i.e. ASCII
+// reaches the TTS — so this WARN is the signal to add a row to
+// cornerNameBySlug. Deliberately not an error: a source category added from
+// the dashboard must never take the broadcast down (§8).
+func (g *Generator) warnUnknownCorners(ctx context.Context, articles []repository.RadioArticle) {
+	seen := make(map[string]bool, len(articles))
+	for _, a := range articles {
+		if isKnownCorner(a.Category) || seen[a.Category] {
+			continue
+		}
+		seen[a.Category] = true
+		g.logger.WarnContext(ctx, "unknown source category, corner name falls back to the raw slug (D-37 (4): 対応表に追記が必要)",
+			slog.String("category", a.Category))
+	}
 }
 
 func (g *Generator) generate(ctx context.Context, kind, prompt string) (string, error) {

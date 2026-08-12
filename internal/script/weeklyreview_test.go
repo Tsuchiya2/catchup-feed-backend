@@ -1,6 +1,7 @@
 package script
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -9,13 +10,24 @@ import (
 	"catchup-feed/internal/learning"
 )
 
+// TestBuildWeeklyReview walks every combination of the three materials and
+// pins the full read (D-37: 文言は format.go、組み立てはここ). Full-string
+// equality rather than Contains: 「いっぽうで」「また、」のような接続は直前の
+// 文の有無で変わるので、欠けた組み合わせで日本語が壊れていないことは全文でしか
+// 担保できない。
+//
+// 卒業の文が「今週学んだ項目」の部分集合を主張しないことも、ここで固定して
+// いる(format.go weeklyReviewGraduated 参照: 2つの材料は母集合が違い、既定の
+// ラダーでは必ず素集合になる)。「このうちN個が」に戻すとこのテストが落ちる。
 func TestBuildWeeklyReview(t *testing.T) {
+	const lead = "ここで、今週の学びを振り返ります。"
+	const closing = "来週も少しずつ続けていきましょう。"
+
 	tests := []struct {
-		name         string
-		material     learning.WeeklyReview
-		wantOK       bool
-		wantContains []string
-		wantAbsent   []string
+		name     string
+		material learning.WeeklyReview
+		wantOK   bool
+		want     string
 	}{
 		{
 			name:     "empty week is skipped (§7.4: 空の振り返りを作らない)",
@@ -23,13 +35,52 @@ func TestBuildWeeklyReview(t *testing.T) {
 			wantOK:   false,
 		},
 		{
-			name: "concepts only",
+			name:     "concepts only",
+			material: learning.WeeklyReview{Concepts: []string{"コンテキスト伝播", "select 文"}},
+			wantOK:   true,
+			want:     lead + "今週学んだ項目は、コンテキスト伝播、select 文 の2つです。" + closing,
+		},
+		{
+			name:     "graduations only — 先行文が無いので接続詞を落とす",
+			material: learning.WeeklyReview{GraduatedCount: 1},
+			wantOK:   true,
+			want:     lead + "今週は1つの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
+		},
+		{
+			name:     "reintroduction only — 逆接の「いっぽうで」を落とす",
+			material: learning.WeeklyReview{Reintroduced: "忘れた項目"},
+			wantOK:   true,
+			want:     lead + "「忘れた項目」は一度忘れてしまったため、もう一度おさらいのリストに戻しています。" + closing,
+		},
+		{
+			name: "concepts + graduations",
 			material: learning.WeeklyReview{
-				Concepts: []string{"コンテキスト伝播", "select 文"},
+				Concepts:       []string{"A", "B", "C"},
+				GraduatedCount: 2,
 			},
-			wantOK:       true,
-			wantContains: []string{"今週の学びを振り返って", "2個の項目", "コンテキスト伝播、select 文", "来週も"},
-			wantAbsent:   []string{"卒業", "忘れて"},
+			wantOK: true,
+			want: lead + "今週学んだ項目は、A、B、C の3つです。" +
+				"また、2つの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
+		},
+		{
+			name: "concepts + reintroduction",
+			material: learning.WeeklyReview{
+				Concepts:     []string{"A"},
+				Reintroduced: "難しい概念",
+			},
+			wantOK: true,
+			want: lead + "今週学んだ項目は、A の1つです。" +
+				"いっぽうで「難しい概念」は一度忘れてしまったため、もう一度おさらいのリストに戻しています。" + closing,
+		},
+		{
+			name: "graduations + reintroduction",
+			material: learning.WeeklyReview{
+				GraduatedCount: 2,
+				Reintroduced:   "難しい概念",
+			},
+			wantOK: true,
+			want: lead + "今週は2つの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" +
+				"いっぽうで「難しい概念」は一度忘れてしまったため、もう一度おさらいのリストに戻しています。" + closing,
 		},
 		{
 			name: "concepts + graduations + reintroduction",
@@ -39,29 +90,19 @@ func TestBuildWeeklyReview(t *testing.T) {
 				Reintroduced:   "難しい概念",
 			},
 			wantOK: true,
-			wantContains: []string{
-				"3個の項目", "A、B、C",
-				"2個の項目", "卒業",
-				"「難しい概念」", "忘れてしまった",
-			},
+			want: lead + "今週学んだ項目は、A、B、C の3つです。" +
+				"また、2つの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" +
+				"いっぽうで「難しい概念」は一度忘れてしまったため、もう一度おさらいのリストに戻しています。" + closing,
 		},
 		{
-			name: "graduations only, no items learned this week",
+			name: "double-digit week switches the counter (「10つ」と読ませない)",
 			material: learning.WeeklyReview{
-				GraduatedCount: 1,
+				Concepts:       []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"},
+				GraduatedCount: 10,
 			},
-			wantOK:       true,
-			wantContains: []string{"1個の項目", "卒業", "来週も"},
-			wantAbsent:   []string{"今週は全部で"}, // concepts sentence omitted
-		},
-		{
-			name: "reintroduction only",
-			material: learning.WeeklyReview{
-				Reintroduced: "忘れた項目",
-			},
-			wantOK:       true,
-			wantContains: []string{"「忘れた項目」", "もう一度おさらい"},
-			wantAbsent:   []string{"個の項目", "卒業"},
+			wantOK: true,
+			want: lead + "今週学んだ項目は、A、B、C、D、E、F、G、H、I、J の10個です。" +
+				"また、10個の項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
 		},
 	}
 	for _, tt := range tests {
@@ -72,15 +113,41 @@ func TestBuildWeeklyReview(t *testing.T) {
 				assert.Empty(t, body)
 				return
 			}
-			for _, s := range tt.wantContains {
-				assert.Contains(t, body, s)
-			}
-			for _, s := range tt.wantAbsent {
-				assert.NotContains(t, body, s)
-			}
+			assert.Equal(t, tt.want, body)
 			// The script is a clean read — no leftover template tokens.
 			assert.NotContains(t, body, "%!")
 			assert.True(t, strings.HasSuffix(body, "。"), "ends on a full stop for clean TTS")
+			assert.NotContains(t, body, "！", "アナウンサー調: 感嘆符を使わない (D-37 (2))")
+			assert.NotContains(t, body, "このうち",
+				"卒業した項目は「今週学んだ項目」の部分集合ではない (format.go weeklyReviewGraduated)")
+		})
+	}
+}
+
+// TestWeeklyReviewGraduatedVariesOnlyByOpening fixes the invariant behind the
+// B-1 修正 as structure rather than as a banned word: afterConcepts が変えて
+// よいのは【文頭だけ】で、事実を述べる部分は両分岐で1文字も違わない。
+//
+// 語句の NotContains(「このうち」)は「そのうち」「うち2つが」と書き換えれば
+// すり抜けるが、この等式は文頭以外に差分を入れた時点で必ず落ちる。卒業件数が
+// 「今週学んだ項目」の部分集合であるかのような修飾は、どんな言い換えであれ
+// 本文側の差分になるため、ここで止まる。
+func TestWeeklyReviewGraduatedVariesOnlyByOpening(t *testing.T) {
+	// 文頭そのものも固定する(片方の文頭に事実を混ぜる逃げ道を塞ぐ)。
+	assert.Equal(t, "また、", weeklyReviewGraduatedOpening(true),
+		"concepts の文に続くときは接続詞だけで受ける(「今週」の3連を避ける)")
+	assert.Equal(t, "今週は", weeklyReviewGraduatedOpening(false),
+		"先行文が無いときはこの文が週の範囲を示す")
+
+	for _, n := range []int{1, 2, 9, 10} {
+		t.Run(fmt.Sprintf("%d件", n), func(t *testing.T) {
+			body := weeklyReviewGraduatedBody(n)
+			assert.Equal(t, weeklyReviewGraduatedOpening(true)+body, weeklyReviewGraduated(n, true))
+			assert.Equal(t, weeklyReviewGraduatedOpening(false)+body, weeklyReviewGraduated(n, false))
+			assert.Equal(t,
+				strings.TrimPrefix(weeklyReviewGraduated(n, true), weeklyReviewGraduatedOpening(true)),
+				strings.TrimPrefix(weeklyReviewGraduated(n, false), weeklyReviewGraduatedOpening(false)),
+				"afterConcepts は文頭の選択にしか使えない — 事実部分は両分岐で同一")
 		})
 	}
 }

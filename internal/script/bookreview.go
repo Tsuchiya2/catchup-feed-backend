@@ -58,29 +58,32 @@ const bookQuizMarker = "===書籍クイズ==="
 // (private) text — this prompt is only ever sent to the local Ollama model by
 // the type of BookReviewGenerator.llm (§12-4), never to a cloud provider.
 type bookReviewData struct {
-	ShowName string
-	Title    string
-	Chunks   []BookChunk
-	Marker   string
+	programFormat
+	Title  string
+	Chunks []BookChunk
+	Lead   string // format.go のコーナー導入定型句 (D-37 (9))
+	Marker string
 }
 
 // BookReviewGenerator produces the §7.3 book_review segment (and, riding on
 // the same local call, the §5.3 book quiz) from book_chunks. It holds an
 // OllamaLLM, so the cloud fallback chain is structurally unreachable here.
 type BookReviewGenerator struct {
-	llm      OllamaLLM
-	showName string
-	logger   *slog.Logger
+	llm    OllamaLLM
+	logger *slog.Logger
 }
 
 // NewBookReviewGenerator creates a generator over the given LOCAL model. Pass
 // a *summarizer.Ollama — the interface makes it impossible to pass the cloud
 // chain (§12-4). A nil logger falls back to slog.Default().
-func NewBookReviewGenerator(llm OllamaLLM, showName string, logger *slog.Logger) *BookReviewGenerator {
+//
+// NewGenerator と同じく番組名は引数に取らない: 読み上げ用の番組名は
+// format.go に固定されている (D-37 (3))。
+func NewBookReviewGenerator(llm OllamaLLM, logger *slog.Logger) *BookReviewGenerator {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &BookReviewGenerator{llm: llm, showName: showName, logger: logger}
+	return &BookReviewGenerator{llm: llm, logger: logger}
 }
 
 // Generate renders the book_review script and one book quiz from chunks of
@@ -95,10 +98,10 @@ func (g *BookReviewGenerator) Generate(ctx context.Context, bookTitle string, ch
 		return BookReviewResult{}, fmt.Errorf("script: book_review: no chunks")
 	}
 	prompt, err := renderPrompt("bookreview.tmpl", bookReviewData{
-		ShowName: g.showName,
-		Title:    bookTitle,
-		Chunks:   chunks,
-		Marker:   bookQuizMarker,
+		Title:  bookTitle,
+		Chunks: chunks,
+		Lead:   bookReviewLead(),
+		Marker: bookQuizMarker,
 	})
 	if err != nil {
 		return BookReviewResult{}, err

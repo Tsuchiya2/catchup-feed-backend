@@ -59,7 +59,7 @@ Go 1.26 の単一モジュールで、**3つのバイナリ**を持ちます。�
 [worker/Pi]  毎時       : クロール → articles 挿入 → 要約 → summaries 更新
 [radio/Mac]  04:30 JST  : 当日分エピソード生成
    1. 対象記事選定(前回エピソード以降の要約済み記事)
-   2. 台本生成(LLM): セグメントごとの読み上げ原稿+つなぎ文
+   2. 台本生成(LLM): セグメントごとの読み上げ原稿(番組の言い回し・定型句は `internal/script/format.go` に集約 — D-37)
    3. VOICEVOX でセグメント別に合成 → ffmpeg で結合・mp3 化(64kbps mono)
    4. rsync で Pi の episodes/ へ転送、episodes / segments を INSERT
       → jobs に regenerate_feed / notify_episode を積む
@@ -189,7 +189,7 @@ go build -o radio ./cmd/radio
 
 | 変数 | 説明 |
 |---|---|
-| `RADIO_SHOW_NAME` | 番組名 |
+| `RADIO_SHOW_NAME` | 番組名(エピソードタイトルと ID3 タグ用。**台本の読み上げ名は連動せず** `internal/script/format.go` に固定 — D-37) |
 | `RADIO_MAX_ARTICLES` | 1エピソードの最大記事数(既定 8) |
 | `RADIO_EPISODES_DIR` | Mac 側の一時生成ディレクトリ(既定 `/data/episodes`) |
 | `RADIO_RSYNC_DEST` / `RADIO_RSYNC_PATH` | Pi への rsync 転送先(空ならローカル配置) |
@@ -200,6 +200,11 @@ go build -o radio ./cmd/radio
 | `VOICEVOX_SPEED_SCALE` / `VOICEVOX_TIMEOUT` | 話速 / 合成タイムアウト |
 | `FFMPEG_PATH` | ffmpeg のパス |
 | `BOOK_REVIEW_OLLAMA_MODEL` / `BOOK_REVIEW_CHUNKS` | 書籍コーナー(私的データ)のローカルモデル・チャンク数 |
+
+> **ソースのカテゴリを増やしたら `internal/script/format.go` の `cornerNameBySlug` に1行足すこと。**
+> `sources.category` はダッシュボードから自由入力でき、DB の CHECK 制約も無い。対応表に無いスラッグは
+> 読み上げコーナー名としてそのまま使われる(= 英字がそのまま音声になる)。当日の radio ログに
+> `unknown source category` の WARN が出るので、それを見て追記する。
 
 ### 学習ループ(Phase 3)
 

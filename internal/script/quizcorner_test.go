@@ -34,7 +34,9 @@ func TestBuildQuizCorner(t *testing.T) {
 
 	t.Run("lead embeds the item count, no LLM involved (§7.2)", func(t *testing.T) {
 		corner := BuildQuizCorner(cornerItems())
-		assert.Contains(t, corner.Lead, "復習のコーナー")
+		// 文言そのものは format_test.go の TestQuizCornerLead が全文で固定
+		// している。ここで見るのは配線 — 問題数が項目数から来ていること。
+		assert.Equal(t, quizCornerLead(2), corner.Lead)
 		assert.Contains(t, corner.Lead, "2問")
 	})
 
@@ -87,17 +89,21 @@ func TestAppendQuizShowNotes(t *testing.T) {
 	})
 }
 
+// TestQuizOnlyTemplates pins the 記事ゼロの日 reads: same kana program name and
+// same opening/closing shape as a normal episode (D-37), zero LLM calls.
 func TestQuizOnlyTemplates(t *testing.T) {
-	date := time.Date(2026, 7, 5, 4, 30, 0, 0, time.UTC)
+	date := time.Date(2026, 7, 5, 4, 30, 0, 0, time.UTC) // 日曜日
 
-	intro := QuizOnlyIntro("pulse", date)
-	assert.Contains(t, intro, "pulse")
-	assert.Contains(t, intro, "2026年7月5日")
-	assert.Contains(t, intro, "おさらい")
+	intro := QuizOnlyIntro(date)
+	assert.Equal(t,
+		"おはようございます。キャッチアップフィード、7月5日日曜日の放送です。今朝は新しい記事のお届けはありません。かわりに、これまでの放送のおさらいをお届けします。",
+		intro)
+	assert.True(t, strings.HasPrefix(intro, openingLead(date)),
+		"通常回と同じ冒頭定型句で始まる")
 
-	outro := QuizOnlyOutro("pulse")
-	assert.Contains(t, outro, "pulse")
-	assert.Contains(t, outro, "以上です")
+	outro := QuizOnlyOutro()
+	assert.Equal(t, "今日のおさらいは以上です。キャッチアップフィード、また明日お会いしましょう。", outro)
+	assert.True(t, strings.HasSuffix(outro, signOff), "締めの署名は通常回と共有する")
 
 	assert.NotEmpty(t, QuizOnlyShowNotesBase())
 }

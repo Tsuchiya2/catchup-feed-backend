@@ -17,8 +17,12 @@ const (
 	// 初期値 8。超過分はショーノートにリンクのみ).
 	defaultMaxArticles = 8
 
-	// defaultShowName is the program name used in titles, prompts and ID3
-	// tags.
+	// defaultShowName is the program name used in episode titles and ID3
+	// tags — NOT in the script. 台本に出る読み上げ用の番組名は
+	// script.spokenShowName(「キャッチアップフィード」)に固定されており、
+	// この値とは連動しない (D-37 (3): ASCII を TTS に渡さない / エピソード
+	// タイトルは過去回との連続性を優先)。番組を改名するときは
+	// RADIO_SHOW_NAME と internal/script/format.go の両方を直すこと。
 	defaultShowName = "catchup-feed"
 
 	// defaultTimezone anchors the broadcast day (§3.3: 04:30 JST).
@@ -57,7 +61,9 @@ const bookReviewEstimate = 3 * time.Minute
 
 // Config holds the radio batch settings.
 type Config struct {
-	// ShowName is the program name (RADIO_SHOW_NAME).
+	// ShowName is the program name for episode titles and ID3 tags
+	// (RADIO_SHOW_NAME). 台本には渡らない — 読み上げ用の番組名は
+	// internal/script/format.go 側の固定値 (D-37 (3), defaultShowName 参照)。
 	ShowName string
 	// MaxArticles caps on-air articles per episode (RADIO_MAX_ARTICLES).
 	MaxArticles int
@@ -96,7 +102,8 @@ type Config struct {
 
 // LoadConfig reads the radio batch settings from environment variables:
 //
-//   - RADIO_SHOW_NAME: program name (default "catchup-feed")
+//   - RADIO_SHOW_NAME: program name for episode titles / ID3 (default
+//     "catchup-feed"; 読み上げ名は連動しない — D-37 (3))
 //   - RADIO_MAX_ARTICLES: on-air article cap (default 8, §6-1)
 //   - RADIO_TIMEZONE: broadcast-day timezone (default Asia/Tokyo)
 //   - RADIO_EPISODES_DIR: Pi-local episodes dir for audio_path (default /data/episodes)

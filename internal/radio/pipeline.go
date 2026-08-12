@@ -392,9 +392,9 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 
 	corner := script.BuildQuizCorner(dueItems)
 	introSeg := &entity.Segment{Position: 1, Kind: entity.SegmentKindIntro,
-		Script: script.QuizOnlyIntro(p.Config.ShowName, now)}
+		Script: script.QuizOnlyIntro(now)}
 	outroSeg := &entity.Segment{Kind: entity.SegmentKindOutro,
-		Script: script.QuizOnlyOutro(p.Config.ShowName)}
+		Script: script.QuizOnlyOutro()}
 
 	// クレジットは review 素材確定後に末尾へ付ける(§7.5)。base はここで組む。
 	baseNotes := script.AppendQuizShowNotes(script.QuizOnlyShowNotesBase(), dueItems, p.Config.LearningURL)

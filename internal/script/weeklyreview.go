@@ -17,6 +17,9 @@ import (
 //
 //	lead → (concepts) → (graduations) → (reintroduction) → closing
 //
+// 文言はすべて format.go にあり、このファイルは組み立て順だけを持つ
+// (D-37 (9))。
+//
 // Future work could feed the same material to a local LLM for a livelier
 // script (§7.4: 品質不満が出たら LLM 化を検討) — deliberately NOT done here;
 // the口 stays a plain template until quality demands otherwise.
@@ -25,21 +28,20 @@ func BuildWeeklyReview(m learning.WeeklyReview) (string, bool) {
 		return "", false
 	}
 	var sb strings.Builder
-	sb.WriteString("さて、ここで今週の学びを振り返ってみましょう。")
+	sb.WriteString(weeklyReviewLead)
 
-	if n := len(m.Concepts); n > 0 {
-		fmt.Fprintf(&sb, "今週は全部で%d個の項目を学びました。", n)
-		sb.WriteString(strings.Join(m.Concepts, "、"))
-		sb.WriteString("、の回でしたね。")
+	hasConcepts := len(m.Concepts) > 0
+	if hasConcepts {
+		sb.WriteString(weeklyReviewConcepts(m.Concepts))
 	}
 	if m.GraduatedCount > 0 {
-		fmt.Fprintf(&sb, "そして今週は、%d個の項目が繰り返しの復習を経てしっかり定着し、めでたく卒業となりました。", m.GraduatedCount)
+		sb.WriteString(weeklyReviewGraduated(m.GraduatedCount, hasConcepts))
 	}
 	if m.Reintroduced != "" {
-		fmt.Fprintf(&sb, "いっぽうで、「%s」は一度忘れてしまったので、もう一度おさらいのリストに戻しています。", m.Reintroduced)
+		sb.WriteString(weeklyReviewReintroduced(m.Reintroduced, hasConcepts || m.GraduatedCount > 0))
 	}
 
-	sb.WriteString("来週も、少しずつ続けていきましょう。")
+	sb.WriteString(weeklyReviewClosing)
 	return sb.String(), true
 }
 
@@ -53,15 +55,15 @@ func AppendWeeklyReviewShowNotes(notes string, m learning.WeeklyReview) string {
 	}
 	var sb strings.Builder
 	sb.WriteString(notes)
-	sb.WriteString("\n\n今週の学び:\n")
+	sb.WriteString(weeklyNotesHeading)
 	for _, concept := range m.Concepts {
 		sb.WriteString("- ")
 		sb.WriteString(concept)
 		sb.WriteString("\n")
 	}
-	fmt.Fprintf(&sb, "卒業した項目: %d件", m.GraduatedCount)
+	fmt.Fprintf(&sb, weeklyNotesGraduatedFormat, m.GraduatedCount)
 	if m.Reintroduced != "" {
-		sb.WriteString("\nもう一度おさらい: ")
+		sb.WriteString(weeklyNotesReintroducePrefix)
 		sb.WriteString(m.Reintroduced)
 	}
 	return sb.String()

@@ -103,7 +103,7 @@ func TestBookReviewGenerator_Generate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			llm := &fakeOllama{out: tt.out, err: tt.llmErr}
-			g := NewBookReviewGenerator(llm, "pulse", nil)
+			g := NewBookReviewGenerator(llm, nil)
 
 			res, err := g.Generate(context.Background(), "Learning Go", chunks)
 			if tt.wantErr {
@@ -133,12 +133,33 @@ func TestBookReviewGenerator_Generate(t *testing.T) {
 	}
 }
 
+// TestBookReviewGenerator_PromptCarriesTheProgramFormat pins that the 書籍
+// コーナー goes through the same D-37 番組フォーマット as every other prompt:
+// the shared persona block and the corner-opening 定型句 from format.go.
+// Ollama がこの指示に従いきれないことは許容する(§12-4)が、指示を渡さない
+// のは別問題 — テンプレートから persona や Lead が抜けたらここで落ちる。
+func TestBookReviewGenerator_PromptCarriesTheProgramFormat(t *testing.T) {
+	llm := &fakeOllama{out: "本文。"}
+	g := NewBookReviewGenerator(llm, nil)
+
+	_, err := g.Generate(context.Background(), "Learning Go", []BookChunk{{Position: 1, Content: "抜粋"}})
+	require.NoError(t, err)
+	require.Len(t, llm.prompts, 1)
+	prompt := llm.prompts[0]
+
+	assert.Contains(t, prompt, "ラジオ番組「キャッチアップフィード」", "persona ブロックが適用されている")
+	assert.Contains(t, prompt, "「パーソナリティの〜」", "名乗りの禁止 (D-37 (1))")
+	assert.Contains(t, prompt, "感嘆符は使わない", "口調の指定 (D-37 (2))")
+	assert.NotContains(t, prompt, "catchup-feed", "ASCII の番組名は台本に出さない (D-37 (3))")
+	assert.Contains(t, prompt, bookReviewLead(), "コーナー導入の定型句は format.go から渡す")
+}
+
 // TestBookReviewGenerator_NoChunks: an empty chunk set is a programming error
 // (the caller must not reach generation with nothing to review), returned as
 // an error rather than an Ollama call.
 func TestBookReviewGenerator_NoChunks(t *testing.T) {
 	llm := &fakeOllama{out: "unused"}
-	g := NewBookReviewGenerator(llm, "pulse", nil)
+	g := NewBookReviewGenerator(llm, nil)
 
 	_, err := g.Generate(context.Background(), "Learning Go", nil)
 	require.Error(t, err)
@@ -151,7 +172,7 @@ func TestBookReviewGenerator_NoChunks(t *testing.T) {
 // script is still correct.
 func TestBookReviewGenerator_QuizStaysOutOfBody(t *testing.T) {
 	out := "本文。ここまでが紹介です。\n" + bookQuizMarker + "\n概念: c\n問題: q\n答え: a"
-	g := NewBookReviewGenerator(&fakeOllama{out: out}, "pulse", nil)
+	g := NewBookReviewGenerator(&fakeOllama{out: out}, nil)
 
 	res, err := g.Generate(context.Background(), "本", []BookChunk{{Position: 0, Content: "x"}})
 	require.NoError(t, err)
