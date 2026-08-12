@@ -2,6 +2,7 @@ package radio
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"catchup-feed/internal/tts"
@@ -22,6 +23,9 @@ import (
 // speech-only without any branching at the call sites.
 func (p *Pipeline) prepareJingles(ctx context.Context, logger *slog.Logger, dir string, format tts.WavFormat) *tts.Jingles {
 	jingles, err := p.Encoder.DecodeJingles(ctx, dir, format)
+	if err == nil {
+		err = validJinglePair(jingles)
+	}
 	if err != nil {
 		logger.Warn("jingle decode failed, shipping the episode without jingles (§8 縮退)",
 			slog.Any("error", err))
@@ -31,4 +35,33 @@ func (p *Pipeline) prepareJingles(ctx context.Context, logger *slog.Logger, dir 
 		slog.Duration("opening", jingles.Opening.Duration),
 		slog.Duration("ending", jingles.Ending.Duration))
 	return &jingles
+}
+
+// validJinglePair rejects a pair that would poison what the run produces.
+//
+// Encoder is an interface, so "DecodeJingles returned no error" is a promise
+// from an implementation, not a fact about the values: a zero-value
+// tts.Jingles handed back with a nil error would write a concat-list entry
+// with an empty filename and add zero seconds to episodes.duration_sec. tts.FFmpeg
+// never does that — it errors on every path that could — but this is the
+// boundary where the pipeline stops trusting and starts checking, because
+// being wrong here costs a broken or mislabelled episode. A rejected pair
+// takes the same §8 route as a failed decode: warn, ship without jingles.
+func validJinglePair(j tts.Jingles) error {
+	for _, part := range []struct {
+		name   string
+		jingle tts.Jingle
+	}{
+		{"opening", j.Opening},
+		{"ending", j.Ending},
+	} {
+		if part.jingle.Path == "" {
+			return fmt.Errorf("radio: %s jingle has no wav path", part.name)
+		}
+		if part.jingle.Duration <= 0 {
+			return fmt.Errorf("radio: %s jingle has non-positive duration %s",
+				part.name, part.jingle.Duration)
+		}
+	}
+	return nil
 }

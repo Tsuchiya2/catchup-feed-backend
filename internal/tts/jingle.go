@@ -46,8 +46,16 @@ type Jingles struct {
 
 // Wrap returns the concat list with the opening jingle in front and the
 // ending jingle at the back (§6-4). A nil receiver returns wavs unchanged.
+//
+// An EMPTY input is returned empty — deliberately not wrapped. ConcatToMP3's
+// "no input files" check is the only structural guard stopping an episode
+// that carries no programme audio at all, and padding a zero-length list up
+// to two entries would silently walk past it: a 22-second jingles-only mp3
+// would then be rsynced to the Pi, INSERTed into episodes, enqueued for
+// notify_episode and published on the public feed, with exit 0 and no error
+// to detect it by. Jingles decorate a programme; they are not one.
 func (j *Jingles) Wrap(wavs []string) []string {
-	if j == nil {
+	if j == nil || len(wavs) == 0 {
 		return wavs
 	}
 	out := make([]string, 0, len(wavs)+2)
@@ -107,8 +115,15 @@ func (f *FFmpeg) decodeJingle(ctx context.Context, dir, name string, mp3 []byte,
 		"-hide_banner", "-nostdin", "-y",
 		"-i", srcPath,
 		// An mp3's embedded cover art is a video stream to ffmpeg and the wav
-		// muxer refuses it; -map_metadata -1 drops the ID3 frames so nothing
-		// but PCM reaches the concat list.
+		// muxer refuses it, so -vn drops it; -map_metadata -1 drops the ID3
+		// frames so no source tags survive into the wav.
+		//
+		// This does NOT make the output a bare 44-byte canonical header:
+		// ffmpeg's wav muxer still writes its own LIST/INFO chunk (ISFT:
+		// Lavf…) unless -fflags +bitexact is given. That is harmless and
+		// deliberately tolerated — ParseWavFormat and WavDuration both walk
+		// the chunk list rather than assuming fixed offsets, so they find
+		// fmt/data behind it, and the concat demuxer does the same.
 		"-vn", "-map_metadata", "-1",
 		"-ac", strconv.Itoa(format.Channels),
 		"-ar", strconv.Itoa(format.SampleRate),
@@ -139,6 +154,14 @@ func (f *FFmpeg) decodeJingle(ctx context.Context, dir, name string, mp3 []byte,
 	d, err := WavDuration(decoded)
 	if err != nil {
 		return Jingle{}, fmt.Errorf("ffmpeg: measure jingle %s: %w", name, err)
+	}
+	// A zero-length decode (ffmpeg exits 0 having written an empty data
+	// chunk) is a failure, not a valid jingle: it would ship a silent
+	// decoration into the concat list and leave no trace in the logs, since
+	// nothing downstream distinguishes "0 seconds" from "not there". Fail so
+	// the §8 degradation path reports it.
+	if d <= 0 {
+		return Jingle{}, fmt.Errorf("ffmpeg: jingle %s decoded to %s of audio", name, d)
 	}
 	return Jingle{Path: outPath, Duration: d}, nil
 }

@@ -250,7 +250,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// --- §6-3 TTS ---
-	segWavs, wavFormat, totalDuration, err := p.synthesize(ctx, tmpDir, segments)
+	segWavs, wavFormat, totalDuration, err := p.synthesize(ctx, logger, tmpDir, segments)
 	if err != nil {
 		return err // VOICEVOX 障害→当日スキップ (§8)
 	}
@@ -264,6 +264,12 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	// The public concat list is the opening jingle, the synthesized segments
 	// in order, then the ending jingle — no quiz material can appear here by
 	// construction (§12-1: 公開エピソードに学習コンテンツを混ぜない).
+	//
+	// The jingles do change the public episode's 構成・尺, which §12-1's
+	// wording otherwise freezes; they are outside its scope under the
+	// clause added at pulse-phase3 設計 §12-1 (番組フォーマット変更は全版
+	// 一律なら対象外). That scope call is the parent's to make — never
+	// rewrite an invariant's wording from inside an implementation task.
 	mp3Path := filepath.Join(tmpDir, filename)
 	tags := tts.ID3{
 		Title:  title,
@@ -437,7 +443,7 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 
 	segments := quizOnlySegments(introSeg, corner, review, bookReview, outroSeg)
 
-	segWavs, wavFormat, speechDuration, err := p.synthesize(ctx, tmpDir, []*entity.Segment{introSeg, outroSeg})
+	segWavs, wavFormat, speechDuration, err := p.synthesize(ctx, logger, tmpDir, []*entity.Segment{introSeg, outroSeg})
 	if err != nil {
 		return err
 	}
@@ -1016,10 +1022,15 @@ func (p *Pipeline) episodeNaming(ctx context.Context, now time.Time, feedKind st
 // The format is read from the first output's bytes for the same reason the
 // quiz silence reads it (§12-5): everything else joining the concat list —
 // silences, jingles — must match the engine byte-for-byte, and deriving it
-// from a real output makes that structural. An unreadable header is NOT an
-// error here: the wavs still encode fine on their own, so it degrades only
-// the jingles (zero WavFormat -> DecodeJingles rejects it -> §8 warn).
-func (p *Pipeline) synthesize(ctx context.Context, dir string, segments []*entity.Segment) ([][]string, tts.WavFormat, time.Duration, error) {
+// from a real output makes that structural.
+//
+// An unreadable header is NOT an error here, unlike in synthesizeQuizCorner
+// where the same parse failure aborts the run. The asymmetry is intentional
+// and follows what each caller does with the format: the quiz corner cannot
+// exist without its silence wav, whereas here the segments encode fine on
+// their own and only the jingles are lost (zero WavFormat -> DecodeJingles
+// rejects it -> §8 warn). Losing decoration must not cost the broadcast.
+func (p *Pipeline) synthesize(ctx context.Context, logger *slog.Logger, dir string, segments []*entity.Segment) ([][]string, tts.WavFormat, time.Duration, error) {
 	groups := make([][]string, 0, len(segments))
 	var format tts.WavFormat
 	var total time.Duration
@@ -1031,7 +1042,14 @@ func (p *Pipeline) synthesize(ctx context.Context, dir string, segments []*entit
 		group := make([]string, 0, len(audios))
 		for j, audio := range audios {
 			if format.AudioFormat == 0 {
-				if parsed, err := tts.ParseWavFormat(audio.Data); err == nil {
+				parsed, err := tts.ParseWavFormat(audio.Data)
+				if err != nil {
+					// Logged where it happens: downstream the only symptom is
+					// DecodeJingles rejecting a zero WavFormat, which reads as
+					// "non-PCM target format tag 0" and hides the real cause.
+					logger.Warn("VOICEVOX wav header unreadable — jingles will be skipped this run (§8)",
+						slog.Int("segment", i+1), slog.Any("error", err))
+				} else {
 					format = parsed
 				}
 			}

@@ -144,6 +144,86 @@ func TestPipeline_Run_JingleDecodeFailureDegrades(t *testing.T) {
 	}
 }
 
+// TestPipeline_Run_JinglesAloneAreNotAnEpisode pins the end state B-1 is
+// about: a segment-less script must fail the run and write nothing, never
+// ship a jingles-only mp3 to rsync / episodes / notify_episode / the public
+// feed with exit 0.
+//
+// It does NOT exercise Jingles.Wrap's empty-input rule — the direct guard
+// for that is TestJingles_WrapKeepsEmptyEmpty, which fails without the fix.
+// The two conditions are mutually exclusive here by construction, and this
+// test documents why: no segments means no engine output, no engine output
+// means no WavFormat, and no WavFormat means DecodeJingles refuses. The
+// pipeline reaches ConcatToMP3's guard with an empty list either way. That
+// is defence in depth, not a reason to let Wrap pad the list — the coupling
+// is incidental and one refactor away from evaporating.
+func TestPipeline_Run_JinglesAloneAreNotAnEpisode(t *testing.T) {
+	d := defaultDeps()
+	d.script.noSegments = true
+
+	err := newPipeline(t, d).Run(context.Background(), radio.RunOptions{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no input files")
+	assert.Zero(t, d.transfer.calls, "本編ゼロの mp3 は Pi に渡らない")
+	assert.Empty(t, d.episodes.created, "episodes に INSERT されない")
+	assert.Empty(t, d.jobs.jobs, "notify_episode も regenerate_feed も積まれない")
+
+	require.Len(t, d.encoder.jingleFormats, 1)
+	assert.Equal(t, tts.WavFormat{}, d.encoder.jingleFormats[0],
+		"エンジン出力がゼロ本なのでフォーマットも導出されない")
+}
+
+// TestPipeline_Run_JingleInvalidPairRejected pins the Encoder boundary
+// check: an implementation that hands back a zero-value pair with a nil
+// error would otherwise put an empty filename into the ffmpeg concat list
+// and add zero seconds to duration_sec. The pipeline treats it exactly like
+// a failed decode (§8) rather than trusting the interface.
+func TestPipeline_Run_JingleInvalidPairRejected(t *testing.T) {
+	d := defaultDeps()
+	d.encoder.jingleZero = true
+	p := learningPipeline(t, d, &fakeLearning{due: sampleDueItems()})
+	logs := captureLogs(p)
+
+	require.NoError(t, p.Run(context.Background(), radio.RunOptions{}))
+
+	require.Len(t, d.encoder.calls, 2)
+	for _, call := range d.encoder.calls {
+		assertNoJingle(t, call.wavPaths)
+		assert.NotContains(t, call.wavPaths, "", "空パスが concat リストに入らない")
+	}
+	pub, _ := d.episodes.byKind(entity.FeedKindPublic)
+	require.NotNil(t, pub)
+	assert.Equal(t, 120, pub.DurationSec, "尺ゼロのジングルを加算しない")
+	assert.Contains(t, logs.String(), "jingle decode failed")
+	assert.Contains(t, logs.String(), "no wav path", "却下の理由がログに残る")
+}
+
+// TestPipeline_Run_JingleUnreadableEngineFormat pins that the parse failure
+// is reported where it happens (§8). Downstream the only symptom would be
+// DecodeJingles refusing a zero WavFormat — "non-PCM target format tag 0" —
+// which says nothing about the actual cause.
+func TestPipeline_Run_JingleUnreadableEngineFormat(t *testing.T) {
+	d := defaultDeps()
+	d.tts.badWav = true
+	p := newPipeline(t, d)
+	logs := captureLogs(p)
+
+	require.NoError(t, p.Run(context.Background(), radio.RunOptions{}),
+		"ヘッダが読めなくてもセグメント自体は encode できる — 放送は止めない")
+
+	require.Len(t, d.encoder.jingleFormats, 1)
+	assert.Equal(t, tts.WavFormat{}, d.encoder.jingleFormats[0])
+	require.Len(t, d.encoder.calls, 1)
+	assertNoJingle(t, d.encoder.calls[0].wavPaths)
+
+	pub, _ := d.episodes.byKind(entity.FeedKindPublic)
+	require.NotNil(t, pub)
+	assert.Equal(t, 120, pub.DurationSec)
+	assert.Contains(t, logs.String(), "VOICEVOX wav header unreadable",
+		"真因が Warn に残る")
+}
+
 // TestPipeline_Run_JingleDecodedOncePerRun pins that the twin reuses the
 // public run's wavs: one decode, one pair of files, referenced from both
 // concat lists (§6-4: 同一 run 内で無駄な再デコードをしない).

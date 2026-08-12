@@ -118,6 +118,9 @@ type fakeScript struct {
 	articles  []repository.RadioArticle // captured input (C-12 flow check)
 	quizCount int                       // captured input (Phase 3 §5.1/§5.2)
 	drafts    []script.QuizDraft        // returned when quizCount > 0
+	// noSegments returns a segment-less episode without an error — the shape
+	// that must never reach the Pi as a jingles-only mp3.
+	noSegments bool
 }
 
 func (f *fakeScript) GenerateEpisode(_ context.Context, _ time.Time, articles []repository.RadioArticle, quizCount int) ([]*entity.Segment, []script.QuizDraft, error) {
@@ -127,6 +130,9 @@ func (f *fakeScript) GenerateEpisode(_ context.Context, _ time.Time, articles []
 	f.called = true
 	f.articles = articles
 	f.quizCount = quizCount
+	if f.noSegments {
+		return nil, nil, nil
+	}
 	segments := []*entity.Segment{{Position: 1, Kind: entity.SegmentKindIntro, Script: "イントロ。"}}
 	for i, a := range articles {
 		id := a.ID
@@ -249,7 +255,11 @@ type fakeTTS struct {
 	err error
 	// failSubstring makes SynthesizeScript fail only for scripts containing
 	// it (私的側だけ落とす縮退テスト用; e.g. the quiz lead's 「復習のコーナー」).
-	failSubstring  string
+	failSubstring string
+	// badWav returns payloads whose RIFF header cannot be parsed. The bytes
+	// still reach ffmpeg (they encode or they do not — not this pipeline's
+	// call); only the jingle format derivation loses out.
+	badWav         bool
 	calls          int
 	scripts        []string
 	speakerName    string // "" = "ずんだもん"
@@ -265,7 +275,11 @@ func (f *fakeTTS) SynthesizeScript(_ context.Context, script string) ([]tts.Audi
 		return nil, errors.New("synthesizer down for this script")
 	}
 	f.scripts = append(f.scripts, script)
-	return []tts.Audio{{Data: validWav(), Duration: 30 * time.Second}}, nil
+	data := validWav()
+	if f.badWav {
+		data = []byte("not-a-riff-wave-payload")
+	}
+	return []tts.Audio{{Data: data, Duration: 30 * time.Second}}, nil
 }
 
 func (f *fakeTTS) SpeakerName(_ context.Context) (string, error) {
@@ -299,6 +313,10 @@ type fakeEncoder struct {
 	// jingleErr fails DecodeJingles (ffmpeg 不在・mp3 破損・フォーマット
 	// 不一致の代表) — the episode must still ship (§8).
 	jingleErr error
+	// jingleZero returns a zero-value pair with a NIL error — a contract
+	// violation tts.FFmpeg never commits, but Encoder is an interface and the
+	// pipeline must not put `file ''` into a concat list on anyone's say-so.
+	jingleZero bool
 	// jingleFormats records the wav format each decode was asked for: it must
 	// be the format this run's engine actually produced (§12-5).
 	jingleFormats []tts.WavFormat
@@ -308,6 +326,12 @@ func (f *fakeEncoder) ConcatToMP3(_ context.Context, wavPaths []string, outPath 
 	if f.err != nil {
 		return f.err
 	}
+	// Mirrors the real encoder's first guard (tts.FFmpeg.ConcatToMP3): an
+	// empty list is refused, so no test can quietly assert an episode built
+	// from no programme audio.
+	if len(wavPaths) == 0 {
+		return errors.New("ffmpeg: no input files")
+	}
 	f.calls = append(f.calls, encodeCall{outPath: outPath, wavPaths: wavPaths, tags: tags})
 	return os.WriteFile(outPath, []byte("mp3-bytes"), 0o600)
 }
@@ -316,6 +340,15 @@ func (f *fakeEncoder) DecodeJingles(_ context.Context, dir string, format tts.Wa
 	f.jingleFormats = append(f.jingleFormats, format)
 	if f.jingleErr != nil {
 		return tts.Jingles{}, f.jingleErr
+	}
+	// Mirrors tts.FFmpeg's own refusal (pcmCodec): a format it cannot target
+	// is an error, never a decode. Without this the fake would happily
+	// "decode" jingles from a zero WavFormat the real encoder rejects.
+	if format.AudioFormat != 1 {
+		return tts.Jingles{}, fmt.Errorf("fake: non-PCM target format tag %d", format.AudioFormat)
+	}
+	if f.jingleZero {
+		return tts.Jingles{}, nil
 	}
 	return tts.Jingles{
 		Opening: tts.Jingle{Path: filepath.Join(dir, "jingle_opening.wav"), Duration: fakeOpeningJingle},
