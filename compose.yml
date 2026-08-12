@@ -1,299 +1,151 @@
 # ============================================================
-# catchup-feed - Docker Compose Configuration
+# catchup-feed(後継 pulse)— 開発 Mac 用スタック(server + worker + PostgreSQL)
 # ============================================================
-# セキュリティ・パフォーマンス・運用性を最適化した構成
-# - Docker Secrets による機密情報管理
-# - リソース制限でホスト保護
-# - ログローテーション設定
-# - ネットワーク分離
-# - ヘルスチェック実装
-# ============================================================
+# 本番(Raspberry Pi 5)の正は deploy/compose.pi.yml。このファイルはそれと
+# 同じサービス構成・コンテナ名・環境変数キーを保った開発 Mac 向けの写しで、
+# 意図的な差分は以下だけに限定する:
+#   - TAILNET_IP を要求しない。ポート公開は 127.0.0.1 バインドのみ
+#     (API_PORT 既定 8090 / POSTGRES_PORT 既定 5433 — Pi と同じ既定値)。
+#     私的リスナー(8081)はコンテナ内で listen するがホストへは公開しない
+#   - EPISODES_DIR / BOOKS_DIR の既定はリポジトリ内 ./data/*(gitignore 済み)
+#   - build context はリポジトリルート(compose.pi.yml は ..)
+#   - lint / テスト用の dev サービス(profiles: dev、Makefile が参照)を持つ
+# compose.pi.yml 側を変更したら、このファイルにも同じ変更を反映すること。
+#
+# 使い方:
+#   cp .env.example .env   # 値を記入(POSTGRES_PASSWORD / JWT_SECRET / ADMIN_PASSWORD_HASH は必須)
+#   docker compose up -d --build
+#
+# server の healthcheck は Dockerfile の HEALTHCHECK(curl -f http://localhost:8080/health)
+# に依存する(compose.pi.yml と同じ)。worker の depends_on はこれを条件にしている。
 
-# ────────────────────────────────────────────────────────────
-# ネットワーク定義（分離）
-# ────────────────────────────────────────────────────────────
-networks:
-  backend:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.25.0.0/16
+name: catchup-feed
 
-# ────────────────────────────────────────────────────────────
-# ボリューム定義
-# ────────────────────────────────────────────────────────────
 volumes:
   db-data:
     driver: local
-  db-backup:
-    driver: local
-  # 開発用キャッシュ
+  # dev サービス用キャッシュ
   go-mod-cache:
     driver: local
   go-build-cache:
     driver: local
 
-# ────────────────────────────────────────────────────────────
-# Secrets 定義（機密情報の安全な管理）
-# ────────────────────────────────────────────────────────────
-# 注意: 現在は .env ファイルで環境変数として管理しています
-# Docker Secrets は将来の本番環境デプロイ時に有効化できます
-# secrets:
-#   jwt_secret:
-#     file: ./secrets/jwt_secret.txt
-#   anthropic_api_key:
-#     file: ./secrets/anthropic_api_key.txt
-#   openai_api_key:
-#     file: ./secrets/openai_api_key.txt
-#   postgres_password:
-#     file: ./secrets/postgres_password.txt
-#   admin_password:
-#     file: ./secrets/admin_password.txt
-
-# ────────────────────────────────────────────────────────────
-# サービス定義
-# ────────────────────────────────────────────────────────────
 services:
-  # ──────────────────────────────────────────────────────────
-  # PostgreSQL データベース (pgvector対応)
-  # ──────────────────────────────────────────────────────────
   postgres:
-    # pgvector 0.8.5 on PostgreSQL 18 (latest major). PG major stays at 18 so
-    # the existing db-data volume (mounted at /var/lib/postgresql) needs no
-    # migration. Bump the PG major here only alongside a documented volume
-    # migration step.
-    image: pgvector/pgvector:0.8.5-pg18
-    container_name: catchup-postgres
+    image: pgvector/pgvector:pg18
+    container_name: catchup-feed-postgres
     restart: unless-stopped
-
-    networks:
-      - backend
-
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-catchup}
-      POSTGRES_DB: ${POSTGRES_DB:-catchup}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
-      # パフォーマンスチューニング
+      POSTGRES_USER: ${POSTGRES_USER:-catchup-feed}
+      POSTGRES_DB: ${POSTGRES_DB:-catchup-feed}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
-
-    # ヘルスチェック
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
-
     volumes:
-      # PostgreSQL 18+ requires mount at /var/lib/postgresql (not /data)
-      # Data is stored in /var/lib/postgresql/18/docker subdirectory
+      # PostgreSQL 18 は /var/lib/postgresql をマウントする(旧 compose の知見を継承)
       - db-data:/var/lib/postgresql
-      - db-backup:/backup
-
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-
-    # リソース制限
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-
-    # ログ設定
+      # 開発 Mac ではローカルのみ(tailnet バインドは Pi 専用)
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-        labels: "service=postgres"
 
-  # ──────────────────────────────────────────────────────────
-  # 開発環境（Lint、テスト用）
-  # ──────────────────────────────────────────────────────────
-  dev:
+  server:
     build:
       context: .
       dockerfile: Dockerfile
-      target: dev
-
-    container_name: catchup-dev
-
-    networks:
-      - backend
-
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-    environment:
-      # データベース接続
-      DATABASE_URL: postgresql://${POSTGRES_USER:-catchup}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-catchup}?sslmode=disable
-
-      # 認証設定
-      JWT_SECRET: ${JWT_SECRET}
-
-      # アプリケーション設定
-      TZ: ${TZ:-Asia/Tokyo}
-
-    volumes:
-      # ソースコードをマウント（ホットリロード対応）
-      - .:/app
-      # Go モジュールキャッシュ
-      - go-mod-cache:/go/pkg/mod
-      # Go ビルドキャッシュ
-      - go-build-cache:/root/.cache/go-build
-
-    # デフォルトでは起動しない（明示的に起動が必要）
-    profiles:
-      - dev
-
-    # シェルを起動したまま維持
-    stdin_open: true
-    tty: true
-
-    # リソース制限
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 2G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-
-    # ログ設定
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-        labels: "service=dev"
-
-  # ──────────────────────────────────────────────────────────
-  # API サーバー
-  # ──────────────────────────────────────────────────────────
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        VERSION: ${VERSION:-dev}
-        GIT_COMMIT: ${GIT_COMMIT:-unknown}
-        BUILD_DATE: ${BUILD_DATE}
-
-    container_name: catchup-server
+    container_name: catchup-feed-server
     restart: unless-stopped
-
-    networks:
-      - backend
-
     depends_on:
       postgres:
         condition: service_healthy
-
     environment:
-      # データベース接続
-      DATABASE_URL: postgresql://${POSTGRES_USER:-catchup}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-catchup}?sslmode=disable
+      DATABASE_URL: postgresql://${POSTGRES_USER:-catchup-feed}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-catchup-feed}?sslmode=disable
 
-      # 認証設定
-      JWT_SECRET: ${JWT_SECRET}
+      # 認証(C-7 / C-20)
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       ADMIN_USER: ${ADMIN_USER:-admin}
-      # bcrypt ハッシュ(make admin-hash で生成)。.env 内では '$' を '$$' にエスケープすること
-      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH}
+      # make admin-hash で生成。.env 内ではハッシュ中の '$' を '$$' にエスケープ
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?set ADMIN_PASSWORD_HASH in .env}
 
-      # アプリケーション設定
+      # フィード配信(§5 / D-6)
+      FEED_PUBLIC_BASE_URL: ${FEED_PUBLIC_BASE_URL:-https://radio.catchup-feed.com}
+      FEED_AUDIO_DIR: /data/episodes
+      FEED_CHANNEL_TITLE: ${FEED_CHANNEL_TITLE:-}
+      FEED_CHANNEL_DESCRIPTION: ${FEED_CHANNEL_DESCRIPTION:-}
+      FEED_MAX_ITEMS: ${FEED_MAX_ITEMS:-}
+
+      # 私的フィード(C-5)。コンテナ内でのみ listen し、開発 Mac では
+      # ホストへ公開しない(Pi では ${TAILNET_IP}:8081 に限定公開)
+      PRIVATE_FEED_ADDR: ${PRIVATE_FEED_ADDR:-server:8081}
+      FEED_PRIVATE_BASE_URL: ${FEED_PRIVATE_BASE_URL:-}
+
+      # 書籍 PDF 管理(D-25)。コンテナ内パスが books.file_path に記録される
+      BOOKS_DIR: /data/books
+
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?set CORS_ALLOWED_ORIGINS in .env}
+
+      # 認証 cookie の Domain(D-22)。開発では空のまま(localhost)でよい
+      AUTH_COOKIE_DOMAIN: ${AUTH_COOKIE_DOMAIN:-}
+
+      # Cloudflare Tunnel 越しのみ有効化(開発 Mac では未設定のまま)
+      RATE_LIMIT_TRUST_PROXY: ${RATE_LIMIT_TRUST_PROXY:-}
+      RATE_LIMIT_TRUSTED_PROXIES: ${RATE_LIMIT_TRUSTED_PROXIES:-}
+
       TZ: ${TZ:-Asia/Tokyo}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-
-      # CORS設定
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
-
     ports:
-      - "${API_PORT:-8080}:8080"
-
-    # ヘルスチェック（Dockerfileで定義済み）
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-    # リソース制限
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 128M
-
-    # ログ設定
+      - "127.0.0.1:${API_PORT:-8090}:8080"
+    volumes:
+      # mp3 アーカイブ。server は配信のみ(読み取り専用)
+      - ${EPISODES_DIR:-./data/episodes}:/data/episodes:ro
+      # 書籍 PDF(D-25)。server がアップロード保存・削除を行うため読み書き
+      - ${BOOKS_DIR:-./data/books}:/data/books
+    security_opt:
+      - no-new-privileges:true
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-        labels: "service,environment"
-        tag: "{{.Name}}/{{.ID}}"
 
-    # セキュリティ設定
-    security_opt:
-      - no-new-privileges:true
-    read_only: false  # SQLiteファイル書き込みのためfalse
-    tmpfs:
-      - /tmp:size=100M,mode=1777
-
-  # ──────────────────────────────────────────────────────────
-  # Worker（クローラー）
-  # ──────────────────────────────────────────────────────────
   worker:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        VERSION: ${VERSION:-dev}
-        GIT_COMMIT: ${GIT_COMMIT:-unknown}
-        BUILD_DATE: ${BUILD_DATE}
-
-    container_name: catchup-worker
+    container_name: catchup-feed-worker
     restart: unless-stopped
-
     entrypoint: ["/usr/local/bin/worker"]
     command: []
-
-    networks:
-      - backend
-
     depends_on:
       postgres:
         condition: service_healthy
-      app:
-        condition: service_healthy
-
+      server:
+        condition: service_healthy # マイグレーションは server 起動時に適用される
     environment:
-      # データベース接続
-      DATABASE_URL: postgresql://${POSTGRES_USER:-catchup}:${POSTGRES_PASSWORD:-secret}@postgres:5432/${POSTGRES_DB:-catchup}?sslmode=disable
+      DATABASE_URL: postgresql://${POSTGRES_USER:-catchup-feed}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-catchup-feed}?sslmode=disable
 
-      # AI 要約設定（フォールバック連鎖: Gemini → Groq → Ollama）
+      # 要約フォールバック連鎖(Gemini → Groq → Ollama)
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_MODEL: ${GROQ_MODEL:-}
       OLLAMA_ENABLED: ${OLLAMA_ENABLED:-}
-      # 注意: 未設定時のデフォルト http://localhost:11434 は worker コンテナ
-      # 自身を指す。実運用では tailnet 上の Mac のアドレスを .env で指定すること
       OLLAMA_HOST: ${OLLAMA_HOST:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-}
       SUMMARIZER_CHAR_LIMIT: ${SUMMARIZER_CHAR_LIMIT:-}
       SUMMARIZER_TIMEOUT: ${SUMMARIZER_TIMEOUT:-}
 
-      # メール通知設定(D-29: 本人向けのみ。友人向けメールは D-32 で廃止)
+      # 通知(D-29: 本人向けもメールに一本化。Discord/Slack は廃止)
+      # SMTP_* は本人向け(D-29)のみ。友人向けメールは D-32 で廃止
       SMTP_ENABLED: ${SMTP_ENABLED:-false}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-}
@@ -302,49 +154,67 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       NOTIFY_ERROR_EMAIL_TO: ${NOTIFY_ERROR_EMAIL_TO:-}
 
-      # アプリケーション設定
-      TZ: ${TZ:-Asia/Tokyo}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # jobs コンシューマ + D-4 cleanup(mp3 45日保持)
+      JOBS_POLL_INTERVAL: ${JOBS_POLL_INTERVAL:-}
+      CLEANUP_CRON_SCHEDULE: ${CLEANUP_CRON_SCHEDULE:-}
+      FEED_AUDIO_DIR: /data/episodes
+      FEED_PRIVATE_BASE_URL: ${FEED_PRIVATE_BASE_URL:-}
 
-      # Worker Configuration
-      CRON_SCHEDULE: ${CRON_SCHEDULE:-30 5 * * *}
+      # クロール(§3.3: 毎時)
+      CRON_SCHEDULE: ${CRON_SCHEDULE:-0 * * * *}
       WORKER_TIMEZONE: ${WORKER_TIMEZONE:-Asia/Tokyo}
-      NOTIFY_MAX_CONCURRENT: ${NOTIFY_MAX_CONCURRENT:-10}
       CRAWL_TIMEOUT: ${CRAWL_TIMEOUT:-30m}
       WORKER_HEALTH_PORT: ${WORKER_HEALTH_PORT:-9091}
+      # newsletter ソースの号あたり展開記事数上限(既定 10)
+      NEWSLETTER_MAX_ARTICLES: ${NEWSLETTER_MAX_ARTICLES:-}
 
-    ports:
-      - "${WORKER_HEALTH_PORT:-9091}:9091"
-
-    # ヘルスチェック
+      TZ: ${TZ:-Asia/Tokyo}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9091/health/ready"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 30s
-
-    # リソース制限（Workerは並列処理が多い）
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 256M
-
-    # ログ設定
+    volumes:
+      # cleanup_old_media(D-4)が古い mp3 を削除するため読み書き
+      - ${EPISODES_DIR:-./data/episodes}:/data/episodes
+    security_opt:
+      - no-new-privileges:true
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "5"
-        labels: "service=worker"
 
-    # セキュリティ設定
-    security_opt:
-      - no-new-privileges:true
-    read_only: false
-    tmpfs:
-      - /tmp:size=200M,mode=1777
+  # ──────────────────────────────────────────────────────────
+  # 開発環境(lint・テスト用。Makefile の test / lint / admin-hash 等が参照)
+  # ──────────────────────────────────────────────────────────
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    container_name: catchup-feed-dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-catchup-feed}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-catchup-feed}?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:-}
+      TZ: ${TZ:-Asia/Tokyo}
+    volumes:
+      # ソースコードをマウント(ホットリロード対応)
+      - .:/app
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    # デフォルトでは起動しない(明示的に --profile dev が必要)
+    profiles:
+      - dev
+    stdin_open: true
+    tty: true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

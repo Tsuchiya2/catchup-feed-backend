@@ -11,6 +11,23 @@
 .DEFAULT_GOAL := help
 
 # ────────────────────────────────────────────────────────────
+# compose の ${VAR:?} 必須補間はファイルロード時に「全サービス分」評価される。
+# そのため dev サービスしか使わないターゲットでも、.env が未完成だと compose
+# コマンド自体が失敗する(特に admin-hash は ADMIN_PASSWORD_HASH を生成する
+# 手段なのに、その値がないと動かないブートストラップ・デッドロックになる)。
+# DB を使わないターゲット(lint / fmt / swagger / admin-hash / build-dev)に
+# 限りプレースホルダを注入して補間を通す。併用する --no-deps で postgres も
+# 起動しないため、プレースホルダ値が実コンテナの動作に影響することはない。
+# 未設定時のみ補うので、シェルで export 済みの実値はそのまま使われる。
+# test 系は対象外: dev サービスは常に DATABASE_URL を設定し、TestOpen_* が
+# 実接続する(DATABASE_URL 未設定時のみ skip)ため、実 .env と postgres が必要。
+COMPOSE_DEV := POSTGRES_PASSWORD=$${POSTGRES_PASSWORD:-placeholder} \
+               JWT_SECRET=$${JWT_SECRET:-placeholder} \
+               ADMIN_PASSWORD_HASH=$${ADMIN_PASSWORD_HASH:-placeholder} \
+               CORS_ALLOWED_ORIGINS=$${CORS_ALLOWED_ORIGINS:-http://localhost:3000} \
+               docker compose
+
+# ────────────────────────────────────────────────────────────
 # Help
 # ────────────────────────────────────────────────────────────
 help: ## Show this help message
@@ -64,48 +81,48 @@ test-coverage: ## Generate test coverage report inside Docker
 # ────────────────────────────────────────────────────────────
 lint: ## Run golangci-lint inside Docker
 	@echo "🔍 Running linter in Docker..."
-	docker compose --profile dev run --rm dev golangci-lint run
+	$(COMPOSE_DEV) --profile dev run --rm --no-deps dev golangci-lint run
 	@echo "✅ Linting completed"
 
 lint-fix: ## Run golangci-lint with auto-fix inside Docker
 	@echo "🔧 Running linter with auto-fix in Docker..."
-	docker compose --profile dev run --rm dev golangci-lint run --fix
+	$(COMPOSE_DEV) --profile dev run --rm --no-deps dev golangci-lint run --fix
 	@echo "✅ Linting with auto-fix completed"
 
 fmt: ## Format code with gofmt inside Docker
 	@echo "🎨 Formatting code in Docker..."
-	docker compose --profile dev run --rm dev sh -c "gofmt -w ."
+	$(COMPOSE_DEV) --profile dev run --rm --no-deps dev sh -c "gofmt -w ."
 	@echo "✅ Code formatting completed"
 
 swagger: ## Generate Swagger docs (docs/) inside Docker
 	@echo "📝 Generating Swagger docs in Docker..."
-	docker compose --profile dev run --rm dev sh -c "go run github.com/swaggo/swag/cmd/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal"
+	$(COMPOSE_DEV) --profile dev run --rm --no-deps dev sh -c "go run github.com/swaggo/swag/cmd/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal"
 	@echo "✅ Swagger docs generated"
 
 admin-hash: ## Generate bcrypt hash for ADMIN_PASSWORD_HASH (reads password from stdin)
-	@docker compose --profile dev run --rm dev sh -c "go run ./cmd/hash-password"
+	@$(COMPOSE_DEV) --profile dev run --rm --no-deps dev sh -c "go run ./cmd/hash-password"
 
 # ────────────────────────────────────────────────────────────
 # Build (runs inside Docker)
 # ────────────────────────────────────────────────────────────
 build: ## Build application inside Docker
 	@echo "🔨 Building application in Docker..."
-	docker compose build app worker
+	docker compose build server worker
 	@echo "✅ Build completed"
 
 build-dev: ## Build development container
 	@echo "🔨 Building development container..."
-	docker compose --profile dev build dev
+	$(COMPOSE_DEV) --profile dev build dev
 	@echo "✅ Development container built"
 
 # ────────────────────────────────────────────────────────────
 # Application Control
 # ────────────────────────────────────────────────────────────
-up: ## Start all services (app, worker, postgres)
+up: ## Start all services (server, worker, postgres)
 	@echo "🚀 Starting all services..."
 	docker compose up -d
 	@echo "✅ All services started"
-	@echo "   API: http://localhost:8080"
+	@echo "   API: http://127.0.0.1:8090"
 
 down: ## Stop all services
 	@echo "🛑 Stopping all services..."
@@ -120,8 +137,8 @@ restart: down up ## Restart all services
 logs: ## Show logs from all services
 	docker compose logs -f
 
-logs-app: ## Show logs from API server
-	docker compose logs -f app
+logs-server: ## Show logs from API server
+	docker compose logs -f server
 
 logs-worker: ## Show logs from worker
 	docker compose logs -f worker
@@ -134,7 +151,7 @@ logs-db: ## Show logs from PostgreSQL
 # ────────────────────────────────────────────────────────────
 db-shell: ## Enter PostgreSQL shell
 	@echo "🗄️ Entering PostgreSQL shell..."
-	docker compose exec postgres psql -U catchup -d catchup
+	docker compose exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
 
 # マイグレーション専用ターゲットはない: スキーマは冪等 SQL
 # (internal/infra/db.MigrateUp)として cmd/server の起動時に毎回自動適用

@@ -110,15 +110,19 @@ make dev-down                 # 停止
 
 主な Make ターゲット: `dev-up` / `dev-down` / `dev-shell` / `build` / `test` / `test-unit` / `test-coverage` / `lint` / `lint-fix` / `fmt` / `swagger` / `admin-hash` / `db-reset` / `db-shell` / `logs` / `clean`(一覧は `make help`)。
 
-### server + worker(Pi)
+### server + worker(ローカル / Pi)
 
-Docker Compose で `postgres` / `app`(server) / `worker` を起動します。
+ルートの `compose.yml` は開発 Mac 用スタックで、本番 Pi の `deploy/compose.pi.yml` と同じサービス構成(`postgres` / `server` / `worker`、コンテナ名 `catchup-feed-*`)を持ちます(Pi での起動は `deploy/pi.md` 参照)。
 
 ```bash
-docker compose up -d
+cp .env.example .env          # POSTGRES_PASSWORD / JWT_SECRET / ADMIN_PASSWORD_HASH は必須
+docker compose up -d --build
+curl -f http://127.0.0.1:8090/health
 ```
 
-server は起動時に PostgreSQL のマイグレーションを冪等適用してから `:8080` で待ち受けます(`PRIVATE_FEED_ADDR` を設定すると tailnet 用の私的フィードリスナーを別ポートで起動)。
+server は起動時に PostgreSQL のマイグレーションを冪等適用してから待ち受けます(ホスト公開は `127.0.0.1:${API_PORT:-8090}` のみ。私的フィードリスナー 8081 は開発ではホストへ公開されません)。mp3 / 書籍 PDF はリポジトリ内 `./data/episodes` / `./data/books`(gitignore 済み)にマウントされます。
+
+> **旧スタックからの移行メモ**: compose プロジェクト名を `catchup-feed` に変更したため、旧プロジェクト名 `catchup-feed-backend` で作られたコンテナ(`catchup-*`)・ボリューム(`catchup-feed-backend_db-data` 等)は `make down` / `make clean` の管理外に残ります。一度だけ `docker compose -p catchup-feed-backend down` で旧コンテナを掃除してください(**`-v` は付けない**。旧ボリュームの削除はデータ不要を確認したうえで `docker volume rm` で任意に)。
 
 ### radio(Mac、夜間バッチ)
 
