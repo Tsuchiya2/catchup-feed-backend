@@ -139,7 +139,7 @@ func TestRenderRSS_ChannelDescriptionCarriesVoicevoxCredit(t *testing.T) {
 // ---- channel artwork ----
 
 func TestRenderRSS_ChannelArtwork(t *testing.T) {
-	const artworkURL = "https://radio.catchup-feed.com/feeds/tok/artwork.jpg"
+	const artworkURL = "https://radio.catchup-feed.com/feeds/tok/artwork/0123abcd.jpg"
 	meta := channelMeta{
 		Title:       "pulse radio",
 		Link:        "https://radio.catchup-feed.com",
@@ -172,11 +172,11 @@ func TestRenderRSS_NoImageURLOmitsArtworkTags(t *testing.T) {
 
 func TestArtworkURLs(t *testing.T) {
 	assert.Equal(t,
-		"https://radio.catchup-feed.com/feeds/tok%2Fen/artwork.jpg",
+		"https://radio.catchup-feed.com/feeds/tok%2Fen/artwork/"+artworkFingerprint+".jpg",
 		publicArtworkURL("https://radio.catchup-feed.com", "tok/en"),
 		"the token segment must be path-escaped like the enclosure URLs")
 	assert.Equal(t,
-		"http://pi.tailnet:8081/private/artwork.jpg",
+		"http://pi.tailnet:8081/private/artwork/"+artworkFingerprint+".jpg",
 		privateArtworkURL("http://pi.tailnet:8081"))
 }
 

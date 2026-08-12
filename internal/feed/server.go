@@ -48,13 +48,15 @@ func NewServer(
 // per-IP rate limiter guarding against invalid-token hammering (§5.2).
 //
 //	GET /feeds/{token}/feed.xml
-//	GET /feeds/{token}/artwork.jpg
+//	GET /feeds/{token}/artwork/{file}   {file} = "<fingerprint>.jpg"
+//	GET /feeds/{token}/artwork.jpg      legacy, kept for already-subscribed apps
 //	GET /feeds/{token}/episodes/{id}.mp3
 func (s *Server) RegisterPublic(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
 	if wrap == nil {
 		wrap = func(h http.Handler) http.Handler { return h }
 	}
 	mux.Handle("GET /feeds/{token}/feed.xml", wrap(s.verifyToken(http.HandlerFunc(s.handlePublicFeed))))
+	mux.Handle("GET /feeds/{token}/artwork/{file}", wrap(s.verifyToken(http.HandlerFunc(s.handleArtworkFingerprinted))))
 	mux.Handle("GET /feeds/{token}/artwork.jpg", wrap(s.verifyToken(http.HandlerFunc(s.handleArtwork))))
 	mux.Handle("GET /feeds/{token}/episodes/{file}", wrap(s.verifyToken(http.HandlerFunc(s.handlePublicEpisode))))
 	// Catch-all for everything else under /feeds/: unmatched variants
@@ -70,11 +72,13 @@ func (s *Server) RegisterPublic(mux *http.ServeMux, wrap func(http.Handler) http
 // authentication.
 //
 //	GET /private/feed.xml
-//	GET /private/artwork.jpg
+//	GET /private/artwork/{file}   {file} = "<fingerprint>.jpg"
+//	GET /private/artwork.jpg      legacy, kept for already-subscribed apps
 //	GET /private/episodes/{id}.mp3
 func (s *Server) PrivateHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /private/feed.xml", s.handlePrivateFeed)
+	mux.HandleFunc("GET /private/artwork/{file}", s.handleArtworkFingerprinted)
 	mux.HandleFunc("GET /private/artwork.jpg", s.handleArtwork)
 	mux.HandleFunc("GET /private/episodes/{file}", s.handlePrivateEpisode)
 	return mux
