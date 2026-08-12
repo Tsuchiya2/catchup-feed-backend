@@ -19,8 +19,21 @@ import (
 //go:embed assets/artwork.jpg
 var artworkJPEG []byte
 
-// artworkFingerprint is the first 8 hex characters of the embedded
-// artwork's SHA-256, computed once at process start.
+// artworkFingerprintLen is how much of the digest goes into the URL.
+// Eight hex chars keep the subscription URL readable, and distinguishing
+// the handful of artwork revisions this project will ever have needs no
+// more (D-33). It is a cache key, not a security boundary — and
+// deliberately not what the ETag is built from, see artworkETag.
+const artworkFingerprintLen = 8
+
+// artworkDigest is the hex SHA-256 of the embedded artwork, computed once
+// at process start. Both the URL fingerprint and the ETag derive from it,
+// so identical bytes always mean an identical URL and an identical
+// validator, across restarts and across the two listeners.
+var artworkDigest = sha256Hex(artworkJPEG)
+
+// artworkFingerprint is the leading slice of artworkDigest that the
+// artwork URL carries.
 //
 // Podcast apps key channel artwork on its URL, and Apple Podcasts copies
 // the image onto its own servers: a file swap behind a fixed URL is
@@ -28,21 +41,23 @@ var artworkJPEG []byte
 // URL carries the content's fingerprint and changes whenever the bytes
 // change — a rebuilt binary serves a new artwork URL, which the apps read
 // as a new image.
-var artworkFingerprint = fingerprint(artworkJPEG)
+var artworkFingerprint = artworkDigest[:artworkFingerprintLen]
 
 // artworkETag is the strong validator for the artwork body, letting a
-// conditional GET answer 304 instead of resending ~400 KB. It is derived
-// from the same digest as the fingerprint, so identical bytes always mean
-// an identical ETag across restarts and across the two listeners.
-var artworkETag = `"` + artworkFingerprint + `"`
+// conditional GET answer 304 instead of resending ~320 KB.
+//
+// It uses the FULL digest, not the 8-char URL fingerprint. A strong
+// validator promises byte equality, and 32 bits is small enough for two
+// different artwork files to collide — which would answer 304 for changed
+// bytes and leave the old image in place, reproducing the very bug this
+// whole change exists to fix. The URL keeps the short form for
+// readability; the ETag pays 56 more characters for the guarantee.
+var artworkETag = `"` + artworkDigest + `"`
 
-// fingerprint returns the first 8 hex chars of the SHA-256 of b. Eight
-// hex chars (32 bits) is plenty to distinguish the handful of artwork
-// revisions this project will ever have; it is a cache key, not a
-// security boundary.
-func fingerprint(b []byte) string {
+// sha256Hex returns the hex-encoded SHA-256 of b.
+func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])[:8]
+	return hex.EncodeToString(sum[:])
 }
 
 // artworkFileName is the {file} segment of the canonical fingerprinted

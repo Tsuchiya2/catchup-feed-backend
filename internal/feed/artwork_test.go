@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	_ "image/jpeg" // registers the JPEG decoder for image.DecodeConfig
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -64,11 +65,23 @@ func TestArtworkAsset_MeetsPodcastRequirements(t *testing.T) {
 // the URL and podcast apps keep serving the old logo forever (PR #104).
 func TestArtworkFingerprint_DerivedFromEmbeddedBytes(t *testing.T) {
 	sum := sha256.Sum256(artworkJPEG)
-	assert.Equal(t, hex.EncodeToString(sum[:])[:8], artworkFingerprint)
-	assert.Len(t, artworkFingerprint, 8)
-	assert.Equal(t, artworkFingerprint+".jpg", artworkFileName)
-	assert.Equal(t, `"`+artworkFingerprint+`"`, artworkETag, "ETag は同じダイジェスト由来")
+	digest := hex.EncodeToString(sum[:])
 
-	// 別バイト列は別フィンガープリント = 別 URL。
-	assert.NotEqual(t, fingerprint([]byte("old logo")), fingerprint([]byte("new logo")))
+	assert.Equal(t, digest, artworkDigest)
+	assert.Equal(t, digest[:8], artworkFingerprint)
+	assert.Len(t, artworkFingerprint, 8, "URL の {fp} は可読性のため8桁のまま(D-33)")
+	assert.Equal(t, artworkFingerprint+".jpg", artworkFileName)
+
+	// ETag は完全な SHA-256。8桁(32ビット)を strong validator に流用すると
+	// 別画像が同じ ETag を持ちうる = 差し替えたのに 304 が返り旧画像が残る、
+	// という本変更が直しているのと同じ症状を再発させる。
+	assert.Equal(t, `"`+digest+`"`, artworkETag)
+	assert.Len(t, artworkETag, 66, "64 hex chars + 2 quotes")
+
+	// URL の fingerprint と ETag は同一ダイジェスト由来(同じバイト列なら
+	// 再起動をまたいでも2つのリスナー間でも同じ値になる)。
+	assert.True(t, strings.HasPrefix(artworkDigest, artworkFingerprint))
+
+	// 別バイト列は別ダイジェスト = 別 URL・別 ETag。
+	assert.NotEqual(t, sha256Hex([]byte("old logo")), sha256Hex([]byte("new logo")))
 }
