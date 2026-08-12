@@ -330,6 +330,6 @@ systemctl status pulse.service   # active (exited) なら正常
 
 ## トラブル時の見方(監視スタックは無い。これで足りる)
 
-- コンテナ状態: `docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env ps` / `docker logs catchup-feed-server|catchup-feed-worker`
+- コンテナ状態: `docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env ps` / `docker logs catchup-feed-server` / `docker logs catchup-feed-worker`
 - 要約フォールバックの発生: `summaries.provider` を見る(`docker exec -it catchup-feed-postgres psql -U catchup-feed -c "select provider, count(*) from summaries group by 1"`)
 - 朝エピソードが無い日: 正常系の欠番(Mac 不在)か、radio の失敗通知(notify_error のメール、D-29)かをまず確認
