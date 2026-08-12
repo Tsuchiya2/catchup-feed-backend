@@ -103,7 +103,7 @@ func TestBookReviewGenerator_Generate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			llm := &fakeOllama{out: tt.out, err: tt.llmErr}
-			g := NewBookReviewGenerator(llm, "pulse", nil)
+			g := NewBookReviewGenerator(llm, nil)
 
 			res, err := g.Generate(context.Background(), "Learning Go", chunks)
 			if tt.wantErr {
@@ -138,7 +138,7 @@ func TestBookReviewGenerator_Generate(t *testing.T) {
 // an error rather than an Ollama call.
 func TestBookReviewGenerator_NoChunks(t *testing.T) {
 	llm := &fakeOllama{out: "unused"}
-	g := NewBookReviewGenerator(llm, "pulse", nil)
+	g := NewBookReviewGenerator(llm, nil)
 
 	_, err := g.Generate(context.Background(), "Learning Go", nil)
 	require.Error(t, err)
@@ -151,7 +151,7 @@ func TestBookReviewGenerator_NoChunks(t *testing.T) {
 // script is still correct.
 func TestBookReviewGenerator_QuizStaysOutOfBody(t *testing.T) {
 	out := "本文。ここまでが紹介です。\n" + bookQuizMarker + "\n概念: c\n問題: q\n答え: a"
-	g := NewBookReviewGenerator(&fakeOllama{out: out}, "pulse", nil)
+	g := NewBookReviewGenerator(&fakeOllama{out: out}, nil)
 
 	res, err := g.Generate(context.Background(), "本", []BookChunk{{Position: 0, Content: "x"}})
 	require.NoError(t, err)

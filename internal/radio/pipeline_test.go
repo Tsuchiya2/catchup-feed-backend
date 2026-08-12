@@ -1168,7 +1168,10 @@ func TestPipeline_Run_QuizOnlyDay(t *testing.T) {
 
 	require.Len(t, privSegs, 4)
 	assert.Equal(t, entity.SegmentKindIntro, privSegs[0].Kind)
-	assert.Contains(t, privSegs[0].Script, "今日は新しい記事のお知らせはありません")
+	assert.Contains(t, privSegs[0].Script, "今朝は新しい記事のお届けはありません")
+	assert.NotContains(t, privSegs[0].Script, "pulse",
+		"読み上げ名は RADIO_SHOW_NAME(テストでは \"pulse\")と連動しない (D-37 (3))")
+	assert.Contains(t, privSegs[0].Script, "キャッチアップフィード")
 	assert.Equal(t, entity.SegmentKindQuiz, privSegs[1].Kind)
 	assert.Equal(t, entity.SegmentKindQuiz, privSegs[2].Kind)
 	assert.Equal(t, entity.SegmentKindOutro, privSegs[3].Kind)

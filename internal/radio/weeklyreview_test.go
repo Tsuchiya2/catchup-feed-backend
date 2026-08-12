@@ -72,7 +72,7 @@ func TestPipeline_Run_WeeklyReview_Injected(t *testing.T) {
 	for i, s := range privSegs {
 		assert.Equal(t, i+1, s.Position, "positions renumbered contiguously")
 	}
-	assert.Contains(t, privSegs[6].Script, "今週の学びを振り返って", "review script はテンプレート全文 (§4)")
+	assert.Contains(t, privSegs[6].Script, "今週の学びを振り返ります", "review script はテンプレート全文 (§4)")
 	assert.Nil(t, privSegs[6].ArticleID, "review は記事に紐づかない")
 
 	// duration = news 120 + corner 156 + review 30。
@@ -149,7 +149,7 @@ func TestPipeline_Run_WeeklyReview_LookupFailDegrades(t *testing.T) {
 // drops the review, the twin ships news+quiz, the public side is untouched.
 func TestPipeline_Run_WeeklyReview_TTSFailDegrades(t *testing.T) {
 	d := defaultDeps()
-	d.tts.failSubstring = "今週の学びを振り返って" // review script のみ落とす
+	d.tts.failSubstring = "今週の学びを振り返ります" // review script のみ落とす
 	l := &fakeLearning{due: sampleDueItems(), weekly: sampleWeekly()}
 	p := learningPipeline(t, d, l)
 	p.Now = saturdayNow
@@ -242,7 +242,7 @@ func TestPipeline_Run_WeeklyReview_DryRun(t *testing.T) {
 	assert.Equal(t, 0, d.tts.calls, "dry-run は TTS しない(review 含む)")
 	printed := d.out.String()
 	assert.Contains(t, printed, "weekly review")
-	assert.Contains(t, printed, "今週の学びを振り返って")
+	assert.Contains(t, printed, "今週の学びを振り返ります")
 }
 
 // TestPipeline_Run_WeeklyReview_ConfiguredWeekday: a non-default DOW config is

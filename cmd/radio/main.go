@@ -105,7 +105,7 @@ func main() {
 	// いれば生成失敗で当日スキップ縮退)。
 	bookOllamaCfg := summarizer.LoadOllamaConfig(summarizer.LoadOptions())
 	bookOllamaCfg.Model = pkgconfig.GetEnvString("BOOK_REVIEW_OLLAMA_MODEL", defaultBookReviewModel)
-	bookReviewLLM := script.NewBookReviewGenerator(summarizer.NewOllama(bookOllamaCfg), cfg.ShowName, logger)
+	bookReviewLLM := script.NewBookReviewGenerator(summarizer.NewOllama(bookOllamaCfg), logger)
 
 	logger.Info("radio batch starting",
 		slog.String("show", cfg.ShowName),
@@ -123,7 +123,7 @@ func main() {
 		Articles:      pgRepo.NewRadioArticleRepo(database),
 		Episodes:      pgRepo.NewEpisodeRepo(database),
 		Jobs:          pgRepo.NewJobRepo(database),
-		Script:        script.NewGenerator(chain, cfg.ShowName, logger),
+		Script:        script.NewGenerator(chain, logger),
 		TTS:           tts.NewVoicevox(voicevoxCfg),
 		Encoder:       tts.NewFFmpeg(),
 		Transfer:      radio.NewTransferer(cfg),

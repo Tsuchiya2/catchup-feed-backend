@@ -1,9 +1,11 @@
 package script_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"testing"
 	"time"
@@ -36,9 +38,12 @@ func (f *fakeLLM) Generate(_ context.Context, prompt string) (string, string, er
 	return fmt.Sprintf("原稿%d", f.calls), "gemini", nil
 }
 
+// radioArticles is the two-article fixture: one 開発 corner, one AI corner —
+// both slugs are in the D-37 (4) 対応表, so the prompts must carry the spoken
+// names only.
 func radioArticles() []repository.RadioArticle {
 	return []repository.RadioArticle{
-		{ID: 10, Title: "Go 1.26 リリース", URL: "https://example.com/go", Category: "golang",
+		{ID: 10, Title: "Go 1.26 リリース", URL: "https://example.com/go", Category: "dev",
 			SourceName: "Go Blog", Summary: "Go 1.26 の要約テキスト。", PublishedAt: day(1)},
 		{ID: 20, Title: "新しい推論モデル", URL: "https://example.com/ai", Category: "ai",
 			SourceName: "AI News", Summary: "推論モデルの要約テキスト。", PublishedAt: day(2)},
@@ -47,7 +52,7 @@ func radioArticles() []repository.RadioArticle {
 
 func TestGenerator_GenerateEpisode_SegmentStructure(t *testing.T) {
 	llm := &fakeLLM{}
-	gen := script.NewGenerator(llm, "pulse", nil)
+	gen := script.NewGenerator(llm, nil)
 
 	segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 	require.NoError(t, err)
@@ -82,7 +87,7 @@ func TestGenerator_GenerateEpisode_SegmentStructure(t *testing.T) {
 // the article text cannot leak into a cloud prompt by construction.
 func TestGenerator_PromptContainsSummaryOnly(t *testing.T) {
 	llm := &fakeLLM{}
-	gen := script.NewGenerator(llm, "pulse", nil)
+	gen := script.NewGenerator(llm, nil)
 
 	_, _, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 	require.NoError(t, err)
@@ -92,7 +97,7 @@ func TestGenerator_PromptContainsSummaryOnly(t *testing.T) {
 	assert.Contains(t, newsPrompt, "Go 1.26 の要約テキスト。", "summary body must be in the prompt")
 	assert.Contains(t, newsPrompt, "Go 1.26 リリース")
 	assert.Contains(t, newsPrompt, "Go Blog")
-	assert.Contains(t, newsPrompt, "golang")
+	assert.Contains(t, newsPrompt, "開発", "コーナー名は対応表で変換済み (D-37 (4))")
 
 	// Structural pin: the script input type has no article-content field.
 	typ := reflect.TypeOf(repository.RadioArticle{})
@@ -101,36 +106,126 @@ func TestGenerator_PromptContainsSummaryOnly(t *testing.T) {
 		"repository.RadioArticle must not carry article content (C-12)")
 }
 
-func TestGenerator_TransitionReferencesPreviousCorner(t *testing.T) {
+// TestGenerator_NewsLeadReplacesTransition pins D-37 (6): the つなぎ文 is
+// gone — no news prompt mentions the previous article — and each segment
+// instead carries its fixed corner lead (切替 / 継続).
+func TestGenerator_NewsLeadReplacesTransition(t *testing.T) {
+	articles := []repository.RadioArticle{
+		{ID: 10, Title: "記事A", Category: "ai", SourceName: "AI News", Summary: "要約A"},
+		{ID: 20, Title: "記事B", Category: "ai", SourceName: "AI News", Summary: "要約B"},
+		{ID: 30, Title: "記事C", Category: "dev", SourceName: "Go Blog", Summary: "要約C"},
+	}
 	llm := &fakeLLM{}
-	gen := script.NewGenerator(llm, "pulse", nil)
+	gen := script.NewGenerator(llm, nil)
 
-	_, _, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
+	_, _, err := gen.GenerateEpisode(context.Background(), day(4), articles, 0)
 	require.NoError(t, err)
+	require.Len(t, llm.prompts, 5)
 
-	assert.NotContains(t, llm.prompts[1], "直前のコーナー",
-		"first news segment has no previous corner")
-	assert.Contains(t, llm.prompts[2], "直前のコーナーでは「Go 1.26 リリース」",
-		"second news segment must reference the previous article (つなぎ文)")
+	assert.Contains(t, llm.prompts[1], "ここからは、AIのコーナーです。",
+		"1本目は intro が導入していないのでコーナー切替の定型句")
+	assert.Contains(t, llm.prompts[2], "続いてのニュースです。", "同一コーナーの継続")
+	assert.NotContains(t, llm.prompts[2], "ここからは、")
+	assert.Contains(t, llm.prompts[3], "ここからは、開発のコーナーです。", "コーナー切替")
+
+	for i, p := range llm.prompts[1:4] {
+		assert.NotContains(t, p, "直前のコーナー", "news prompt %d: つなぎ文は廃止 (D-37 (6))", i+1)
+		assert.Contains(t, p, "直前に紹介した記事には触れない。",
+			"news prompt %d: 前の記事への言及禁止を明示する", i+1)
+	}
+	assert.NotContains(t, llm.prompts[2], "記事A", "前の記事のタイトルはプロンプトに渡らない")
+	assert.NotContains(t, llm.prompts[3], "記事B")
 }
 
 func TestGenerator_IntroAndOutroPrompts(t *testing.T) {
 	llm := &fakeLLM{}
-	gen := script.NewGenerator(llm, "pulse", nil)
+	gen := script.NewGenerator(llm, nil)
 
+	// 2026-07-05 は日曜日。曜日は Go 側で算出する (D-37 (5)).
 	_, _, err := gen.GenerateEpisode(context.Background(), time.Date(2026, 7, 5, 4, 30, 0, 0, time.UTC), radioArticles(), 0)
 	require.NoError(t, err)
 
 	intro := llm.prompts[0]
-	assert.Contains(t, intro, "2026年7月5日")
-	assert.Contains(t, intro, "pulse")
-	assert.Contains(t, intro, "golang")
-	assert.Contains(t, intro, "ai")
+	assert.Contains(t, intro, "7月5日日曜日")
+	assert.Contains(t, intro, "おはようございます。キャッチアップフィード、7月5日日曜日の放送です。",
+		"オープニング冒頭の定型句が渡っている")
+	assert.Contains(t, intro, "それでは、最初のニュースです。", "オープニング末尾の定型句が渡っている")
+	assert.Contains(t, intro, "- 開発")
+	assert.Contains(t, intro, "- AI")
 	assert.Contains(t, intro, "2件")
 
 	outro := llm.prompts[3]
-	assert.Contains(t, outro, "Go 1.26 リリース")
-	assert.Contains(t, outro, "新しい推論モデル")
+	assert.Contains(t, outro, "7月5日日曜日")
+	assert.Contains(t, outro,
+		"詳しいリンクは番組情報欄に掲載しています。キャッチアップフィード、また明日お会いしましょう。",
+		"クロージング末尾の定型句が渡っている")
+	assert.Contains(t, outro, "個別の記事タイトルは挙げない", "D-37 (7): 総括のみ")
+	assert.NotContains(t, outro, "Go 1.26 リリース", "quizCount=0 の outro に記事タイトルは渡らない")
+	assert.NotContains(t, outro, "新しい推論モデル")
+}
+
+// TestGenerator_PromptsCarryTheProgramFormat pins the D-37 invariants that
+// apply to every prompt: the kana program name, the persona/tone rules, the
+// ban on volunteered information, and — the regression that started all this —
+// no raw category slug and no ASCII program name anywhere.
+func TestGenerator_PromptsCarryTheProgramFormat(t *testing.T) {
+	llm := &fakeLLM{}
+	gen := script.NewGenerator(llm, nil)
+
+	_, _, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
+	require.NoError(t, err)
+	require.Len(t, llm.prompts, 4)
+
+	for i, p := range llm.prompts {
+		assert.Contains(t, p, "ラジオ番組「キャッチアップフィード」", "prompt %d", i)
+		assert.NotContains(t, p, "catchup-feed", "prompt %d: ASCII の番組名は台本に出さない (D-37 (3))", i)
+		assert.NotContains(t, p, "パーソナリティです", "prompt %d: 人物ペルソナを与えない (D-37 (1))", i)
+		assert.Contains(t, p, "一人称", "prompt %d: 一人称の禁止", i)
+		assert.Contains(t, p, "「パーソナリティの〜」", "prompt %d: 名乗りの明示的な禁止", i)
+		assert.Contains(t, p, "感嘆符は使わない", "prompt %d: 口調の指定 (D-37 (2))", i)
+		assert.Contains(t, p, "時刻・天気・季節の行事は書かない",
+			"prompt %d: 渡していない情報への言及禁止 (D-37 (5))", i)
+	}
+
+	// 生スラッグは1本もプロンプトに出ない (D-37 (4))。
+	for i, p := range llm.prompts {
+		for _, slug := range []string{"dev", "ai", "infra", "security", "community"} {
+			assert.NotContains(t, p, "「"+slug+"」", "prompt %d: 生スラッグ %q", i, slug)
+			assert.NotContains(t, p, "- "+slug, "prompt %d: 生スラッグ %q", i, slug)
+		}
+	}
+}
+
+// TestGenerator_UnknownCategoryFallsBackToSlug documents the decided behaviour
+// for a category the 対応表 does not know (see format.go cornerName): the slug
+// is spoken as-is rather than collapsed into a generic name, and the generator
+// WARNs so the table gets a new row.
+func TestGenerator_UnknownCategoryFallsBackToSlug(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	llm := &fakeLLM{}
+	gen := script.NewGenerator(llm, logger)
+
+	articles := []repository.RadioArticle{
+		{ID: 1, Title: "記事X", Category: "product", SourceName: "Src", Summary: "要約X"},
+	}
+	_, _, err := gen.GenerateEpisode(context.Background(), day(4), articles, 0)
+	require.NoError(t, err, "未知カテゴリで放送を止めない (§8)")
+
+	assert.Contains(t, llm.prompts[1], "ここからは、productのコーナーです。")
+	assert.Contains(t, buf.String(), "unknown source category")
+	assert.Contains(t, buf.String(), "product")
+}
+
+// TestGenerator_NewsPromptKeepsTheLengthSpec pins D-37 (8): 尺の指定は今回
+// 変更しない。実測とのズレは別課題。
+func TestGenerator_NewsPromptKeepsTheLengthSpec(t *testing.T) {
+	llm := &fakeLLM{}
+	gen := script.NewGenerator(llm, nil)
+
+	_, _, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
+	require.NoError(t, err)
+	assert.Contains(t, llm.prompts[1], "300〜500文字程度")
 }
 
 func TestGenerator_Errors(t *testing.T) {
@@ -147,7 +242,7 @@ func TestGenerator_Errors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gen := script.NewGenerator(tt.llm, "pulse", nil)
+			gen := script.NewGenerator(tt.llm, nil)
 			segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantSub)
@@ -158,7 +253,7 @@ func TestGenerator_Errors(t *testing.T) {
 }
 
 func TestGenerator_NoArticles(t *testing.T) {
-	gen := script.NewGenerator(&fakeLLM{}, "pulse", nil)
+	gen := script.NewGenerator(&fakeLLM{}, nil)
 	_, _, err := gen.GenerateEpisode(context.Background(), day(4), nil, 0)
 	assert.Error(t, err)
 }
@@ -171,7 +266,7 @@ func TestGenerator_NoArticles(t *testing.T) {
 // here first.
 func TestGenerator_OutroPromptUnchangedWithoutQuiz(t *testing.T) {
 	llm := &fakeLLM{}
-	gen := script.NewGenerator(llm, "pulse", nil)
+	gen := script.NewGenerator(llm, nil)
 
 	_, _, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 	require.NoError(t, err)
@@ -181,21 +276,73 @@ func TestGenerator_OutroPromptUnchangedWithoutQuiz(t *testing.T) {
 		"quizCount=0 must render the exact pre-Phase 3 outro prompt (§12-1)")
 }
 
-// goldenQuizlessOutroPrompt is the pre-Phase 3 outro prompt for day(4) and
-// radioArticles(). Shared by the §12-1 regression pin and the D-26 (1)
-// quiz-less retry test: the retry must reuse this exact prompt.
-const goldenQuizlessOutroPrompt = `あなたは技術ニュースを毎朝届けるラジオ番組「pulse」のパーソナリティです。
-2026年7月4日放送分のクロージング原稿を書いてください。
+// goldenQuizlessOutroPrompt is the quiz-less outro prompt for day(4)
+// (2026-07-04、土曜日) and radioArticles(). Shared by the §12-1 regression pin
+// and the D-26 (1) quiz-less retry test: the retry must reuse this exact
+// prompt.
+const goldenQuizlessOutroPrompt = `あなたはラジオ番組「キャッチアップフィード」の放送原稿を書く担当です。次の番組ルールに必ず従ってください。
+- 番組そのものが語る形で書く。一人称(私・わたし・僕・我々など)を使わない。
+- 名乗りは番組名だけにする。「パーソナリティの〜」「お送りするのは〜」のように人物として名乗る文は書かない。人物名や肩書きを作らない。名前の伏せ字や記入欄を残さない。
+- 落ち着いたアナウンサー調のですます調で書く。感嘆符は使わない。過度な煽りや呼びかけをしない。
+- 番組名は必ず「キャッチアップフィード」と書く。英字表記や略称を使わない。
+- このプロンプトに書かれていない情報に触れない。時刻・天気・季節の行事は書かない。日付と曜日はこのプロンプトが渡したものだけを使う。
+- 出力は読み上げ原稿の本文のみ。見出し・箇条書き・記号・注釈・前置き・URL は書かない。
+- 音声合成でそのまま読み上げるため、英数字の羅列を避け、自然な日本語にする。
 
-今日紹介した記事:
-- Go 1.26 リリース
-- 新しい推論モデル
+7月4日土曜日放送分のクロージング原稿を書いてください。
+
+今日は2件の記事を、次のコーナーでお届けしました:
+- 開発
+- AI
 
 条件:
-- 今日の内容の短い振り返りと締めの挨拶を100文字程度で。次回への一言も添える。
-- 出力は読み上げ原稿の本文のみ。見出し・箇条書き・記号・注釈は書かない。
-- 音声合成でそのまま読み上げるため、URL や英数字の羅列を避け、自然な日本語にする。
+- 今日の放送全体を短く振り返る。個別の記事タイトルは挙げない。
+- 最後は次の一文をそのまま書いて締める: 詳しいリンクは番組情報欄に掲載しています。キャッチアップフィード、また明日お会いしましょう。
+- 全体で100文字程度にする。
 `
+
+// goldenOutroQuizSection is what quizCount>0 appends to the outro prompt. It
+// is byte-for-byte the pre-D-37 section: the D-37 rewrite touched the
+// broadcast half of outro.tmpl only, because D-26 (1) と §12-1 の縮退・遮断
+// ロジック(マーカー分割・stripQuizLeak・クイズなし再試行)がこの出力形式に
+// 依存している。相乗りセクションを触るときは D-26 を読み直すこと。
+const goldenOutroQuizSection = `
+クロージング原稿に続けて、番組の復習コーナーで使う学習項目も作ってください。
+
+本日の記事一覧:
+記事1: Go 1.26 リリース
+要約: Go 1.26 の要約テキスト。
+記事2: 新しい推論モデル
+要約: 推論モデルの要約テキスト。
+
+学習項目の条件:
+- 記事一覧から技術的な学びが最も大きい記事を1件選び、選んだ記事ごとにクイズを1問作る。
+- クロージング原稿の本文を最後まで書いたあと、「===LEARNING_ITEMS===」という行をこの表記のまま1回だけ出力し、その後に学習項目だけを出力する。クロージング原稿の本文ではクイズや学習項目に一切触れない。
+- 学習項目は選んだ記事ごとに、次の4行をこの順で出力する。各行は改行せず1行に収める。
+記事番号: 記事一覧の番号(数字のみ)
+概念: 学習内容の1行見出し
+問題: ラジオで読み上げるクイズ文
+答え: 答えと一言解説
+- 問題と答えは「昨日のニュースで触れた○○ですが」のように、すでに放送済みであることを前提にしたラジオ口調の日本語で書く。記事の要約に書かれている内容だけを根拠にし、事実を付け足さない。
+- 問題と答えも音声合成でそのまま読み上げるため、URL や英数字の羅列を避ける。
+`
+
+// TestGenerator_OutroQuizSectionUnchanged pins that the piggybacked section
+// still renders exactly as before the D-37 rewrite (D-26 / §12-1 の回帰防止):
+// the quiz prompt is the quiz-less prompt plus this section, unchanged.
+func TestGenerator_OutroQuizSectionUnchanged(t *testing.T) {
+	llm := &fakeLLM{responses: []string{"イントロ。", "ニュース1。", "ニュース2。",
+		"アウトロ本文。\n===LEARNING_ITEMS===\n記事番号: 1\n概念: c\n問題: q\n答え: a"}}
+	gen := script.NewGenerator(llm, nil)
+
+	_, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
+	require.NoError(t, err)
+	require.Len(t, llm.prompts, 4)
+
+	assert.Equal(t, goldenQuizlessOutroPrompt+goldenOutroQuizSection, llm.prompts[3],
+		"相乗りセクションの構造・マーカー・出力形式は D-37 で変更しない")
+	require.Len(t, drafts, 1, "marker split still works on the rewritten prompt")
+}
 
 // TestGenerator_QuizPiggyback covers the D-19 happy path: one extra
 // section on the outro call (LLM 呼び出し回数は不変), the marker split
@@ -209,7 +356,7 @@ func TestGenerator_QuizPiggyback(t *testing.T) {
 			"問題: 昨日のニュースで触れた新しい推論モデルですが、小型化の鍵は何だったでしょうか。\n" +
 			"答え: 蒸留です。大きなモデルの知識を小さなモデルに移して計算資源を節約するのがポイントでした。",
 	}}
-	gen := script.NewGenerator(llm, "pulse", nil)
+	gen := script.NewGenerator(llm, nil)
 
 	segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
 	require.NoError(t, err)
@@ -289,7 +436,7 @@ func TestGenerator_QuizDegradation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			llm := &fakeLLM{responses: []string{"イントロ。", "ニュース1。", "ニュース2。", tt.outro}}
-			gen := script.NewGenerator(llm, "pulse", nil)
+			gen := script.NewGenerator(llm, nil)
 
 			segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
 			require.NoError(t, err, "quiz-side failures must not abort the episode (§5.1)")
@@ -370,7 +517,7 @@ func TestGenerator_QuizEmptyOutroQuizlessRetry(t *testing.T) {
 				responses = append(responses, tt.retryOutro)
 			}
 			llm := &fakeLLM{responses: responses}
-			gen := script.NewGenerator(llm, "pulse", nil)
+			gen := script.NewGenerator(llm, nil)
 
 			segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
 
@@ -410,7 +557,7 @@ func TestGenerator_QuizLeakBeforeValidMarker(t *testing.T) {
 	llm := &fakeLLM{responses: []string{"イントロ。", "ニュース1。", "ニュース2。",
 		"アウトロ。\n記事番号: 1\n概念: c1\n問題: q1\n答え: a1\n" +
 			"===LEARNING_ITEMS===\n記事番号: 2\n概念: c2\n問題: q2\n答え: a2"}}
-	gen := script.NewGenerator(llm, "pulse", nil)
+	gen := script.NewGenerator(llm, nil)
 
 	segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
 	require.NoError(t, err)

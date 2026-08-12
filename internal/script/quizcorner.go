@@ -1,7 +1,6 @@
 package script
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -19,7 +18,7 @@ import (
 // the public feed, episode notifications (D-29: admin email) or a cloud
 // LLM prompt (§10).
 type QuizCorner struct {
-	// Lead is the corner introduction (つなぎ文: テンプレート+項目数).
+	// Lead is the corner introduction (format.go の定型句+項目数).
 	Lead string
 	// Items are the reads, in ListDue order (§6.3: due_on ASC, id ASC).
 	Items []QuizRead
@@ -43,9 +42,7 @@ func BuildQuizCorner(items []learning.Item) QuizCorner {
 		return QuizCorner{}
 	}
 	corner := QuizCorner{
-		Lead: fmt.Sprintf(
-			"さて、ここからは復習のコーナーです。これまでの放送でお伝えした内容から、今日は全部で%d問おさらいします。問題のあとに少し間をあけるので、頭の中で答えてみてください。",
-			len(items)),
+		Lead:  quizCornerLead(len(items)),
 		Items: make([]QuizRead, 0, len(items)),
 	}
 	for i, item := range items {
@@ -60,9 +57,9 @@ func BuildQuizCorner(items []learning.Item) QuizCorner {
 			// The numbering / 「答え。」 cues are part of the read text and
 			// therefore part of the archived segment script — segments must
 			// record exactly what went on air (§4 設計メモ: script カラムに
-			// 読み上げ全文が残る).
-			Question: fmt.Sprintf("第%d問。%s", i+1, item.Question),
-			Answer:   "答え。" + item.Answer,
+			// 読み上げ全文が残る). 文言は format.go (D-37 (9)).
+			Question: quizReadQuestion(i+1, item.Question),
+			Answer:   quizReadAnswer(item.Answer),
 		})
 	}
 	return corner
@@ -112,13 +109,13 @@ func AppendQuizShowNotes(notes string, items []learning.Item, gradeURL string) s
 	}
 	var sb strings.Builder
 	sb.WriteString(notes)
-	sb.WriteString("\n\n今日の復習:\n")
+	sb.WriteString(quizNotesHeading)
 	for _, item := range items {
 		sb.WriteString("- ")
 		sb.WriteString(item.Concept)
 		sb.WriteString("\n")
 	}
-	sb.WriteString("\n採点はこちら: ")
+	sb.WriteString(quizNotesGradePrefix)
 	sb.WriteString(gradeURL)
 	return sb.String()
 }
@@ -128,19 +125,14 @@ func AppendQuizShowNotes(notes string, items []learning.Item, gradeURL string) s
 // not an LLM call: the day has no public article material, quiz content must
 // not reach a cloud prompt (§10), and a fixed two-liner costs zero quota
 // (§12-3) for a segment only the admin ever hears.
-func QuizOnlyIntro(showName string, date time.Time) string {
-	return fmt.Sprintf(
-		"おはようございます、%s、%sの放送です。今日は新しい記事のお知らせはありません。かわりに、これまでの放送のおさらいをお届けします。",
-		showName, formatDate(date))
-}
+//
+// 番組名は引数に取らない — 読み上げ名は format.go に固定されている (D-37 (3))。
+// date は放送日のタイムゾーンに変換済みの時刻であること。
+func QuizOnlyIntro(date time.Time) string { return quizOnlyIntroScript(date) }
 
 // QuizOnlyOutro is the fixed closing of a quiz-only private episode.
-func QuizOnlyOutro(showName string) string {
-	return fmt.Sprintf("今日のおさらいは以上です。%sでした。また明日お会いしましょう。", showName)
-}
+func QuizOnlyOutro() string { return quizOnlyOutroScript }
 
 // QuizOnlyShowNotesBase opens the quiz-only episode's show notes; the
 // concept list and grading link are appended via AppendQuizShowNotes.
-func QuizOnlyShowNotesBase() string {
-	return "今日は新しい記事がなかったため、復習のみお届けしました。"
-}
+func QuizOnlyShowNotesBase() string { return quizOnlyShowNotesBase }

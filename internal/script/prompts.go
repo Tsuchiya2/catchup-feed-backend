@@ -1,10 +1,13 @@
 // Package script builds the radio episode script (§3.2 internal/script:
-// セグメント選定・順序・つなぎ文生成). The LLM input is the article summary
+// セグメント選定・順序・定型句の組み立て). The LLM input is the article summary
 // only — never the extracted article content (C-12); this is enforced
 // structurally by repository.RadioArticle carrying no content field.
 //
 // Prompts live as files under prompts/ and are embedded at build time, so
-// prompt tuning is versioned like code (§6-2).
+// prompt tuning is versioned like code (§6-2). プロンプトが持つのは「指示」
+// だけで、台本に出る言い回し(番組名・日付・コーナー名・定型句)は format.go
+// が持ちテンプレート変数として渡す (D-37 (9)(10))。共通のペルソナ・口調・
+// 禁止事項は prompts/common.tmpl の "persona" ブロック1箇所にまとめてある。
 package script
 
 import (
@@ -12,9 +15,6 @@ import (
 	"fmt"
 	"strings"
 	"text/template"
-	"time"
-
-	"catchup-feed/internal/repository"
 )
 
 //go:embed prompts/*.tmpl
@@ -22,37 +22,46 @@ var promptFS embed.FS
 
 var promptTemplates = template.Must(template.ParseFS(promptFS, "prompts/*.tmpl"))
 
-// introData feeds prompts/intro.tmpl.
+// introData feeds prompts/intro.tmpl. Lead / Handoff are the fixed opening and
+// closing sentences from format.go; Corners are already converted to spoken
+// names (D-37 (4): 生スラッグをプロンプトに出さない).
 type introData struct {
-	ShowName     string
+	programFormat
 	Date         string
 	Corners      []string
 	ArticleCount int
+	Lead         string
+	Handoff      string
 }
 
-// newsData feeds prompts/news.tmpl. Summary is the only article-derived
-// body text (C-12); PrevTitle drives the つなぎ文 (§6-2).
+// newsData feeds prompts/news.tmpl. Summary is the only article-derived body
+// text (C-12). Lead is this segment's fixed opening sentence — コーナー継続か
+// 切替かで出し分けたもの (D-37 (6): つなぎ文は廃止し、直前の記事には触れさせ
+// ない)。Corner is the spoken corner name, not the DB slug.
 type newsData struct {
-	ShowName  string
-	Category  string
-	Source    string
-	Title     string
-	Summary   string
-	PrevTitle string
-	Position  int
-	Total     int
+	programFormat
+	Corner   string
+	Source   string
+	Title    string
+	Summary  string
+	Lead     string
+	Position int
+	Total    int
 }
 
-// outroData feeds prompts/outro.tmpl. Quiz enables the Phase 3 learning
-// item section piggybacked on the outro call (D-19: 台本生成と同一 LLM
-// 呼び出しに相乗り — クオータ純増ゼロ); nil renders the outro prompt
-// byte-identically to the pre-Phase 3 template, which is what keeps the
+// outroData feeds prompts/outro.tmpl. 記事タイトルは渡さない — クロージングは
+// 総括のみで、全件はショーノートに載る (D-37 (7))。SignOff is the fixed last
+// sentence. Quiz enables the Phase 3 learning item section piggybacked on the
+// outro call (D-19: 台本生成と同一 LLM 呼び出しに相乗り — クオータ純増ゼロ);
+// nil renders the outro prompt without that section, which is what keeps the
 // public episode free of any regression (Phase 3 §12-1).
 type outroData struct {
-	ShowName string
-	Date     string
-	Titles   []string
-	Quiz     *quizPromptData
+	programFormat
+	Date         string
+	Corners      []string
+	ArticleCount int
+	SignOff      string
+	Quiz         *quizPromptData
 }
 
 // quizPromptData feeds the learning-item section of outro.tmpl (Phase 3
@@ -81,22 +90,4 @@ func renderPrompt(name string, data any) (string, error) {
 		return "", fmt.Errorf("script: render prompt %s: %w", name, err)
 	}
 	return sb.String(), nil
-}
-
-// formatDate renders the broadcast date in spoken Japanese form.
-func formatDate(t time.Time) string {
-	return fmt.Sprintf("%d年%d月%d日", t.Year(), int(t.Month()), t.Day())
-}
-
-// corners returns the distinct categories in on-air order.
-func corners(articles []repository.RadioArticle) []string {
-	var out []string
-	seen := make(map[string]bool, len(articles))
-	for _, a := range articles {
-		if !seen[a.Category] {
-			seen[a.Category] = true
-			out = append(out, a.Category)
-		}
-	}
-	return out
 }

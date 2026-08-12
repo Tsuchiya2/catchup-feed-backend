@@ -9,13 +9,20 @@ import (
 	"catchup-feed/internal/learning"
 )
 
+// TestBuildWeeklyReview walks every combination of the three materials and
+// pins the full read (D-37: 文言は format.go、組み立てはここ). Full-string
+// equality rather than Contains: 「このうち」「いっぽうで」のような接続は
+// 直前の文の有無で変わるので、欠けた組み合わせで日本語が壊れていないことは
+// 全文でしか担保できない。
 func TestBuildWeeklyReview(t *testing.T) {
+	const lead = "ここで、今週の学びを振り返ります。"
+	const closing = "来週も少しずつ続けていきましょう。"
+
 	tests := []struct {
-		name         string
-		material     learning.WeeklyReview
-		wantOK       bool
-		wantContains []string
-		wantAbsent   []string
+		name     string
+		material learning.WeeklyReview
+		wantOK   bool
+		want     string
 	}{
 		{
 			name:     "empty week is skipped (§7.4: 空の振り返りを作らない)",
@@ -23,13 +30,52 @@ func TestBuildWeeklyReview(t *testing.T) {
 			wantOK:   false,
 		},
 		{
-			name: "concepts only",
+			name:     "concepts only",
+			material: learning.WeeklyReview{Concepts: []string{"コンテキスト伝播", "select 文"}},
+			wantOK:   true,
+			want:     lead + "今週学んだ項目は2つ。コンテキスト伝播、select 文、でした。" + closing,
+		},
+		{
+			name:     "graduations only — 「このうち」に受ける先行文が無いので言い換える",
+			material: learning.WeeklyReview{GraduatedCount: 1},
+			wantOK:   true,
+			want:     lead + "今週は1つの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
+		},
+		{
+			name:     "reintroduction only — 逆接の「いっぽうで」を落とす",
+			material: learning.WeeklyReview{Reintroduced: "忘れた項目"},
+			wantOK:   true,
+			want:     lead + "「忘れた項目」は一度忘れてしまったため、もう一度おさらいのリストに戻しています。" + closing,
+		},
+		{
+			name: "concepts + graduations",
 			material: learning.WeeklyReview{
-				Concepts: []string{"コンテキスト伝播", "select 文"},
+				Concepts:       []string{"A", "B", "C"},
+				GraduatedCount: 2,
 			},
-			wantOK:       true,
-			wantContains: []string{"今週の学びを振り返って", "2個の項目", "コンテキスト伝播、select 文", "来週も"},
-			wantAbsent:   []string{"卒業", "忘れて"},
+			wantOK: true,
+			want: lead + "今週学んだ項目は3つ。A、B、C、でした。" +
+				"このうち2つが繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
+		},
+		{
+			name: "concepts + reintroduction",
+			material: learning.WeeklyReview{
+				Concepts:     []string{"A"},
+				Reintroduced: "難しい概念",
+			},
+			wantOK: true,
+			want: lead + "今週学んだ項目は1つ。A、でした。" +
+				"いっぽうで「難しい概念」は一度忘れてしまったため、もう一度おさらいのリストに戻しています。" + closing,
+		},
+		{
+			name: "graduations + reintroduction",
+			material: learning.WeeklyReview{
+				GraduatedCount: 2,
+				Reintroduced:   "難しい概念",
+			},
+			wantOK: true,
+			want: lead + "今週は2つの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" +
+				"いっぽうで「難しい概念」は一度忘れてしまったため、もう一度おさらいのリストに戻しています。" + closing,
 		},
 		{
 			name: "concepts + graduations + reintroduction",
@@ -39,29 +85,19 @@ func TestBuildWeeklyReview(t *testing.T) {
 				Reintroduced:   "難しい概念",
 			},
 			wantOK: true,
-			wantContains: []string{
-				"3個の項目", "A、B、C",
-				"2個の項目", "卒業",
-				"「難しい概念」", "忘れてしまった",
-			},
+			want: lead + "今週学んだ項目は3つ。A、B、C、でした。" +
+				"このうち2つが繰り返しの復習を経て定着し、復習リストを卒業しました。" +
+				"いっぽうで「難しい概念」は一度忘れてしまったため、もう一度おさらいのリストに戻しています。" + closing,
 		},
 		{
-			name: "graduations only, no items learned this week",
+			name: "double-digit week switches the counter (「10つ」と読ませない)",
 			material: learning.WeeklyReview{
-				GraduatedCount: 1,
+				Concepts:       []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"},
+				GraduatedCount: 10,
 			},
-			wantOK:       true,
-			wantContains: []string{"1個の項目", "卒業", "来週も"},
-			wantAbsent:   []string{"今週は全部で"}, // concepts sentence omitted
-		},
-		{
-			name: "reintroduction only",
-			material: learning.WeeklyReview{
-				Reintroduced: "忘れた項目",
-			},
-			wantOK:       true,
-			wantContains: []string{"「忘れた項目」", "もう一度おさらい"},
-			wantAbsent:   []string{"個の項目", "卒業"},
+			wantOK: true,
+			want: lead + "今週学んだ項目は10個。A、B、C、D、E、F、G、H、I、J、でした。" +
+				"このうち10個が繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
 		},
 	}
 	for _, tt := range tests {
@@ -72,15 +108,11 @@ func TestBuildWeeklyReview(t *testing.T) {
 				assert.Empty(t, body)
 				return
 			}
-			for _, s := range tt.wantContains {
-				assert.Contains(t, body, s)
-			}
-			for _, s := range tt.wantAbsent {
-				assert.NotContains(t, body, s)
-			}
+			assert.Equal(t, tt.want, body)
 			// The script is a clean read — no leftover template tokens.
 			assert.NotContains(t, body, "%!")
 			assert.True(t, strings.HasSuffix(body, "。"), "ends on a full stop for clean TTS")
+			assert.NotContains(t, body, "！", "アナウンサー調: 感嘆符を使わない (D-37 (2))")
 		})
 	}
 }
