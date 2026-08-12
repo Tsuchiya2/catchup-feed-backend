@@ -163,14 +163,21 @@ func privateEnclosureURL(baseURL string, episodeID int64) string {
 }
 
 // publicArtworkURL builds the channel-artwork URL under the same token
-// path as the feed itself (C-9): /feeds/{token}/artwork.jpg.
+// path as the feed itself (C-9):
+// /feeds/{token}/artwork/{fingerprint}.jpg.
+//
+// The fingerprint segment is what makes an artwork swap visible to
+// subscribers: podcast apps cache channel art by URL (and Apple mirrors
+// it onto its own servers), so a fixed URL would keep serving the old
+// logo forever no matter what the Pi returns.
 func publicArtworkURL(baseURL, token string) string {
-	return fmt.Sprintf("%s/feeds/%s/artwork.jpg", baseURL, url.PathEscape(token))
+	return fmt.Sprintf("%s/feeds/%s/artwork/%s", baseURL, url.PathEscape(token), artworkFileName())
 }
 
-// privateArtworkURL builds the tailnet artwork URL: /private/artwork.jpg.
+// privateArtworkURL builds the tailnet artwork URL:
+// /private/artwork/{fingerprint}.jpg.
 func privateArtworkURL(baseURL string) string {
-	return baseURL + "/private/artwork.jpg"
+	return baseURL + "/private/artwork/" + artworkFileName()
 }
 
 // itunesDuration renders seconds in the M:SS / H:MM:SS form podcast apps

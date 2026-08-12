@@ -1,9 +1,12 @@
 package feed
 
 import (
+	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"net/http"
-	"strconv"
+	"time"
 )
 
 // artworkJPEG is the channel artwork (1536x1536 JPEG), embedded into the
@@ -16,20 +19,86 @@ import (
 //go:embed assets/artwork.jpg
 var artworkJPEG []byte
 
-// artworkCacheControl keeps podcast apps from re-fetching the (practically
-// immutable) artwork on every feed poll. One day is long enough to make
-// refetches rare and short enough that a rebuilt image propagates without
-// cache busting.
-const artworkCacheControl = "public, max-age=86400"
+// artworkFingerprint is the first 8 hex characters of the embedded
+// artwork's SHA-256, computed once at process start.
+//
+// Podcast apps key channel artwork on its URL, and Apple Podcasts copies
+// the image onto its own servers: a file swap behind a fixed URL is
+// invisible to subscribers no matter what cache headers we send. So the
+// URL carries the content's fingerprint and changes whenever the bytes
+// change — a rebuilt binary serves a new artwork URL, which the apps read
+// as a new image.
+var artworkFingerprint = fingerprint(artworkJPEG)
 
-// handleArtwork serves the embedded channel artwork. It backs both the
-// token-verified public route and the unauthenticated tailnet route.
+// artworkETag is the strong validator for the artwork body, letting a
+// conditional GET answer 304 instead of resending ~400 KB. It is derived
+// from the same digest as the fingerprint, so identical bytes always mean
+// an identical ETag across restarts and across the two listeners.
+var artworkETag = `"` + artworkFingerprint + `"`
+
+// fingerprint returns the first 8 hex chars of the SHA-256 of b. Eight
+// hex chars (32 bits) is plenty to distinguish the handful of artwork
+// revisions this project will ever have; it is a cache key, not a
+// security boundary.
+func fingerprint(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])[:8]
+}
+
+// artworkFileName is the {file} segment of the fingerprinted artwork
+// routes: "<fingerprint>.jpg". The fingerprint occupies a whole path
+// segment because Go's ServeMux wildcards cannot be mixed with literals
+// inside one segment ("artwork-{fp}.jpg" is not a legal pattern).
+func artworkFileName() string {
+	return artworkFingerprint + ".jpg"
+}
+
+const (
+	// artworkCacheControl applies to the legacy fixed /artwork.jpg URL,
+	// whose content can change under it. One day is long enough to make
+	// refetches rare, short enough that a rebuild propagates.
+	artworkCacheControl = "public, max-age=86400"
+
+	// artworkImmutableCacheControl applies to the fingerprinted URL. The
+	// URL is bound to the content, so it can be cached forever: a new
+	// image arrives as a new URL, never as a new body at the old one.
+	artworkImmutableCacheControl = "public, max-age=31536000, immutable"
+)
+
+// handleArtwork serves the embedded artwork at the legacy fixed URL
+// (/feeds/{token}/artwork.jpg, /private/artwork.jpg). The route is kept
+// alive indefinitely: apps that subscribed before fingerprinted URLs
+// existed still hold it, and answering 404 there would blank out their
+// channel art.
+func (s *Server) handleArtwork(w http.ResponseWriter, r *http.Request) {
+	s.serveArtwork(w, r, artworkCacheControl)
+}
+
+// handleArtworkFingerprinted serves the embedded artwork at the
+// content-addressed URL (/feeds/{token}/artwork/{file},
+// /private/artwork/{file}).
+//
+// The {file} segment is deliberately NOT checked against the current
+// fingerprint: an app holding a stale URL gets the current image rather
+// than a 404 (縮退許容 — a slightly wrong cache key beats a missing
+// image). The segment exists only to make the URL change when the bytes
+// change.
+func (s *Server) handleArtworkFingerprinted(w http.ResponseWriter, r *http.Request) {
+	s.serveArtwork(w, r, artworkImmutableCacheControl)
+}
+
+// serveArtwork writes the artwork with the given caching policy.
+// http.ServeContent does the conditional-request work: If-None-Match
+// against the ETag we set answers 304 with no body. The zero modtime
+// suppresses Last-Modified — the embedded bytes have no meaningful
+// timestamp, and the ETag is the stronger validator anyway.
+//
 // Artwork fetches are deliberately not access-logged: they are app-cache
 // traffic, and a nil-episode row would be indistinguishable from a
 // feed.xml poll in the §4 access log schema.
-func (s *Server) handleArtwork(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) serveArtwork(w http.ResponseWriter, r *http.Request, cacheControl string) {
 	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Content-Length", strconv.Itoa(len(artworkJPEG)))
-	w.Header().Set("Cache-Control", artworkCacheControl)
-	_, _ = w.Write(artworkJPEG)
+	w.Header().Set("Cache-Control", cacheControl)
+	w.Header().Set("ETag", artworkETag)
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(artworkJPEG))
 }

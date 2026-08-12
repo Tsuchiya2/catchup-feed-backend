@@ -1,6 +1,8 @@
 package feed
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -172,12 +174,26 @@ func TestRenderRSS_NoImageURLOmitsArtworkTags(t *testing.T) {
 
 func TestArtworkURLs(t *testing.T) {
 	assert.Equal(t,
-		"https://radio.catchup-feed.com/feeds/tok%2Fen/artwork.jpg",
+		"https://radio.catchup-feed.com/feeds/tok%2Fen/artwork/"+artworkFingerprint+".jpg",
 		publicArtworkURL("https://radio.catchup-feed.com", "tok/en"),
 		"the token segment must be path-escaped like the enclosure URLs")
 	assert.Equal(t,
-		"http://pi.tailnet:8081/private/artwork.jpg",
+		"http://pi.tailnet:8081/private/artwork/"+artworkFingerprint+".jpg",
 		privateArtworkURL("http://pi.tailnet:8081"))
+}
+
+// キャッシュバスティングの核: 画像を差し替えたら URL が変わること。フィン
+// ガープリントが埋め込みバイト列に由来していなければ、アプリ側は旧ロゴを
+// 永久にキャッシュし続ける(PR #104 の再発)。
+func TestArtworkFingerprint_DerivedFromEmbeddedBytes(t *testing.T) {
+	sum := sha256.Sum256(artworkJPEG)
+	assert.Equal(t, hex.EncodeToString(sum[:])[:8], artworkFingerprint)
+	assert.Len(t, artworkFingerprint, 8)
+	assert.Equal(t, artworkFingerprint+".jpg", artworkFileName())
+	assert.Equal(t, `"`+artworkFingerprint+`"`, artworkETag, "ETag は同じダイジェスト由来")
+
+	// 別バイト列は別フィンガープリント = 別 URL。
+	assert.NotEqual(t, fingerprint([]byte("old logo")), fingerprint([]byte("new logo")))
 }
 
 func TestRenderRSS_PrivateEnclosureURL(t *testing.T) {

@@ -363,26 +363,142 @@ func TestPublicFeed_ListError(t *testing.T) {
 
 // ---- channel artwork ----
 
-func TestArtwork_PublicRoute(t *testing.T) {
-	f := newFixture(t, Config{})
+// artworkRoute is one URL the artwork is reachable at. Every case below
+// runs against all four: the fingerprinted URLs (new, content-addressed,
+// immutable) and the legacy fixed ones (kept alive because apps that
+// subscribed before cache busting still hold them), on both listeners.
+type artworkRoute struct {
+	name         string
+	handler      func(f *fixture) http.Handler
+	path         func(f *fixture) string
+	cacheControl string
+	wantLookups  int
+}
 
-	rec := f.get(t, f.publicMux, "/feeds/"+f.plaintext+"/artwork.jpg", nil)
+func artworkRoutes() []artworkRoute {
+	public := func(f *fixture) http.Handler { return f.publicMux }
+	private := func(f *fixture) http.Handler { return f.server.PrivateHandler() }
+	return []artworkRoute{
+		{
+			name:         "public fingerprinted",
+			handler:      public,
+			path:         func(f *fixture) string { return "/feeds/" + f.plaintext + "/artwork/" + artworkFileName() },
+			cacheControl: "public, max-age=31536000, immutable",
+			wantLookups:  1,
+		},
+		{
+			name:         "public legacy",
+			handler:      public,
+			path:         func(f *fixture) string { return "/feeds/" + f.plaintext + "/artwork.jpg" },
+			cacheControl: "public, max-age=86400",
+			wantLookups:  1,
+		},
+		{
+			name:         "private fingerprinted",
+			handler:      private,
+			path:         func(*fixture) string { return "/private/artwork/" + artworkFileName() },
+			cacheControl: "public, max-age=31536000, immutable",
+		},
+		{
+			name:         "private legacy",
+			handler:      private,
+			path:         func(*fixture) string { return "/private/artwork.jpg" },
+			cacheControl: "public, max-age=86400",
+		},
+	}
+}
 
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "image/jpeg", rec.Header().Get("Content-Type"))
-	assert.Equal(t, fmt.Sprint(len(artworkJPEG)), rec.Header().Get("Content-Length"))
-	assert.Equal(t, "public, max-age=86400", rec.Header().Get("Cache-Control"))
-	assert.Equal(t, artworkJPEG, rec.Body.Bytes())
-	// 埋め込みアセットが実際に JPEG であることのピン留め(差し替え事故検知)。
-	require.GreaterOrEqual(t, rec.Body.Len(), 3)
-	assert.Equal(t, []byte{0xFF, 0xD8, 0xFF}, rec.Body.Bytes()[:3], "embedded artwork must be a JPEG")
-	// アートワーク取得はアプリのキャッシュ通信であり、feed.xml のポーリングと
-	// 区別できない nil-episode 行を作らない。
-	assert.Empty(t, f.accessLogs.records, "artwork fetches are not access-logged")
-	assert.Equal(t, 1, f.tokens.lookups, "artwork is served only after token verification")
+func TestArtwork_Serves(t *testing.T) {
+	for _, tt := range artworkRoutes() {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t, Config{})
+
+			rec := f.get(t, tt.handler(f), tt.path(f), nil)
+
+			require.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, "image/jpeg", rec.Header().Get("Content-Type"))
+			assert.Equal(t, fmt.Sprint(len(artworkJPEG)), rec.Header().Get("Content-Length"))
+			// フィンガープリント付き URL だけが immutable。素の /artwork.jpg は
+			// 中身が変わりうるので 1 日で切れる。
+			assert.Equal(t, tt.cacheControl, rec.Header().Get("Cache-Control"))
+			assert.Equal(t, artworkETag, rec.Header().Get("ETag"))
+			assert.Equal(t, artworkJPEG, rec.Body.Bytes())
+			// 埋め込みアセットが実際に JPEG であることのピン留め(差し替え事故検知)。
+			require.GreaterOrEqual(t, rec.Body.Len(), 3)
+			assert.Equal(t, []byte{0xFF, 0xD8, 0xFF}, rec.Body.Bytes()[:3], "embedded artwork must be a JPEG")
+			// アートワーク取得はアプリのキャッシュ通信であり、feed.xml のポーリングと
+			// 区別できない nil-episode 行を作らない。
+			assert.Empty(t, f.accessLogs.records, "artwork fetches are not access-logged")
+			// 私的経路は subscriber 概念の外: トークン照会は起きない。
+			assert.Equal(t, tt.wantLookups, f.tokens.lookups)
+		})
+	}
+}
+
+// ETag による条件付き GET。旧ルート・新ルート双方で 304 が返ること。
+func TestArtwork_ConditionalGet(t *testing.T) {
+	conditions := []struct {
+		name        string
+		ifNoneMatch string
+		wantStatus  int
+	}{
+		{"matching ETag answers 304", artworkETag, http.StatusNotModified},
+		{"ETag inside a list answers 304", `"deadbeefdeadbeef", ` + artworkETag, http.StatusNotModified},
+		{"wildcard answers 304", "*", http.StatusNotModified},
+		{"stale ETag re-sends the image", `"deadbeefdeadbeef"`, http.StatusOK},
+	}
+	for _, route := range artworkRoutes() {
+		for _, c := range conditions {
+			t.Run(route.name+"/"+c.name, func(t *testing.T) {
+				f := newFixture(t, Config{})
+
+				rec := f.get(t, route.handler(f), route.path(f),
+					map[string]string{"If-None-Match": c.ifNoneMatch})
+
+				require.Equal(t, c.wantStatus, rec.Code)
+				assert.Equal(t, artworkETag, rec.Header().Get("ETag"),
+					"304 でも検証子は返す")
+				if c.wantStatus == http.StatusNotModified {
+					assert.Empty(t, rec.Body.Bytes(), "304 must not carry the image")
+				} else {
+					assert.Equal(t, artworkJPEG, rec.Body.Bytes())
+				}
+				assert.Empty(t, f.accessLogs.records, "conditional artwork GETs are not access-logged either")
+			})
+		}
+	}
+}
+
+// 縮退許容: 古いフィンガープリントを握ったアプリに 404 を返さない。URL が
+// 古くても現在の画像が返るほうが、チャンネル画像が消えるより良い。
+func TestArtwork_StaleFingerprintServesCurrentImage(t *testing.T) {
+	files := []string{"deadbeef.jpg", "00000000.jpg", "artwork.jpg", "whatever"}
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			f := newFixture(t, Config{})
+
+			pub := f.get(t, f.publicMux, "/feeds/"+f.plaintext+"/artwork/"+file, nil)
+			require.Equal(t, http.StatusOK, pub.Code)
+			assert.Equal(t, artworkJPEG, pub.Body.Bytes())
+			assert.Equal(t, artworkETag, pub.Header().Get("ETag"), "検証子は常に現在の画像のもの")
+
+			priv := f.get(t, f.server.PrivateHandler(), "/private/artwork/"+file, nil)
+			require.Equal(t, http.StatusOK, priv.Code)
+			assert.Equal(t, artworkJPEG, priv.Body.Bytes())
+
+			assert.Empty(t, f.accessLogs.records)
+		})
+	}
 }
 
 func TestArtwork_PublicRoute_InvalidTokens(t *testing.T) {
+	paths := []struct {
+		name string
+		path func(token string) string
+	}{
+		{"fingerprinted", func(token string) string { return "/feeds/" + token + "/artwork/" + artworkFileName() }},
+		{"legacy", func(token string) string { return "/feeds/" + token + "/artwork.jpg" }},
+	}
 	tests := []struct {
 		name        string
 		token       func(f *fixture) string
@@ -425,37 +541,26 @@ func TestArtwork_PublicRoute_InvalidTokens(t *testing.T) {
 			wantLookups: 0,
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := newFixture(t, Config{})
-			token := tt.token(f)
+	for _, p := range paths {
+		for _, tt := range tests {
+			t.Run(p.name+"/"+tt.name, func(t *testing.T) {
+				f := newFixture(t, Config{})
+				token := tt.token(f)
 
-			rec := f.get(t, f.publicMux, "/feeds/"+token+"/artwork.jpg", nil)
+				rec := f.get(t, f.publicMux, p.path(token), nil)
 
-			assert.Equal(t, http.StatusNotFound, rec.Code)
-			assert.Equal(t, tt.wantLookups, f.tokens.lookups, "DB lookups")
-			assert.NotEqual(t, "image/jpeg", rec.Header().Get("Content-Type"),
-				"failed verification must not leak the artwork")
-			assert.Empty(t, f.accessLogs.records)
-		})
+				assert.Equal(t, http.StatusNotFound, rec.Code)
+				assert.Equal(t, tt.wantLookups, f.tokens.lookups, "DB lookups")
+				assert.NotEqual(t, "image/jpeg", rec.Header().Get("Content-Type"),
+					"failed verification must not leak the artwork")
+				assert.Empty(t, f.accessLogs.records)
+			})
+		}
 	}
 }
 
-func TestArtwork_PrivateRoute(t *testing.T) {
-	f := newFixture(t, Config{})
-
-	rec := f.get(t, f.server.PrivateHandler(), "/private/artwork.jpg", nil)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "image/jpeg", rec.Header().Get("Content-Type"))
-	assert.Equal(t, "public, max-age=86400", rec.Header().Get("Cache-Control"))
-	assert.Equal(t, artworkJPEG, rec.Body.Bytes())
-	// 私的経路は subscriber 概念の外: トークン照会もアクセスログもなし。
-	assert.Zero(t, f.tokens.lookups)
-	assert.Empty(t, f.accessLogs.records)
-}
-
-// 公開フィードのチャンネル画像 URL は enclosure と同じトークンパス配下(C-9)。
+// 公開フィードのチャンネル画像 URL は enclosure と同じトークンパス配下(C-9)
+// で、かつ画像の内容が変わったら URL も変わる(アプリ側キャッシュの破棄)。
 func TestPublicFeed_ChannelArtworkTags(t *testing.T) {
 	f := newFixture(t, Config{})
 	f.episodes.episodes = []*entity.Episode{sampleEpisode(1, entity.FeedKindPublic, "e", time.Now())}
@@ -464,9 +569,14 @@ func TestPublicFeed_ChannelArtworkTags(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	body := rec.Body.String()
-	artworkURL := "https://radio.catchup-feed.com/feeds/" + f.plaintext + "/artwork.jpg"
+	artworkURL := "https://radio.catchup-feed.com/feeds/" + f.plaintext + "/artwork/" + artworkFingerprint + ".jpg"
 	assert.Contains(t, body, `<itunes:image href="`+artworkURL+`"`)
 	assert.Contains(t, body, "<url>"+artworkURL+"</url>")
+	// 固定 URL に戻ると Apple / AntennaPod が旧ロゴを持ち続ける(PR #104 の再発)。
+	assert.NotContains(t, body, "/artwork.jpg")
+	// フィードが指す URL は実際に配信されているルートでなければならない。
+	art := f.get(t, f.publicMux, "/feeds/"+f.plaintext+"/artwork/"+artworkFingerprint+".jpg", nil)
+	assert.Equal(t, http.StatusOK, art.Code)
 }
 
 // 私的フィードのチャンネル画像 URL は /private 配下で、公開ホストを広告しない。
@@ -478,9 +588,11 @@ func TestPrivateFeed_ChannelArtworkTags(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	body := rec.Body.String()
-	assert.Contains(t, body, `<itunes:image href="http://pi.tailnet:8081/private/artwork.jpg"`)
-	assert.Contains(t, body, "<url>http://pi.tailnet:8081/private/artwork.jpg</url>")
+	artworkURL := "http://pi.tailnet:8081/private/artwork/" + artworkFingerprint + ".jpg"
+	assert.Contains(t, body, `<itunes:image href="`+artworkURL+`"`)
+	assert.Contains(t, body, "<url>"+artworkURL+"</url>")
 	assert.NotContains(t, body, "radio.catchup-feed.com")
+	assert.NotContains(t, body, "/artwork.jpg")
 }
 
 // ---- mp3 delivery (C-10) ----
@@ -870,6 +982,8 @@ func TestFeedsCatchAllShieldsAuthStack(t *testing.T) {
 		{"token without resource", http.MethodGet, "/feeds/" + f.plaintext + "/"},
 		{"bare token segment", http.MethodGet, "/feeds/" + f.plaintext},
 		{"unsupported method", http.MethodPost, "/feeds/" + f.plaintext + "/feed.xml"},
+		{"artwork without a file segment", http.MethodGet, "/feeds/" + f.plaintext + "/artwork/"},
+		{"artwork with a stray segment", http.MethodGet, "/feeds/" + f.plaintext + "/artwork/" + artworkFileName() + "/extra"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
