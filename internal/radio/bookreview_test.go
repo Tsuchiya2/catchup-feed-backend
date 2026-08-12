@@ -183,14 +183,15 @@ func TestPipeline_Run_BookReview_Injected(t *testing.T) {
 	assert.Equal(t, sampleBookResult().Script, privSegs[6].Script, "book_review script は生成全文 (§4)")
 	assert.Nil(t, privSegs[6].ArticleID, "book_review は記事に紐づかない")
 
-	// duration = news 120 + corner 156 + book_review 30.
-	assert.Equal(t, 120+30+2*63+30, priv.DurationSec)
+	// duration = news 120 + corner 156 + book_review 30 + ジングル 22.
+	assert.Equal(t, 120+30+2*63+30+jingleSec, priv.DurationSec)
 
-	// concat: news(3) + corner(1+2*3) + book_review(1) + outro(1) = 12。
+	// concat: opening(1) + news(3) + corner(1+2*3) + book_review(1) + outro(1) + ending(1) = 14。
 	privWavs := d.encoder.calls[1].wavPaths
-	require.Len(t, privWavs, 3+7+1+1)
-	assert.Equal(t, "bookreview_000.wav", filepath.Base(privWavs[10]), "book_review は quiz の後・outro の前")
-	assert.Equal(t, d.encoder.calls[0].wavPaths[3], privWavs[11], "outro は最後")
+	require.Len(t, privWavs, 1+3+7+1+1+1)
+	assert.Equal(t, "bookreview_000.wav", filepath.Base(privWavs[11]), "book_review は quiz の後・outro の前")
+	assert.Equal(t, d.encoder.calls[0].wavPaths[4], privWavs[12], "outro はエンディングの直前")
+	assert.Equal(t, "jingle_ending.wav", filepath.Base(privWavs[13]))
 
 	// §7.3 カーソル前進は私的エピソード確定後、cursor 3 -> 6、末尾未達。
 	require.Len(t, br.advances, 1)

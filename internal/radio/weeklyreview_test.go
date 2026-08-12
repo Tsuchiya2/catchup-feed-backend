@@ -75,14 +75,15 @@ func TestPipeline_Run_WeeklyReview_Injected(t *testing.T) {
 	assert.Contains(t, privSegs[6].Script, "今週の学びを振り返って", "review script はテンプレート全文 (§4)")
 	assert.Nil(t, privSegs[6].ArticleID, "review は記事に紐づかない")
 
-	// duration = news 120 + corner 156 + review 30。
-	assert.Equal(t, 120+30+2*63+30, priv.DurationSec)
+	// duration = news 120 + corner 156 + review 30 + ジングル 22。
+	assert.Equal(t, 120+30+2*63+30+jingleSec, priv.DurationSec)
 
-	// concat: news(3) + corner(1+2*3) + review(1) + outro(1) = 12。
+	// concat: opening(1) + news(3) + corner(1+2*3) + review(1) + outro(1) + ending(1) = 14。
 	privWavs := d.encoder.calls[1].wavPaths
-	require.Len(t, privWavs, 3+7+1+1)
-	assert.Equal(t, "weeklyreview_000.wav", filepath.Base(privWavs[10]), "review は quiz の後・outro の前")
-	assert.Equal(t, d.encoder.calls[0].wavPaths[3], privWavs[11], "outro は最後")
+	require.Len(t, privWavs, 1+3+7+1+1+1)
+	assert.Equal(t, "weeklyreview_000.wav", filepath.Base(privWavs[11]), "review は quiz の後・outro の前")
+	assert.Equal(t, d.encoder.calls[0].wavPaths[4], privWavs[12], "outro はエンディングの直前")
+	assert.Equal(t, "jingle_ending.wav", filepath.Base(privWavs[13]))
 
 	// §7.5 私的ショーノート: quiz セクション → 週次の学び → クレジット(末尾)。
 	assert.Contains(t, priv.ShowNotes, "今日の復習")

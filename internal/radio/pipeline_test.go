@@ -118,6 +118,9 @@ type fakeScript struct {
 	articles  []repository.RadioArticle // captured input (C-12 flow check)
 	quizCount int                       // captured input (Phase 3 §5.1/§5.2)
 	drafts    []script.QuizDraft        // returned when quizCount > 0
+	// noSegments returns a segment-less episode without an error — the shape
+	// that must never reach the Pi as a jingles-only mp3.
+	noSegments bool
 }
 
 func (f *fakeScript) GenerateEpisode(_ context.Context, _ time.Time, articles []repository.RadioArticle, quizCount int) ([]*entity.Segment, []script.QuizDraft, error) {
@@ -127,6 +130,9 @@ func (f *fakeScript) GenerateEpisode(_ context.Context, _ time.Time, articles []
 	f.called = true
 	f.articles = articles
 	f.quizCount = quizCount
+	if f.noSegments {
+		return nil, nil, nil
+	}
 	segments := []*entity.Segment{{Position: 1, Kind: entity.SegmentKindIntro, Script: "イントロ。"}}
 	for i, a := range articles {
 		id := a.ID
@@ -249,7 +255,11 @@ type fakeTTS struct {
 	err error
 	// failSubstring makes SynthesizeScript fail only for scripts containing
 	// it (私的側だけ落とす縮退テスト用; e.g. the quiz lead's 「復習のコーナー」).
-	failSubstring  string
+	failSubstring string
+	// badWav returns payloads whose RIFF header cannot be parsed. The bytes
+	// still reach ffmpeg (they encode or they do not — not this pipeline's
+	// call); only the jingle format derivation loses out.
+	badWav         bool
 	calls          int
 	scripts        []string
 	speakerName    string // "" = "ずんだもん"
@@ -265,7 +275,11 @@ func (f *fakeTTS) SynthesizeScript(_ context.Context, script string) ([]tts.Audi
 		return nil, errors.New("synthesizer down for this script")
 	}
 	f.scripts = append(f.scripts, script)
-	return []tts.Audio{{Data: validWav(), Duration: 30 * time.Second}}, nil
+	data := validWav()
+	if f.badWav {
+		data = []byte("not-a-riff-wave-payload")
+	}
+	return []tts.Audio{{Data: data, Duration: 30 * time.Second}}, nil
 }
 
 func (f *fakeTTS) SpeakerName(_ context.Context) (string, error) {
@@ -284,17 +298,70 @@ type encodeCall struct {
 	tags     tts.ID3
 }
 
+// jingle durations the fake encoder reports, mirroring the real embedded
+// assets (opening 10.0s / ending 12.0s). jingleSec is what every episode's
+// DurationSec gains as a result (§6-4) — derived, not restated, so swapping
+// an asset cannot leave a third value silently out of step.
+const (
+	fakeOpeningJingle = 10 * time.Second
+	fakeEndingJingle  = 12 * time.Second
+	jingleSec         = int((fakeOpeningJingle + fakeEndingJingle) / time.Second)
+)
+
 type fakeEncoder struct {
 	err   error
 	calls []encodeCall
+	// jingleErr fails DecodeJingles (ffmpeg 不在・mp3 破損・フォーマット
+	// 不一致の代表) — the episode must still ship (§8).
+	jingleErr error
+	// jingleZero returns a zero-value pair with a NIL error — a contract
+	// violation tts.FFmpeg never commits, but Encoder is an interface and the
+	// pipeline must not put an empty filename into a concat list on anyone's
+	// say-so.
+	jingleZero bool
+	// jingleSilent returns real paths with zero durations and a nil error:
+	// the same contract violation one field over, where the concat list would
+	// be fine but duration_sec would silently under-report the mp3.
+	jingleSilent bool
+	// jingleFormats records the wav format each decode was asked for: it must
+	// be the format this run's engine actually produced (§12-5).
+	jingleFormats []tts.WavFormat
 }
 
 func (f *fakeEncoder) ConcatToMP3(_ context.Context, wavPaths []string, outPath string, tags tts.ID3) error {
 	if f.err != nil {
 		return f.err
 	}
+	// Mirrors the real encoder's first guard (tts.FFmpeg.ConcatToMP3): an
+	// empty list is refused, so no test can quietly assert an episode built
+	// from no programme audio.
+	if len(wavPaths) == 0 {
+		return errors.New("ffmpeg: no input files")
+	}
 	f.calls = append(f.calls, encodeCall{outPath: outPath, wavPaths: wavPaths, tags: tags})
 	return os.WriteFile(outPath, []byte("mp3-bytes"), 0o600)
+}
+
+func (f *fakeEncoder) DecodeJingles(_ context.Context, dir string, format tts.WavFormat) (tts.Jingles, error) {
+	f.jingleFormats = append(f.jingleFormats, format)
+	if f.jingleErr != nil {
+		return tts.Jingles{}, f.jingleErr
+	}
+	// Mirrors tts.FFmpeg's own refusal (pcmCodec): a format it cannot target
+	// is an error, never a decode. Without this the fake would happily
+	// "decode" jingles from a zero WavFormat the real encoder rejects.
+	if format.AudioFormat != 1 {
+		return tts.Jingles{}, fmt.Errorf("fake: non-PCM target format tag %d", format.AudioFormat)
+	}
+	if f.jingleZero {
+		return tts.Jingles{}, nil
+	}
+	opening := tts.Jingle{Path: filepath.Join(dir, "jingle_opening.wav"), Duration: fakeOpeningJingle}
+	ending := tts.Jingle{Path: filepath.Join(dir, "jingle_ending.wav"), Duration: fakeEndingJingle}
+	if f.jingleSilent {
+		opening.Duration, ending.Duration = 0, 0
+	}
+	return tts.Jingles{Opening: opening, Ending: ending}, nil
 }
 
 type fakeTransfer struct {
@@ -404,7 +471,7 @@ func TestPipeline_Run_Success(t *testing.T) {
 		"published_at must be the selection timestamp, not left to the DB INSERT time")
 	assert.Equal(t, "/data/episodes/2026-07-05.mp3", ep.AudioPath)
 	assert.Equal(t, int64(len("mp3-bytes")), ep.AudioBytes)
-	assert.Equal(t, 120, ep.DurationSec, "4 segments x 30s")
+	assert.Equal(t, 120+jingleSec, ep.DurationSec, "4 segments x 30s + ジングル 22s (§6-4)")
 	assert.Contains(t, ep.ShowNotes, "https://example.com/a")
 	assert.Contains(t, ep.ShowNotes, "https://example.com/b")
 	assert.True(t, strings.HasSuffix(ep.ShowNotes, "音声合成: VOICEVOX:ずんだもん"),
@@ -419,7 +486,7 @@ func TestPipeline_Run_Success(t *testing.T) {
 
 	// encoding got every wav and the ID3 tags (§6-4)
 	require.Len(t, d.encoder.calls, 1, "no LearningStore → public episode only (pre-Phase 3 behavior)")
-	assert.Len(t, d.encoder.calls[0].wavPaths, 4)
+	assert.Len(t, d.encoder.calls[0].wavPaths, 4+2, "4 セグメント + オープニング/エンディング")
 	assert.Equal(t, "pulse 2026-07-05", d.encoder.calls[0].tags.Title)
 	assert.Equal(t, "2026-07-05", d.encoder.calls[0].tags.Date)
 }
@@ -930,7 +997,7 @@ func TestPipeline_Run_PrivateTwin(t *testing.T) {
 	require.NotNil(t, pub)
 	assert.Equal(t, "pulse 2026-07-05", pub.Title)
 	assert.Equal(t, "/data/episodes/2026-07-05.mp3", pub.AudioPath)
-	assert.Equal(t, 120, pub.DurationSec, "公開の尺は 4 セグメント × 30s のまま")
+	assert.Equal(t, 120+jingleSec, pub.DurationSec, "公開の尺は 4 セグメント × 30s + ジングル")
 	require.Len(t, pubSegs, 4)
 	assert.NotContains(t, pub.ShowNotes, "今日の復習",
 		"§10: 学習コンテンツは公開ショーノートに現れない")
@@ -944,8 +1011,8 @@ func TestPipeline_Run_PrivateTwin(t *testing.T) {
 	assert.True(t, priv.PublishedAt.Equal(pub.PublishedAt),
 		"同一の選定時刻 — 私的フィードのペア畳み込みの対応キー")
 
-	// 尺: news 120s + lead 30s + (question 30s + 無音 3s + answer 30s) × 2.
-	assert.Equal(t, 120+30+2*63, priv.DurationSec)
+	// 尺: news 120s + lead 30s + (question 30s + 無音 3s + answer 30s) × 2 + ジングル。
+	assert.Equal(t, 120+30+2*63+jingleSec, priv.DurationSec)
 
 	// セグメント: intro, news×2, quiz lead, quiz×2 (1項目=1行), outro。
 	require.Len(t, privSegs, 7)
@@ -972,23 +1039,26 @@ func TestPipeline_Run_PrivateTwin(t *testing.T) {
 		"U-13: クレジット無し配信のパスは私的版にも存在しない")
 
 	// concat リスト2通り: 公開はニュースのみ、私的は outro 直前に
-	// lead → (question → 無音 → answer)×2 が挟まる (§7.2)。
+	// lead → (question → 無音 → answer)×2 が挟まる (§7.2)。両方ジングルで挟む。
 	require.Len(t, d.encoder.calls, 2)
 	pubWavs := d.encoder.calls[0].wavPaths
 	privWavs := d.encoder.calls[1].wavPaths
-	require.Len(t, pubWavs, 4)
+	require.Len(t, pubWavs, 2+4)
 	for _, w := range pubWavs {
 		assert.NotContains(t, filepath.Base(w), "quiz",
 			"§12-1: 公開 concat リストにクイズ素材が混ざらない")
 	}
-	require.Len(t, privWavs, 4+1+2*3)
-	assert.Equal(t, pubWavs[:3], privWavs[:3], "news wav は公開版と共用 (§7.1)")
-	assert.Equal(t, "quiz_lead_000.wav", filepath.Base(privWavs[3]))
-	assert.Equal(t, "quiz_000_q_000.wav", filepath.Base(privWavs[4]))
-	assert.Equal(t, "quiz_silence.wav", filepath.Base(privWavs[5]), "無音は独立 wav (§12-5)")
-	assert.Equal(t, "quiz_000_a_000.wav", filepath.Base(privWavs[6]))
-	assert.Equal(t, "quiz_silence.wav", filepath.Base(privWavs[8]), "同じ無音ファイルを再利用")
-	assert.Equal(t, pubWavs[3], privWavs[len(privWavs)-1], "outro は最後")
+	require.Len(t, privWavs, 2+4+1+2*3)
+	assert.Equal(t, pubWavs[:4], privWavs[:4],
+		"オープニングと intro/news の wav は公開版と共用 (§7.1)")
+	assert.Equal(t, "quiz_lead_000.wav", filepath.Base(privWavs[4]))
+	assert.Equal(t, "quiz_000_q_000.wav", filepath.Base(privWavs[5]))
+	assert.Equal(t, "quiz_silence.wav", filepath.Base(privWavs[6]), "無音は独立 wav (§12-5)")
+	assert.Equal(t, "quiz_000_a_000.wav", filepath.Base(privWavs[7]))
+	assert.Equal(t, "quiz_silence.wav", filepath.Base(privWavs[9]), "同じ無音ファイルを再利用")
+	assert.Equal(t, pubWavs[4], privWavs[len(privWavs)-2], "outro はエンディングの直前")
+	assert.Equal(t, pubWavs[len(pubWavs)-1], privWavs[len(privWavs)-1],
+		"エンディングは両版で同じ wav (§6-4: 1 run 1回のデコード)")
 
 	// §12-7: 通知は公開版のみ — ジョブは2件のまま、payload は公開版の id。
 	require.Len(t, d.jobs.jobs, 2)
@@ -1034,7 +1104,7 @@ func TestPipeline_Run_PrivateTwinNoDueItems(t *testing.T) {
 	priv, privSegs := d.privateCreated()
 	require.NotNil(t, priv, "due ゼロでも私的版は出る(本人の購読先は私的フィード)")
 	require.Len(t, privSegs, 4, "quiz セグメントなし")
-	assert.Equal(t, 120, priv.DurationSec)
+	assert.Equal(t, 120+jingleSec, priv.DurationSec)
 	assert.NotContains(t, priv.ShowNotes, "今日の復習")
 	assert.Empty(t, l.asked)
 }
@@ -1163,8 +1233,8 @@ func TestPipeline_Run_QuizOnlyDay(t *testing.T) {
 	require.NotNil(t, priv)
 	assert.Equal(t, "pulse 2026-07-05", priv.Title)
 	assert.Equal(t, "/data/episodes/2026-07-05-private.mp3", priv.AudioPath)
-	// intro 30s + lead 30s + (q 30s + 無音 3s + a 30s) + outro 30s.
-	assert.Equal(t, 30+30+63+30, priv.DurationSec)
+	// intro 30s + lead 30s + (q 30s + 無音 3s + a 30s) + outro 30s + ジングル。
+	assert.Equal(t, 30+30+63+30+jingleSec, priv.DurationSec)
 
 	require.Len(t, privSegs, 4)
 	assert.Equal(t, entity.SegmentKindIntro, privSegs[0].Kind)
@@ -1178,13 +1248,15 @@ func TestPipeline_Run_QuizOnlyDay(t *testing.T) {
 	assert.Contains(t, priv.ShowNotes, "https://pulse.catchup-feed.com/learning")
 	assert.True(t, strings.HasSuffix(priv.ShowNotes, "音声合成: VOICEVOX:ずんだもん"), "U-13")
 
-	// concat: intro → lead → q → 無音 → a → outro.
+	// concat: オープニング → intro → lead → q → 無音 → a → outro → エンディング.
 	require.Len(t, d.encoder.calls, 1)
 	wavs := d.encoder.calls[0].wavPaths
-	require.Len(t, wavs, 6)
-	assert.Equal(t, "seg_000_000.wav", filepath.Base(wavs[0]))
-	assert.Equal(t, "quiz_silence.wav", filepath.Base(wavs[3]))
-	assert.Equal(t, "seg_001_000.wav", filepath.Base(wavs[5]))
+	require.Len(t, wavs, 2+6)
+	assert.Equal(t, "jingle_opening.wav", filepath.Base(wavs[0]))
+	assert.Equal(t, "seg_000_000.wav", filepath.Base(wavs[1]))
+	assert.Equal(t, "quiz_silence.wav", filepath.Base(wavs[4]))
+	assert.Equal(t, "seg_001_000.wav", filepath.Base(wavs[6]))
+	assert.Equal(t, "jingle_ending.wav", filepath.Base(wavs[7]))
 
 	assert.Empty(t, d.jobs.jobs, "§12-7: 私的版はジョブを積まない(通知・フィード再生成とも)")
 	require.Len(t, l.asked, 1)
