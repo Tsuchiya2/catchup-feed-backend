@@ -21,15 +21,18 @@
 
 フォーマット(サンプルレート・チャンネル数)は問わない。実行時にその run の VOICEVOX 出力から実測したフォーマットへデコードされる(D-36 (2))。ただし**尺は `episodes.duration_sec` と §7.1 の18分ガードに算入される**ので、大きく変える場合は影響を確認すること。
 
-### 手順3の詳細(尺をハードコードしている箇所)
+### 手順3の詳細(素材の性質を固定している箇所)
 
-尺は2箇所にハードコードされており、**壊れ方が非対称**なので両方を必ず更新すること。
+素材の尺とサイズはテスト3箇所に写し取られており、**壊れ方が3通りとも違う**。
 
 | 箇所 | 内容 | 差し替え後の挙動 |
 |---|---|---|
 | `internal/tts/jingle_test.go` の `TestFFmpeg_DecodeJingles_RealFFmpeg` | 実 ffmpeg でデコードした実測尺を 10s / 12s(±0.5)と照合 | **落ちる。ただし ffmpeg のある Mac でだけ**。CI には ffmpeg が無く `t.Skip` するので気づけない |
-| `internal/radio/pipeline_test.go` の `fakeOpeningJingle` / `fakeEndingJingle` / `jingleSec` | パイプラインのテストが使う偽の尺 | **落ちない。実態とズレたまま通り続ける**。`duration_sec` や18分ガードの検証が実物と無関係な値で行われる |
+| `internal/radio/pipeline_test.go` の `fakeOpeningJingle` / `fakeEndingJingle` | パイプラインのテストが使う偽の尺 | **落ちない。実態とズレたまま通り続ける**。`duration_sec` や18分ガードの検証が実物と無関係な値で行われる |
+| `internal/tts/jingle_test.go` の `TestFFmpeg_DecodeJingles_EmbeddedSources` | `opening.mp3` が `ending.mp3` より小さいことを照合(`//go:embed` の入れ替わり検知) | **CI でも落ちる**。ただしサイズの大小関係が逆転した場合のみ |
 
-つまり CI だけ見ていると差し替えに気づけない。素材を替えたら `ffprobe -v error -show_entries format=duration -of default=nw=1 opening.mp3` で実尺を確認し、上表の両方を手で合わせること(`jingleSec` は opening + ending の秒数)。
+つまり、**尺のズレは CI では気づけない**(1行目は skip、2行目はそもそも落ちない)。**サイズの逆転だけは CI で落ちる**。
+
+素材を替えたら `ffprobe -v error -show_entries format=duration -of default=nw=1 opening.mp3` で実尺を確認し、1行目の期待値と2行目の2定数を手で合わせること。`jingleSec` はこの2定数からの導出値なので更新不要。3行目は CI が教えてくれるので、落ちたら大小関係のコメントと期待値を実サイズに合わせる。
 
 `loudnorm` は結合後の全体に1パスかかる。音楽と音声で音量差が大きいと遷移でゲインが動くため、差し替え時は最初の実エピソードを聴いて確認すること。

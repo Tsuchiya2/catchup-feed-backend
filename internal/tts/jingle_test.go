@@ -94,7 +94,8 @@ func TestFFmpeg_DecodeJingles_CommandAssembly(t *testing.T) {
 				assert.Equal(t, "wav", argValue(t, args, "-f"))
 				assert.Contains(t, args, "-vn",
 					"mp3 の埋め込みアートワークは映像ストリームとして落とす")
-				assert.Contains(t, args, "-map_metadata")
+				assert.Equal(t, "-1", argValue(t, args, "-map_metadata"),
+					"ソース mp3 の ID3 フレームを wav に持ち込まない")
 				assert.Contains(t, args, "-y")
 			}
 

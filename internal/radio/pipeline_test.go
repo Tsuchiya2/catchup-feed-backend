@@ -300,11 +300,12 @@ type encodeCall struct {
 
 // jingle durations the fake encoder reports, mirroring the real embedded
 // assets (opening 10.0s / ending 12.0s). jingleSec is what every episode's
-// DurationSec gains as a result (§6-4).
+// DurationSec gains as a result (§6-4) — derived, not restated, so swapping
+// an asset cannot leave a third value silently out of step.
 const (
 	fakeOpeningJingle = 10 * time.Second
 	fakeEndingJingle  = 12 * time.Second
-	jingleSec         = 22
+	jingleSec         = int((fakeOpeningJingle + fakeEndingJingle) / time.Second)
 )
 
 type fakeEncoder struct {
