@@ -61,6 +61,7 @@ type bookReviewData struct {
 	programFormat
 	Title  string
 	Chunks []BookChunk
+	Lead   string // format.go のコーナー導入定型句 (D-37 (9))
 	Marker string
 }
 
@@ -99,6 +100,7 @@ func (g *BookReviewGenerator) Generate(ctx context.Context, bookTitle string, ch
 	prompt, err := renderPrompt("bookreview.tmpl", bookReviewData{
 		Title:  bookTitle,
 		Chunks: chunks,
+		Lead:   bookReviewLead(),
 		Marker: bookQuizMarker,
 	})
 	if err != nil {

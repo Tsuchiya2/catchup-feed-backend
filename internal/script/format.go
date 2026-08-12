@@ -143,12 +143,21 @@ const openingHandoff = "それでは、最初のニュースです。"
 // inside the same corner as the previous article.
 const newsLeadContinued = "続いてのニュースです。"
 
-// newsLeadCorner is the fixed first sentence of a news segment that opens a
-// corner. 1本目にもこれを使う — オープニングはコーナー名を紹介するだけで、
-// 最初のコーナーに入る宣言はしていないため。
+// newsLeadCorner is the fixed first sentence of a segment that opens a corner.
+// 1本目にもこれを使う — オープニングはコーナー名を紹介するだけで、最初の
+// コーナーに入る宣言はしていないため。
+//
+// ニュース以外のコーナー(復習・書籍)もこの1関数を通す。コーナーの入り方の
+// 言い回しを増やさないための集約点であり、ここを変えると全コーナーが揃って
+// 変わる (D-37 (9))。
 func newsLeadCorner(corner string) string {
 	return fmt.Sprintf("ここからは、%sのコーナーです。", corner)
 }
+
+// bookReviewLead is the fixed first sentence of the §7.3 書籍コーナー. It is
+// the same corner-opening 定型句 as every other corner; bookreview.tmpl gets
+// it as a template variable so the wording exists in exactly one place.
+func bookReviewLead() string { return newsLeadCorner("いま読んでいる本") }
 
 // newsLead picks the fixed opening sentence for articles[i] (D-37 (6)):
 // コーナーが切り替わるなら「ここからは、○○のコーナーです。」、同じコーナーが
@@ -178,10 +187,12 @@ const closingSignOff = "詳しいリンクは番組情報欄に掲載してい�
 // LLM を呼ばない。学習内容をクラウドに送らない(§10)ためであり、クオータを
 // 使わない(§12-3)ためでもある。文言を変えても LLM 化はしないこと。
 
-// quizCornerLead is the 復習コーナー introduction read (§7.2).
+// quizCornerLead is the 復習コーナー introduction read (§7.2). コーナーの
+// 入り方はニュースのコーナーと同じ定型句を使う — 言い回しの実体は
+// newsLeadCorner ただ1つ (D-37 (9))。
 func quizCornerLead(itemCount int) string {
-	return fmt.Sprintf(
-		"ここからは、復習のコーナーです。これまでの放送でお伝えした内容から、今日は%d問おさらいします。問題のあとに少し間をあけますので、頭の中で答えてみてください。",
+	return newsLeadCorner("復習") + fmt.Sprintf(
+		"これまでの放送でお伝えした内容から、今日は%d問おさらいします。問題のあとに少し間をあけますので、頭の中で答えてみてください。",
 		itemCount)
 }
 
@@ -231,19 +242,35 @@ const (
 	weeklyReviewClosing = "来週も少しずつ続けていきましょう。"
 )
 
-// weeklyReviewConcepts is the "what was learned" sentence.
+// weeklyReviewConcepts is the "what was learned" sentence. 件数を末尾に置く
+// のは、項目が1件のときも任意の件数のときも同じ形で自然に読めるため。
 func weeklyReviewConcepts(concepts []string) string {
-	return fmt.Sprintf("今週学んだ項目は%s。%s、でした。",
-		itemCount(len(concepts)), strings.Join(concepts, "、"))
+	return fmt.Sprintf("今週学んだ項目は、%s の%sです。",
+		strings.Join(concepts, "、"), itemCount(len(concepts)))
 }
 
-// weeklyReviewGraduated is the graduation sentence. 直前に concepts の文が
-// 読まれたかどうかで受け方を変える(「このうち」は先行文が無いと宙に浮く)。
+// weeklyReviewGraduated is the graduation sentence.
+//
+// 【重要】卒業した項目が「今週学んだ項目」の部分集合であるかのような書き方
+// (「このうちN個が…」)をしてはいけない。learning.WeeklyReview の2つの材料は
+// 母集合が違う:
+//
+//   - Concepts        … created_at が直近7日の項目
+//   - GraduatedCount  … retired_at が直近7日 かつ ラダー完走した項目
+//
+// D-18 の既定ラダー [1,7,30] では生成から卒業まで最短でも38日かかるため、
+// 既定設定ではこの2つは必ず素集合になる。部分集合を主張すると毎週かならず
+// 事実に反する読みになり、件数が乖離すれば「学んだ項目は1つ。このうち10個が
+// 卒業」のような破綻も起きる。渡されていない事実を作らないという D-37 (5) の
+// 方針は、LLM だけでなくテンプレート側にも同じく効く。
+//
+// afterConcepts は接続詞の選択にだけ使う(先行文があれば「また、」で受ける)。
 func weeklyReviewGraduated(count int, afterConcepts bool) string {
+	sentence := fmt.Sprintf("今週は%sの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。", itemCount(count))
 	if afterConcepts {
-		return fmt.Sprintf("このうち%sが繰り返しの復習を経て定着し、復習リストを卒業しました。", itemCount(count))
+		return "また、" + sentence
 	}
-	return fmt.Sprintf("今週は%sの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。", itemCount(count))
+	return sentence
 }
 
 // weeklyReviewReintroduced is the "went back to the list" sentence. 先行文が

@@ -34,7 +34,9 @@ func TestBuildQuizCorner(t *testing.T) {
 
 	t.Run("lead embeds the item count, no LLM involved (§7.2)", func(t *testing.T) {
 		corner := BuildQuizCorner(cornerItems())
-		assert.Contains(t, corner.Lead, "復習のコーナー")
+		// 文言そのものは format_test.go の TestQuizCornerLead が全文で固定
+		// している。ここで見るのは配線 — 問題数が項目数から来ていること。
+		assert.Equal(t, quizCornerLead(2), corner.Lead)
 		assert.Contains(t, corner.Lead, "2問")
 	})
 

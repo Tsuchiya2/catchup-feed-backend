@@ -11,9 +11,13 @@ import (
 
 // TestBuildWeeklyReview walks every combination of the three materials and
 // pins the full read (D-37: 文言は format.go、組み立てはここ). Full-string
-// equality rather than Contains: 「このうち」「いっぽうで」のような接続は
-// 直前の文の有無で変わるので、欠けた組み合わせで日本語が壊れていないことは
-// 全文でしか担保できない。
+// equality rather than Contains: 「いっぽうで」「また、」のような接続は直前の
+// 文の有無で変わるので、欠けた組み合わせで日本語が壊れていないことは全文でしか
+// 担保できない。
+//
+// 卒業の文が「今週学んだ項目」の部分集合を主張しないことも、ここで固定して
+// いる(format.go weeklyReviewGraduated 参照: 2つの材料は母集合が違い、既定の
+// ラダーでは必ず素集合になる)。「このうちN個が」に戻すとこのテストが落ちる。
 func TestBuildWeeklyReview(t *testing.T) {
 	const lead = "ここで、今週の学びを振り返ります。"
 	const closing = "来週も少しずつ続けていきましょう。"
@@ -33,10 +37,10 @@ func TestBuildWeeklyReview(t *testing.T) {
 			name:     "concepts only",
 			material: learning.WeeklyReview{Concepts: []string{"コンテキスト伝播", "select 文"}},
 			wantOK:   true,
-			want:     lead + "今週学んだ項目は2つ。コンテキスト伝播、select 文、でした。" + closing,
+			want:     lead + "今週学んだ項目は、コンテキスト伝播、select 文 の2つです。" + closing,
 		},
 		{
-			name:     "graduations only — 「このうち」に受ける先行文が無いので言い換える",
+			name:     "graduations only — 先行文が無いので接続詞を落とす",
 			material: learning.WeeklyReview{GraduatedCount: 1},
 			wantOK:   true,
 			want:     lead + "今週は1つの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
@@ -54,8 +58,8 @@ func TestBuildWeeklyReview(t *testing.T) {
 				GraduatedCount: 2,
 			},
 			wantOK: true,
-			want: lead + "今週学んだ項目は3つ。A、B、C、でした。" +
-				"このうち2つが繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
+			want: lead + "今週学んだ項目は、A、B、C の3つです。" +
+				"また、今週は2つの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
 		},
 		{
 			name: "concepts + reintroduction",
@@ -64,7 +68,7 @@ func TestBuildWeeklyReview(t *testing.T) {
 				Reintroduced: "難しい概念",
 			},
 			wantOK: true,
-			want: lead + "今週学んだ項目は1つ。A、でした。" +
+			want: lead + "今週学んだ項目は、A の1つです。" +
 				"いっぽうで「難しい概念」は一度忘れてしまったため、もう一度おさらいのリストに戻しています。" + closing,
 		},
 		{
@@ -85,8 +89,8 @@ func TestBuildWeeklyReview(t *testing.T) {
 				Reintroduced:   "難しい概念",
 			},
 			wantOK: true,
-			want: lead + "今週学んだ項目は3つ。A、B、C、でした。" +
-				"このうち2つが繰り返しの復習を経て定着し、復習リストを卒業しました。" +
+			want: lead + "今週学んだ項目は、A、B、C の3つです。" +
+				"また、今週は2つの項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" +
 				"いっぽうで「難しい概念」は一度忘れてしまったため、もう一度おさらいのリストに戻しています。" + closing,
 		},
 		{
@@ -96,8 +100,8 @@ func TestBuildWeeklyReview(t *testing.T) {
 				GraduatedCount: 10,
 			},
 			wantOK: true,
-			want: lead + "今週学んだ項目は10個。A、B、C、D、E、F、G、H、I、J、でした。" +
-				"このうち10個が繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
+			want: lead + "今週学んだ項目は、A、B、C、D、E、F、G、H、I、J の10個です。" +
+				"また、今週は10個の項目が繰り返しの復習を経て定着し、復習リストを卒業しました。" + closing,
 		},
 	}
 	for _, tt := range tests {
@@ -113,6 +117,8 @@ func TestBuildWeeklyReview(t *testing.T) {
 			assert.NotContains(t, body, "%!")
 			assert.True(t, strings.HasSuffix(body, "。"), "ends on a full stop for clean TTS")
 			assert.NotContains(t, body, "！", "アナウンサー調: 感嘆符を使わない (D-37 (2))")
+			assert.NotContains(t, body, "このうち",
+				"卒業した項目は「今週学んだ項目」の部分集合ではない (format.go weeklyReviewGraduated)")
 		})
 	}
 }

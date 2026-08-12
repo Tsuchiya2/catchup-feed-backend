@@ -201,6 +201,11 @@ go build -o radio ./cmd/radio
 | `FFMPEG_PATH` | ffmpeg のパス |
 | `BOOK_REVIEW_OLLAMA_MODEL` / `BOOK_REVIEW_CHUNKS` | 書籍コーナー(私的データ)のローカルモデル・チャンク数 |
 
+> **ソースのカテゴリを増やしたら `internal/script/format.go` の `cornerNameBySlug` に1行足すこと。**
+> `sources.category` はダッシュボードから自由入力でき、DB の CHECK 制約も無い。対応表に無いスラッグは
+> 読み上げコーナー名としてそのまま使われる(= 英字がそのまま音声になる)。当日の radio ログに
+> `unknown source category` の WARN が出るので、それを見て追記する。
+
 ### 学習ループ(Phase 3)
 
 | 変数 | 説明 |

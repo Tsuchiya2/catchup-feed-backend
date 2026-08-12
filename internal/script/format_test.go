@@ -1,11 +1,13 @@
 package script
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"catchup-feed/internal/repository"
 )
@@ -108,6 +110,20 @@ func TestNewsLead(t *testing.T) {
 			categories: []string{"product", "product"},
 			want:       []string{"ここからは、productのコーナーです。", "続いてのニュースです。"},
 		},
+		{
+			// newsLead は「同じカテゴリが飛び飛びに現れない」— つまり Plan が
+			// カテゴリ順に並べていること — を前提に、直前の1件だけを見る。
+			// GenerateEpisode は任意順の記事を受け取れるので、前提が崩れた
+			// ときの挙動をここで固定しておく: 同じコーナーを2度宣言するが、
+			// 放送は壊れない(誤りは並び順の側にある)。
+			name:       "ungrouped input re-announces a corner (Plan のカテゴリ順への依存)",
+			categories: []string{"ai", "dev", "ai"},
+			want: []string{
+				"ここからは、AIのコーナーです。",
+				"ここからは、開発のコーナーです。",
+				"ここからは、AIのコーナーです。",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -171,6 +187,73 @@ func TestFixedPhrases(t *testing.T) {
 		QuizOnlyIntro(date), "記事ゼロの日も通常回と同じ冒頭定型句で始まる")
 	assert.True(t, strings.HasSuffix(QuizOnlyOutro(), signOff),
 		"記事ゼロの日の締めも通常回と同じ署名で終わる")
+}
+
+// TestCornerLeadsShareOneWording pins D-37 (9) for corner openings: news,
+// 復習, 書籍 のどのコーナーも newsLeadCorner ただ1つを通る。テンプレート側や
+// 別ファイルに同じ文を書き写すと、ここが落ちる前に静かに旧文言が残る。
+func TestCornerLeadsShareOneWording(t *testing.T) {
+	assert.Equal(t, "ここからは、いま読んでいる本のコーナーです。", bookReviewLead())
+	assert.Equal(t, newsLeadCorner("いま読んでいる本"), bookReviewLead())
+	assert.True(t, strings.HasPrefix(quizCornerLead(3), newsLeadCorner("復習")),
+		"復習コーナーの入りも同じ定型句から作る")
+}
+
+// TestPromptTemplatesHoldNoSpokenWording pins D-37 (9) structurally: prompts/
+// が持つのは「指示」だけで、台本に出る言い回しは format.go からテンプレート
+// 変数として渡す。定型句をテンプレートに書き写した瞬間に集約先が2つになり、
+// format.go だけ直したときに片方が静かに旧文言で残る — その退行をここで止める。
+func TestPromptTemplatesHoldNoSpokenWording(t *testing.T) {
+	entries, err := promptFS.ReadDir("prompts")
+	require.NoError(t, err)
+	require.NotEmpty(t, entries)
+
+	// 台本に出る言い回しの断片。テンプレートに現れてはいけない。
+	banned := []string{
+		spokenShowName,
+		"のコーナーです",
+		"おはようございます",
+		"続いてのニュースです",
+		"また明日お会いしましょう",
+		"番組情報欄",
+	}
+	for _, e := range entries {
+		body, err := promptFS.ReadFile("prompts/" + e.Name())
+		require.NoError(t, err)
+		for _, phrase := range banned {
+			assert.NotContains(t, string(body), phrase,
+				"%s: 定型句はテンプレートに書かず format.go から渡す (D-37 (9))", e.Name())
+		}
+	}
+}
+
+// TestQuizCornerLead pins the 復習コーナー introduction in full. 固定文なので
+// 全文一致で留める — 「さて、」のような口調のぶれ (D-37 (2)) や、承認済み文案
+// からの逸脱を戻せないようにするため。
+func TestQuizCornerLead(t *testing.T) {
+	tests := []struct {
+		items int
+		want  string
+	}{
+		{
+			items: 1,
+			want: "ここからは、復習のコーナーです。これまでの放送でお伝えした内容から、今日は1問おさらいします。" +
+				"問題のあとに少し間をあけますので、頭の中で答えてみてください。",
+		},
+		{
+			items: 3,
+			want: "ここからは、復習のコーナーです。これまでの放送でお伝えした内容から、今日は3問おさらいします。" +
+				"問題のあとに少し間をあけますので、頭の中で答えてみてください。",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%d問", tt.items), func(t *testing.T) {
+			got := quizCornerLead(tt.items)
+			assert.Equal(t, tt.want, got)
+			assert.NotContains(t, got, "！", "アナウンサー調: 感嘆符を使わない (D-37 (2))")
+			assert.NotContains(t, got, asciiShowName)
+		})
+	}
 }
 
 func TestItemCount(t *testing.T) {
