@@ -382,7 +382,7 @@ func artworkRoutes() []artworkRoute {
 		{
 			name:         "public fingerprinted",
 			handler:      public,
-			path:         func(f *fixture) string { return "/feeds/" + f.plaintext + "/artwork/" + artworkFileName() },
+			path:         func(f *fixture) string { return "/feeds/" + f.plaintext + "/artwork/" + artworkFileName },
 			cacheControl: "public, max-age=31536000, immutable",
 			wantLookups:  1,
 		},
@@ -396,7 +396,7 @@ func artworkRoutes() []artworkRoute {
 		{
 			name:         "private fingerprinted",
 			handler:      private,
-			path:         func(*fixture) string { return "/private/artwork/" + artworkFileName() },
+			path:         func(*fixture) string { return "/private/artwork/" + artworkFileName },
 			cacheControl: "public, max-age=31536000, immutable",
 		},
 		{
@@ -564,7 +564,7 @@ func TestArtwork_PublicRoute_InvalidTokens(t *testing.T) {
 		name string
 		path func(token string) string
 	}{
-		{"fingerprinted", func(token string) string { return "/feeds/" + token + "/artwork/" + artworkFileName() }},
+		{"fingerprinted", func(token string) string { return "/feeds/" + token + "/artwork/" + artworkFileName }},
 		{"legacy", func(token string) string { return "/feeds/" + token + "/artwork.jpg" }},
 	}
 	tests := []struct {
@@ -1051,7 +1051,7 @@ func TestFeedsCatchAllShieldsAuthStack(t *testing.T) {
 		{"bare token segment", http.MethodGet, "/feeds/" + f.plaintext},
 		{"unsupported method", http.MethodPost, "/feeds/" + f.plaintext + "/feed.xml"},
 		{"artwork without a file segment", http.MethodGet, "/feeds/" + f.plaintext + "/artwork/"},
-		{"artwork with a stray segment", http.MethodGet, "/feeds/" + f.plaintext + "/artwork/" + artworkFileName() + "/extra"},
+		{"artwork with a stray segment", http.MethodGet, "/feeds/" + f.plaintext + "/artwork/" + artworkFileName + "/extra"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

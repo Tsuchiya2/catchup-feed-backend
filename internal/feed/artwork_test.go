@@ -14,10 +14,11 @@ import (
 )
 
 // TestArtworkAsset_MeetsPodcastRequirements pins the embedded asset
-// against the cover-art rules in docs/podcast-artwork.md: a square RGB
-// JPEG between 1400x1400 and 3000x3000. Art that violates them is simply
-// ignored by the apps rather than reported as an error, so the check has
-// to live in CI.
+// against the cover-art rules recorded in D-34 (親リポジトリの
+// docs/podcast-artwork.md — this repository does not carry that file):
+// a square, non-CMYK JPEG between 1400x1400 and 3000x3000. Art that
+// violates them is simply ignored by the apps rather than reported as an
+// error, so the check has to live in CI.
 //
 // The bounds are deliberately a range, not the current 1536x1536: moving
 // to another size inside Apple's window is a legitimate change that this
@@ -38,11 +39,22 @@ func TestArtworkAsset_MeetsPodcastRequirements(t *testing.T) {
 	assert.GreaterOrEqual(t, cfg.Width, 1400, "Apple Podcasts requires at least 1400x1400")
 	assert.LessOrEqual(t, cfg.Width, 3000, "Apple Podcasts caps cover art at 3000x3000")
 
-	// 色空間 RGB の要件。CMYK の JPEG は Apple に弾かれる。image/jpeg は
-	// RGB エンコードの JPEG を YCbCr として報告し、CMYK なら
-	// color.CMYKModel、グレースケールなら color.GrayModel を返す。
-	assert.Equal(t, color.YCbCrModel, cfg.ColorModel,
-		"cover art must be RGB — CMYK is rejected by Apple Podcasts")
+	// 色空間の要件: CMYK の JPEG は Apple に弾かれる。グレースケールも
+	// ロゴとしては事故なので、許可リスト方式で両方を除外する。
+	//
+	// image/jpeg の DecodeConfig が返す ColorModel の実測(2026-08-12):
+	//
+	//	baseline / progressive / 4:4:4 / 4:2:0  → color.YCbCrModel
+	//	Pillow keep_rgb=True(真の RGB JPEG)   → color.RGBAModel
+	//	グレースケール                          → color.GrayModel
+	//	CMYK                                    → color.CMYKModel
+	//
+	// RGBA が現れるのは、Adobe APP14 transform=0 か成分 ID が 'R','G','B'
+	// のとき Go が isRGB() 経路に入るため。これも Apple が受け入れる正当な
+	// RGB JPEG なので許可する — 等値で YCbCr に固定すると、docs の Pillow
+	// レシピに keep_rgb=True を足しただけで誤って落ちる。
+	assert.Contains(t, []color.Model{color.YCbCrModel, color.RGBAModel}, cfg.ColorModel,
+		"cover art must be RGB — CMYK is rejected by Apple Podcasts, greyscale is a mistake")
 }
 
 // TestArtworkFingerprint_DerivedFromEmbeddedBytes is the regression guard
@@ -54,7 +66,7 @@ func TestArtworkFingerprint_DerivedFromEmbeddedBytes(t *testing.T) {
 	sum := sha256.Sum256(artworkJPEG)
 	assert.Equal(t, hex.EncodeToString(sum[:])[:8], artworkFingerprint)
 	assert.Len(t, artworkFingerprint, 8)
-	assert.Equal(t, artworkFingerprint+".jpg", artworkFileName())
+	assert.Equal(t, artworkFingerprint+".jpg", artworkFileName)
 	assert.Equal(t, `"`+artworkFingerprint+`"`, artworkETag, "ETag は同じダイジェスト由来")
 
 	// 別バイト列は別フィンガープリント = 別 URL。

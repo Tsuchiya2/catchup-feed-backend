@@ -171,13 +171,13 @@ func privateEnclosureURL(baseURL string, episodeID int64) string {
 // it onto its own servers), so a fixed URL would keep serving the old
 // logo forever no matter what the Pi returns.
 func publicArtworkURL(baseURL, token string) string {
-	return fmt.Sprintf("%s/feeds/%s/artwork/%s", baseURL, url.PathEscape(token), artworkFileName())
+	return fmt.Sprintf("%s/feeds/%s/artwork/%s", baseURL, url.PathEscape(token), artworkFileName)
 }
 
 // privateArtworkURL builds the tailnet artwork URL:
 // /private/artwork/{fingerprint}.jpg.
 func privateArtworkURL(baseURL string) string {
-	return baseURL + "/private/artwork/" + artworkFileName()
+	return baseURL + "/private/artwork/" + artworkFileName
 }
 
 // itunesDuration renders seconds in the M:SS / H:MM:SS form podcast apps

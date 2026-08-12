@@ -45,13 +45,13 @@ func fingerprint(b []byte) string {
 	return hex.EncodeToString(sum[:])[:8]
 }
 
-// artworkFileName is the {file} segment of the fingerprinted artwork
-// routes: "<fingerprint>.jpg". The fingerprint occupies a whole path
-// segment because Go's ServeMux wildcards cannot be mixed with literals
-// inside one segment ("artwork-{fp}.jpg" is not a legal pattern).
-func artworkFileName() string {
-	return artworkFingerprint + ".jpg"
-}
+// artworkFileName is the {file} segment of the canonical fingerprinted
+// artwork route: "<fingerprint>.jpg". The fingerprint occupies a whole
+// path segment because Go's ServeMux wildcards cannot be mixed with
+// literals inside one segment ("artwork-{fp}.jpg" is not a legal
+// pattern). Built once, like the fingerprint it derives from: it is
+// compared against on every artwork request.
+var artworkFileName = artworkFingerprint + ".jpg"
 
 const (
 	// artworkCacheControl applies wherever the URL is not bound to the
@@ -94,7 +94,7 @@ func (s *Server) handleArtwork(w http.ResponseWriter, r *http.Request) {
 // edge-cache entry.
 func (s *Server) handleArtworkFingerprinted(w http.ResponseWriter, r *http.Request) {
 	cacheControl := artworkCacheControl
-	if r.PathValue("file") == artworkFileName() {
+	if r.PathValue("file") == artworkFileName {
 		cacheControl = artworkImmutableCacheControl
 	}
 	s.serveArtwork(w, r, cacheControl)
