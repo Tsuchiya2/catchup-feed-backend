@@ -68,6 +68,45 @@ Go 1.26 の単一モジュールで、**3つのバイナリ**を持ちます。�
 
 Mac が閉じていた日はエピソードが生成されないだけで、システムは壊れません(翌日に持ち越し)。
 
+### レイヤー構成
+
+管理 API(`cmd/server`)は Clean Architecture のレイヤーに沿って分割し、依存は常に内向きです。永続化のインターフェースを内側(`internal/repository`)に置き、PostgreSQL アダプタが外側からそれを実装します(依存性逆転)。
+
+```
+外 ─────────────────────────────────────────────────→ 内
+handler/http/*  →  usecase/*  →  repository/*(interface)  →  domain/entity
+                                        ▲
+infra/adapter/persistence/postgres ─────┘ 実装を cmd/ で注入
+```
+
+| ディレクトリ | 層 | 責務 |
+|---|---|---|
+| `internal/domain/entity` | Domain | エンティティ・不変条件・SSRF を含む URL 検証。**標準ライブラリ以外に依存しない**(ORM/DB タグを持たない) |
+| `internal/repository` | Port | 永続化インターフェース(14 本)。実装は持たない |
+| `internal/usecase/*` | UseCase | アプリケーションロジック(記事・ソース・友人・閲覧者・学習・書籍・クロール) |
+| `internal/handler/http/*` | Presentation | ルーティング・DTO・JWT 認証・CORS/CSP・レート制限 |
+| `internal/infra/*` | Infrastructure | PostgreSQL アダプタ・HTTP フェッチャ・要約 LLM クライアント |
+
+バッチ(`cmd/radio` / `cmd/worker`)は層ではなく**用途別のパッケージ**に切っています。外部依存は「必要なメソッドだけを利用側で定義する」Go 流のポート(consumer-side interface)で抽象化します。
+
+| ディレクトリ | 責務 |
+|---|---|
+| `internal/radio` | 番組生成パイプライン。必要な依存を 10 本の interface として自パッケージに定義(`ArticleSource` / `EpisodeStore` / `Synthesizer` / `Transferer` 等)し、`repository` や `tts` の具象型には依存しない |
+| `internal/script` | LLM 台本生成・クイズ生成・番組の定型句(D-37) |
+| `internal/tts` | VOICEVOX 合成・無音生成・ffmpeg 結合 |
+| `internal/jobs` | `jobs` テーブルのコンシューマ(`regenerate_feed` / `notify_episode` / `notify_error` / `cleanup_old_media`) |
+| `internal/feed` | RSS XML 生成と公開/私的フィードの配信ハンドラ |
+| `internal/learning` | SRS の遷移純関数・JST 放送日ヘルパ。`radio` と `server` の共有コアのため**外側に一切依存させない** |
+| `internal/notify` | メール(SMTP)・Webhook 通知 |
+
+依存ルールは `go list` で検証しています。
+
+- `handler` → `infra` の直接参照: **0 件**(永続化は必ず `usecase` 経由)
+- `usecase` / `domain` / `repository` → `handler` / `infra` の逆流: **0 件**
+- `domain/entity` の外部依存: **0 件**(標準ライブラリのみ)
+
+**意図的な逸脱**: `internal/feed` は配信ハンドラを持ちながら `handler/` の外に、`internal/tts` と `internal/notify` は実体がインフラでありながら `infra/` の外にあります。「1 バイナリの責務を、そのバイナリだけが使うパッケージにまとめる」ことを層の見た目より優先した結果です。判断の背景は [docs/architecture.md](docs/architecture.md) に記載しています。
+
 ---
 
 ## 技術スタック
