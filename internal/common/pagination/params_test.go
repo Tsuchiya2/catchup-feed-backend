@@ -160,18 +160,18 @@ func TestParseQueryParams_ErrorMessages(t *testing.T) {
 	}
 
 	tests := []struct {
-		name          string
-		query         string
+		name              string
+		query             string
 		wantErrorContains string
 	}{
 		{
-			name:          "page error message",
-			query:         "page=invalid",
+			name:              "page error message",
+			query:             "page=invalid",
 			wantErrorContains: "page must be a positive integer",
 		},
 		{
-			name:          "limit error message",
-			query:         "limit=200",
+			name:              "limit error message",
+			query:             "limit=200",
 			wantErrorContains: "limit must be between 1 and 100",
 		},
 	}

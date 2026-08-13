@@ -256,7 +256,7 @@ func TestCSPBuilder_OverwriteDirective(t *testing.T) {
 	// Test that calling the same directive twice overwrites the previous value
 	policy := NewCSPBuilder().
 		DefaultSrc("'self'").
-		DefaultSrc("'none'").  // This should overwrite the previous value
+		DefaultSrc("'none'"). // This should overwrite the previous value
 		Build()
 
 	expected := "default-src 'none'"
@@ -283,7 +283,7 @@ func TestSwaggerUIPolicy_ReportOnly(t *testing.T) {
 func TestCSPBuilder_EmptySources(t *testing.T) {
 	// Test that directives with empty sources are not included
 	policy := NewCSPBuilder().
-		DefaultSrc().  // Empty sources
+		DefaultSrc(). // Empty sources
 		ScriptSrc("'self'").
 		Build()
 

@@ -150,8 +150,7 @@ jobs:
       - name: Run Gosec Security Scanner
         uses: securego/gosec@master
         with:
-          # Exclude generated protobuf files (they contain standard unsafe patterns)
-          args: '-no-fail -fmt sarif -out results.sarif -exclude-dir=internal/interface/grpc/pb ./...'
+          args: '-no-fail -fmt sarif -out results.sarif ./...'
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@v4

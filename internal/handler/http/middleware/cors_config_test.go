@@ -10,10 +10,10 @@ import (
 // valid origins from environment variable
 func TestEnvConfigSource_LoadOrigins_Valid(t *testing.T) {
 	testCases := []struct {
-		name           string
-		envValue       string
-		expectedCount  int
-		expectedFirst  string
+		name          string
+		envValue      string
+		expectedCount int
+		expectedFirst string
 	}{
 		{
 			name:          "single origin",
@@ -198,10 +198,10 @@ func TestEnvConfigSource_LoadMethods_Default(t *testing.T) {
 // custom methods from environment variable
 func TestEnvConfigSource_LoadMethods_Custom(t *testing.T) {
 	testCases := []struct {
-		name           string
-		envValue       string
-		expectedCount  int
-		expectedFirst  string
+		name          string
+		envValue      string
+		expectedCount int
+		expectedFirst string
 	}{
 		{
 			name:          "GET and POST only",
@@ -311,10 +311,10 @@ func TestEnvConfigSource_LoadHeaders_Default(t *testing.T) {
 // custom headers from environment variable
 func TestEnvConfigSource_LoadHeaders_Custom(t *testing.T) {
 	testCases := []struct {
-		name           string
-		envValue       string
-		expectedCount  int
-		expectedFirst  string
+		name          string
+		envValue      string
+		expectedCount int
+		expectedFirst string
 	}{
 		{
 			name:          "content-type only",
@@ -524,7 +524,7 @@ func TestLoadCORSConfig_MissingOrigins(t *testing.T) {
 	_ = os.Unsetenv("CORS_ALLOWED_ORIGINS") //nolint:errcheck
 	_ = os.Unsetenv("CORS_ALLOWED_METHODS") //nolint:errcheck
 	_ = os.Unsetenv("CORS_ALLOWED_HEADERS") //nolint:errcheck
-	_ = os.Unsetenv("CORS_MAX_AGE") //nolint:errcheck
+	_ = os.Unsetenv("CORS_MAX_AGE")         //nolint:errcheck
 
 	config, err := LoadCORSConfig()
 
@@ -544,7 +544,7 @@ func TestLoadCORSConfig_DefaultValues(t *testing.T) {
 	// Unset optional parameters
 	_ = os.Unsetenv("CORS_ALLOWED_METHODS") //nolint:errcheck
 	_ = os.Unsetenv("CORS_ALLOWED_HEADERS") //nolint:errcheck
-	_ = os.Unsetenv("CORS_MAX_AGE") //nolint:errcheck
+	_ = os.Unsetenv("CORS_MAX_AGE")         //nolint:errcheck
 
 	config, err := LoadCORSConfig()
 
