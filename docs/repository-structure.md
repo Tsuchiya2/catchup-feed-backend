@@ -1,1463 +1,359 @@
-# Repository Structure
+# リポジトリ構成
 
-This document provides a comprehensive overview of the catchup-feed-backend repository structure, explaining the purpose of each directory, module responsibilities, and file organization.
+**対象**: catchup-feed-backend(Go 1.25.6 単一モジュール、module name: `catchup-feed`)
+**最終更新**: 2026-08-13
 
-**Last Updated:** 2026-01-23
-**Project:** catchup-feed-backend
-**Language:** Go 1.26.5
-**Architecture Pattern:** Clean Architecture with Domain-Driven Design
+ディレクトリとパッケージの責務を記述します。層の設計思想・依存ルール・技術選定の理由は [architecture.md](architecture.md) を参照してください。
 
 ---
 
-## Table of Contents
+## 目次
 
-- [Overview](#overview)
-- [Root Directory Structure](#root-directory-structure)
-- [Application Entrypoints (`cmd/`)](#application-entrypoints-cmd)
-- [Business Logic Layer (`internal/`)](#business-logic-layer-internal)
-- [Infrastructure Configuration (`config/`)](#infrastructure-configuration-config)
-- [Shared Packages (`pkg/`)](#shared-packages-pkg)
-- [Test Infrastructure (`tests/`)](#test-infrastructure-tests)
-- [Documentation (`docs/`)](#documentation-docs)
-- [Monitoring & Operations (`monitoring/`)](#monitoring--operations-monitoring)
-- [Build & Deployment](#build--deployment)
-
----
-
-## Overview
-
-The catchup-feed-backend project follows **Clean Architecture** principles with clear separation of concerns:
-
-```
-┌────────────────────────────────────────────┐
-│  Presentation Layer (HTTP Handlers)        │  ← cmd/server, internal/handler
-├────────────────────────────────────────────┤
-│  Use Case Layer (Business Logic)           │  ← internal/usecase
-├────────────────────────────────────────────┤
-│  Domain Layer (Entities & Interfaces)      │  ← internal/domain, internal/repository
-├────────────────────────────────────────────┤
-│  Infrastructure Layer (DB, APIs, Services) │  ← internal/infra
-└────────────────────────────────────────────┘
-```
-
-**Dependency Direction:** Outer layers depend on inner layers (Presentation → UseCase → Domain)
-
-**Key Architectural Principles:**
-- Domain layer has no external dependencies (standard library only)
-- Use cases define interfaces, infrastructure implements them
-- Dependency inversion through repository and service interfaces
-- Testability through interface-based design
+1. [全体像](#1-全体像)
+2. [ルート直下](#2-ルート直下)
+3. [`cmd/` — エントリポイント](#3-cmd--エントリポイント)
+4. [`internal/` — アプリケーション本体](#4-internal--アプリケーション本体)
+5. [`pkg/` — 公開パッケージ](#5-pkg--公開パッケージ)
+6. [`config/` `deploy/` `scripts/` — 運用](#6-config-deploy-scripts--運用)
+7. [`tests/` `docs/` — テストとドキュメント](#7-tests-docs--テストとドキュメント)
+8. [配置と命名の規約](#8-配置と命名の規約)
+9. [コード規模](#9-コード規模)
 
 ---
 
-## Root Directory Structure
+## 1. 全体像
 
-```
+```text
 catchup-feed-backend/
-├── cmd/                    # Application entrypoints (API server, worker)
-├── internal/               # Private application code (clean architecture layers)
-├── pkg/                    # Public reusable packages
-├── config/                 # Configuration files (YAML, environment templates)
-├── tests/                  # Test utilities, fixtures, integration tests
-├── docs/                   # Project documentation
-├── monitoring/             # Monitoring configuration (Prometheus, Grafana)
-├── scripts/                # Build, deployment, and utility scripts
-├── .claude/                # EDAF v1.0 agent system configuration
-├── .github/                # GitHub Actions CI/CD workflows
-├── go.mod                  # Go module definition
-├── go.sum                  # Go module checksums
-├── Dockerfile              # Container image definition
-├── compose.yml             # Docker Compose orchestration
-├── Makefile                # Build automation
-└── README.md               # Project overview and quickstart
+├── cmd/                   # エントリポイント(composition root)
+│   ├── server/            #   Pi 常駐: 管理 API + フィード配信
+│   ├── worker/            #   Pi 常駐: クロール + ジョブ処理
+│   ├── radio/             #   Mac 夜間バッチ: 番組生成
+│   ├── hash-password/     #   管理者パスワードの bcrypt ハッシュ生成
+│   └── crawl-once/        #   開発用の単発クロール
+├── internal/              # アプリケーション本体(外部から import 不可)
+│   ├── domain/entity/     #   [Domain]         エンティティ・不変条件
+│   ├── repository/        #   [Port]           永続化インターフェース
+│   ├── usecase/           #   [UseCase]        アプリケーションロジック
+│   ├── handler/http/      #   [Presentation]   HTTP ハンドラ・ミドルウェア
+│   ├── infra/             #   [Infrastructure] DB アダプタ・外部 API
+│   ├── radio/             #   [radio]  番組生成パイプライン
+│   ├── script/            #   [radio]  台本・クイズ生成
+│   ├── tts/               #   [radio]  音声合成・ffmpeg
+│   ├── feed/              #   [server+worker] RSS 生成・フィード配信
+│   ├── jobs/              #   [worker+radio]  ジョブコンシューマ / 投入
+│   ├── learning/          #   [server+radio]  SRS 純関数(共有コア)
+│   ├── notify/            #   [worker] 管理者向けメール通知(SMTP)
+│   ├── common/pagination/ #   共通: ページネーション
+│   ├── pkg/               #   共通: 検索・バリデーション・設定ロード
+│   ├── service/auth/      #   認証ポート
+│   ├── config/            #   YAML セキュリティ設定
+│   └── utils/text/        #   文字数カウント
+├── pkg/                   # 外部 import 可の公開パッケージ
+├── config/                # 実行環境の設定ファイル(YAML / env / cron)
+├── deploy/                # Pi / Mac へのデプロイ資材
+├── scripts/               # 運用スクリプト(バックアップ・ヘルスチェック)
+├── tests/                 # シェルベースの通知テスト + 共有フィクスチャ
+├── docs/                  # 設計ドキュメント + Swagger 生成物
+├── data/                  # ローカル実行時の mp3 / 書籍置き場(git 管理外)
+├── compose.yml            # postgres / server / worker
+├── Dockerfile             # マルチステージビルド
+└── Makefile               # 開発・テスト・リントのタスク
 ```
+
+`internal/` の各パッケージが、Clean Architecture の 4 層に属するもの(`[Domain]` 〜 `[Infrastructure]`)と、**層ではなく用途で切ったもの**に分かれる点が本リポジトリの構成上の特徴です。後者は角括弧に**利用するバイナリ**を書いてあります。`feed` は `cmd/server`(配信ハンドラ)と `cmd/worker`(`FEED_AUDIO_DIR` 等の設定読み取り)が使う **server 側のパッケージ**で、`cmd/radio` からは参照しません。判断根拠は [architecture.md §3.4](architecture.md#34-意図的な逸脱とその理由) にあります。
 
 ---
 
-## Application Entrypoints (`cmd/`)
+## 2. ルート直下
 
-The `cmd/` directory contains the application's main entrypoints. Each subdirectory represents a separate executable.
+| ファイル | 内容 |
+|---|---|
+| `README.md` | 概要・アーキテクチャ・セットアップ・環境変数一覧 |
+| `CLAUDE.md` | AI エージェント向けのリポジトリ固有ルール |
+| `CHANGELOG.md` | 変更履歴 |
+| `compose.yml` | 開発・本番共通のベース定義(`postgres` / `server` / `worker`)。本番 Pi では `deploy/compose.pi.yml` を override で重ねる |
+| `Dockerfile` | 4 ステージ(`deps` → `dev` / `build` → Alpine ランタイム。ランタイムはダイジェスト固定) |
+| `Makefile` | 開発タスク。CI と同じコマンドをローカルから実行できる |
+| `.golangci.yml` | `errcheck` / `govet` / `staticcheck` / `unused` / `ineffassign` |
+| `.air.toml` | ホットリロード設定(開発コンテナ) |
+| `go.mod` / `go.sum` | 依存定義。直接依存は 14 パッケージのみ |
 
-### Directory Structure
-
-```
-cmd/
-├── api/                    # REST API server (port 8080)
-│   └── main.go            # HTTP server, routing, middleware setup
-├── worker/                 # Background job worker
-│   ├── main.go            # Cron scheduler, feed crawling
-│   └── metrics_server.go  # Metrics HTTP server (port 9091)
-└── ai/                     # AI CLI commands (semantic search, Q&A, summarization)
-    ├── search/            # Semantic article search CLI
-    │   └── main.go
-    ├── ask/               # RAG-based Q&A CLI
-    │   └── main.go
-    └── summarize/         # Weekly/monthly digest CLI
-        └── main.go
-```
-
-### `cmd/server/main.go` - REST API Server
-
-**Purpose:** HTTP server providing REST API for article and source management
-
-**Key Responsibilities:**
-- Server initialization and graceful shutdown
-- Route registration and middleware configuration
-- JWT authentication setup
-- Database connection and migration
-- CORS, rate limiting, CSP configuration
-- Health check and metrics endpoints
-
-**Port:** 8080
-
-**Main Functions:**
-- `main()` - Entry point, orchestrates startup
-- `initLogger()` - Structured logging with slog
-- `initDatabase()` - PostgreSQL connection and migrations
-- `setupServer()` - Route and middleware configuration
-- `setupRoutes()` - Public and protected endpoint registration
-- `applyMiddleware()` - Middleware chain construction
-- `runServer()` - Server lifecycle management
-
-**Middleware Chain (Order Matters):**
-1. CORS - Handle preflight requests
-2. Request ID - Generate unique request identifier
-3. IP Rate Limiting - Protect against abuse
-4. Recovery - Catch panics
-5. Logging - Request/response logging
-6. Body Size Limit - Prevent DoS (1MB limit)
-7. CSP - Content Security Policy headers
-8. Metrics - Prometheus metrics collection
-9. Authentication - JWT validation (route-specific)
-10. User Rate Limiting - Per-user limits (route-specific)
-
-**Environment Variables:**
-- `DATABASE_URL` - PostgreSQL connection string
-- `JWT_SECRET` - JWT signing key (32+ chars required)
-- `ADMIN_USER` / `ADMIN_USER_PASSWORD` - Admin credentials
-- `DEMO_USER` / `DEMO_USER_PASSWORD` - Viewer role credentials (optional)
-- `LOG_LEVEL` - Logging level (debug, info, warn, error)
-- `CORS_ALLOWED_ORIGINS` - Allowed CORS origins
-- `CSP_ENABLED` - Enable Content Security Policy
-- `RATE_LIMIT_ENABLED` - Enable rate limiting
-
-### `cmd/worker/main.go` - Background Job Worker
-
-**Purpose:** Scheduled task execution for feed crawling and article summarization
-
-**Key Responsibilities:**
-- Cron job scheduling (default: 5:30 AM daily)
-- RSS/Atom feed fetching from all active sources
-- AI summarization (Claude/OpenAI)
-- Notification dispatching (Discord, Slack)
-- Worker health check server
-
-**Port:** 9091 (health checks and metrics)
-
-**Main Functions:**
-- `main()` - Entry point, worker setup
-- `initLogger()` - Structured logging
-- `initDatabase()` - Database connection
-- `setupFetchService()` - Dependency injection for fetch service
-- `createSummarizer()` - AI summarizer factory (Claude/OpenAI)
-- `loadDiscordConfig()` / `loadSlackConfig()` - Notification configuration
-- `startCronWorker()` - Cron scheduler initialization
-- `runCrawlJob()` - Single crawl execution
-
-**Cron Schedule:**
-- Default: `30 5 * * *` (5:30 AM daily, Asia/Tokyo timezone)
-- Configurable via `CRON_SCHEDULE` environment variable
-
-**Environment Variables:**
-- `DATABASE_URL` - PostgreSQL connection string
-- `CRON_SCHEDULE` - Cron expression for scheduling
-- `TIMEZONE` - Timezone for cron (default: Asia/Tokyo)
-- `CRAWL_TIMEOUT` - Maximum crawl duration (default: 30m)
-- `SUMMARIZER_TYPE` - AI engine (openai, claude)
-- `ANTHROPIC_API_KEY` - Claude API key
-- `OPENAI_API_KEY` - OpenAI API key
-- `SUMMARIZER_CHAR_LIMIT` - Summary character limit (100-5000)
-- `DISCORD_ENABLED` / `DISCORD_WEBHOOK_URL` - Discord notifications
-- `SLACK_ENABLED` / `SLACK_WEBHOOK_URL` - Slack notifications
-- `NOTIFY_MAX_CONCURRENT` - Max concurrent notifications (default: 10)
-- `CONTENT_FETCH_ENABLED` - Enable full content fetching (default: true)
-- `CONTENT_FETCH_THRESHOLD` - Min RSS length before fetching (default: 1500)
-- `CONTENT_FETCH_PARALLELISM` - Concurrent content fetches (default: 10)
+主要な Make ターゲット: `setup` / `dev-up` / `dev-down` / `dev-shell` / `build` / `test` / `test-unit` / `test-coverage` / `lint` / `lint-fix` / `fmt` / `swagger` / `admin-hash` / `db-reset` / `db-shell` / `logs` / `ci` / `clean`(一覧は `make help`)。
 
 ---
 
-## Business Logic Layer (`internal/`)
+## 3. `cmd/` — エントリポイント
 
-The `internal/` directory contains all private application code organized according to Clean Architecture principles.
+いずれも依存の組み立てとライフサイクル管理に徹し、ロジックを持ちません。
 
-### Directory Structure
+### `cmd/server/`(561 行)
 
-```
-internal/
-├── domain/                 # Domain layer (entities, value objects)
-│   └── entity/            # Core domain entities
-├── repository/            # Repository interfaces (ports)
-├── usecase/               # Use case layer (business logic)
-│   ├── article/           # Article management use cases
-│   ├── source/            # Source management use cases
-│   ├── fetch/             # Feed fetching and processing
-│   ├── notify/            # Multi-channel notification system
-│   └── ai/                # AI-powered features (NEW)
-│       ├── service.go            # AI service orchestration
-│       ├── provider.go           # AIProvider interface
-│       └── embedding_hook.go     # Async embedding generation
-├── handler/               # Presentation layer (HTTP handlers)
-│   └── http/              # HTTP-specific handlers and utilities
-│       └── health_ai.go          # AI health check endpoints (NEW)
-├── interface/             # Interface adapters (NEW)
-│   └── grpc/              # gRPC service interfaces
-│       ├── embedding_server.go   # Legacy embedding gRPC server
-│       └── pb/                   # Generated Protocol Buffer code
-│           ├── embedding/        # Embedding service proto
-│           └── ai/               # AI service proto (NEW)
-│               ├── article.pb.go
-│               └── article_grpc.pb.go
-├── infra/                 # Infrastructure layer (adapters)
-│   ├── adapter/           # Persistence adapters (PostgreSQL, SQLite)
-│   ├── db/                # Database utilities and migrations
-│   ├── grpc/              # gRPC client implementations (NEW)
-│   │   ├── ai_client.go          # GRPCAIProvider implementation
-│   │   └── noop_ai_provider.go   # NoopAIProvider stub
-│   ├── summarizer/        # AI summarization implementations
-│   │   └── noop.go               # NoopSummarizer (NEW)
-│   ├── fetcher/           # Content fetching implementations
-│   ├── notifier/          # Notification service implementations
-│   ├── scraper/           # RSS/Atom feed parsers and web scrapers
-│   └── worker/            # Worker configuration and health
-├── service/               # Domain services
-│   └── auth/              # Authentication service
-├── config/                # Configuration loading and validation
-│   └── ai.go              # AI configuration (NEW)
-├── observability/         # Monitoring, logging, tracing
-│   ├── logging/           # Structured logging utilities
-│   ├── metrics/           # Prometheus metrics
-│   ├── tracing/           # OpenTelemetry tracing
-│   └── slo/               # SLO metrics and alerting
-├── resilience/            # Resilience patterns
-│   ├── circuitbreaker/    # Circuit breaker implementations
-│   └── retry/             # Retry logic with backoff
-├── common/                # Common utilities
-│   └── pagination/        # Pagination helpers
-└── utils/                 # Utility functions
-    └── text/              # Text processing utilities
-```
+Pi 常駐の HTTP サーバー。2 つのリスナーを持ちます。
 
-### Domain Layer (`internal/domain/`)
+- **公開リスナー(:8080)** — 管理 API(JWT)+ 公開フィード配信(トークン認証)+ `/health` `/ready` `/live` + `/swagger/`
+- **私的リスナー(:8081)** — tailnet バインド。私的フィードと書籍 PDF 配信。CORS / CSP / 認証を適用しない(C-5)
 
-**Purpose:** Core business entities and domain logic (no external dependencies)
+主な処理:
 
-#### `internal/domain/entity/` - Domain Entities
+| 関数 | 責務 |
+|---|---|
+| `main` | 設定読み込み → DB 接続 → マイグレーション適用 → 2 リスナー起動 → graceful shutdown |
+| `setupRoutes` | 各ハンドラパッケージの `Register` を呼びルートを登録。レート制限器を生成 |
+| `applyMiddleware` | ミドルウェアチェーンを構成(CORS → RequestID → Recover → Logging → BodyLimit → CSP) |
+| `startRateLimiterCleanup` | インメモリのレート制限エントリを定期的に掃除 |
 
-**Files:**
-- `article.go` - Article entity (ID, Title, URL, Summary, PublishedAt, CreatedAt)
-- `article_embedding.go` - ArticleEmbedding entity with enums and validation
-- `errors.go` - Domain-specific error types
-- `validation.go` - Entity validation logic
-
-**Key Entity: Article**
-```go
-type Article struct {
-    ID          int64     // Primary key
-    SourceID    int64     // Foreign key to Source
-    Title       string    // Article title
-    URL         string    // Article URL (unique)
-    Summary     string    // AI-generated summary
-    PublishedAt time.Time // Publication timestamp
-    CreatedAt   time.Time // Creation timestamp
-}
-```
-
-**Key Entity: ArticleEmbedding**
-```go
-type ArticleEmbedding struct {
-    ID            int64
-    ArticleID     int64             // Foreign key to Article
-    EmbeddingType EmbeddingType     // Enum: title, content, summary
-    Provider      EmbeddingProvider // Enum: openai, voyage
-    Model         string            // e.g., "text-embedding-3-small"
-    Dimension     int32             // Vector dimension (must match len(Embedding))
-    Embedding     []float32         // Vector data
-    CreatedAt     time.Time
-    UpdatedAt     time.Time
-}
-
-type EmbeddingType string       // title | content | summary
-type EmbeddingProvider string   // openai | voyage
-```
-
-**Responsibilities:**
-- Define domain entities with business meaning
-- Entity-level validation (title length, URL format, embedding dimension)
-- Domain-specific error types (ErrInvalidEmbeddingType, ErrEmptyEmbedding)
-- No external dependencies (standard library only)
-
-### Repository Interfaces (`internal/repository/`)
-
-**Purpose:** Define contracts for data persistence (Dependency Inversion Principle)
-
-**Files:**
-- `article_embedding_repository.go` - ArticleEmbeddingRepository interface and SimilarArticle DTO
-
-**Key Interface: ArticleEmbeddingRepository**
-```go
-type ArticleEmbeddingRepository interface {
-    Upsert(ctx context.Context, embedding *entity.ArticleEmbedding) error
-    FindByArticleID(ctx context.Context, articleID int64) ([]*entity.ArticleEmbedding, error)
-    SearchSimilar(ctx context.Context, embedding []float32, embeddingType entity.EmbeddingType, limit int) ([]SimilarArticle, error)
-    DeleteByArticleID(ctx context.Context, articleID int64) (int64, error)
-}
-
-type SimilarArticle struct {
-    ArticleID  int64
-    Similarity float64  // Cosine similarity (0.0 to 1.0)
-}
-```
-
-**Pattern:**
-- Use cases define required repository interfaces
-- Infrastructure layer implements these interfaces
-- Enables dependency inversion and testability
-
-### Use Case Layer (`internal/usecase/`)
-
-**Purpose:** Application business logic and orchestration
-
-#### `internal/usecase/article/` - Article Management
-
-**Files:**
-- `service.go` - Article use cases (Create, List, GetByID, Search)
-- `errors.go` - Article-specific errors (ErrArticleNotFound, ErrInvalidArticleID)
-
-**Key Use Cases:**
-- **List:** Retrieve articles with pagination and filtering
-- **GetByID:** Retrieve single article by ID
-- **Search:** Full-text search with keyword matching and filters
-- **Delete:** Soft delete article (admin only)
-
-**Responsibilities:**
-- Validate request parameters
-- Orchestrate repository calls
-- Apply business rules
-- Return domain entities
-
-#### `internal/usecase/source/` - Source Management
-
-**Files:**
-- `service.go` - Source use cases (Create, List, Disable)
-- `errors.go` - Source-specific errors
-
-**Key Use Cases:**
-- **Create:** Register new RSS/Atom feed source
-- **List:** Retrieve all sources (active and inactive)
-- **ListActive:** Retrieve only active sources (for crawling)
-- **Disable:** Deactivate problematic feed sources
-
-#### `internal/usecase/fetch/` - Feed Fetching & Processing
-
-**Files:**
-- `service.go` - Feed crawling orchestration (458 lines)
-- `content_fetcher.go` - Content fetching interface
-- `errors.go` - Fetch-specific errors
-
-**Key Component: Service**
-
-**Responsibilities:**
-1. **CrawlAllSources:** Orchestrate feed crawling for all active sources
-2. **processSingleSource:** Process one feed source
-3. **processFeedItems:** Parallel processing of feed items
-4. **enhanceContent:** RSS content enhancement with full article fetching
-
-**Architecture:**
-- Two-tier parallelism:
-  - 10 concurrent content fetches (I/O-bound)
-  - 5 concurrent AI summarizations (rate-limited)
-- Circuit breaker for resilience
-- Batch URL deduplication (N+1 problem prevention)
-- Content enhancement for low-quality RSS feeds
-
-**Dependencies:**
-- `SourceRepo` - Source data access
-- `ArticleRepo` - Article data access
-- `Summarizer` - AI text summarization
-- `FeedFetcher` - RSS/Atom feed parsing
-- `WebScrapers` - Web scraping for non-RSS sources
-- `ContentFetcher` - Full article content extraction
-- `NotifyService` - Multi-channel notifications
-
-**Key Metrics:**
-- `feed_crawl_duration_seconds` - Crawl duration per source
-- `articles_summarized_total` - AI summarization success/failure
-- `content_fetch_attempts_total` - Content fetching attempts
-
-#### `internal/usecase/notify/` - Notification System
-
-**Files:**
-- `service.go` - Multi-channel notification orchestration
-- `channel.go` - Channel interface definition
-- `discord_channel.go` - Discord webhook implementation
-- `slack_channel.go` - Slack webhook implementation
-- `errors.go` - Notification errors
-- `metrics.go` - Notification metrics
-
-**Architecture:**
-- Multi-channel support (Discord, Slack, future: Email, Telegram)
-- Goroutine pool for concurrency control (max 10 concurrent)
-- Per-channel circuit breakers (5 failures → 1 minute open)
-- Per-channel rate limiting (Discord: 2 req/s, Slack: 1 req/s)
-- Fire-and-forget pattern (non-blocking)
-
-**Key Methods:**
-- `NotifyNewArticle()` - Dispatch notification to all enabled channels
-- `NotifyArticle()` - Send notification to specific channel
-
-**Observability:**
-- Structured logging with request IDs
-- Prometheus metrics (success rate, latency, rate limit hits)
-- Circuit breaker state monitoring
-
-#### `internal/usecase/ai/` - AI-Powered Features
-
-**Files:**
-- `service.go` - AI service orchestration (324 lines)
-- `provider.go` - AIProvider interface and DTOs (130 lines)
-- `embedding_hook.go` - Async embedding generation
-
-**Key Component: AI Service**
-
-**Responsibilities:**
-1. **Search()** - Semantic article search with validation and logging
-2. **Ask()** - RAG-based Q&A with context management
-3. **Summarize()** - Weekly/monthly digest generation
-4. **Health()** - AI provider health check
-
-**Architecture:**
-- Feature flag support (AI_ENABLED)
-- Request ID generation for tracing
-- Input validation before provider calls
-- Structured logging for all operations
-- Error wrapping with context
-
-**AIProvider Interface:**
-
-The `AIProvider` interface abstracts AI backend implementations:
+依存の注入は構造体リテラルで行います(DI コンテナ不使用)。
 
 ```go
-type AIProvider interface {
-    EmbedArticle(ctx, req) → response    // Generate embeddings
-    SearchSimilar(ctx, req) → response   // Semantic search
-    QueryArticles(ctx, req) → response   // RAG-based Q&A
-    GenerateSummary(ctx, req) → response // Digest generation
-    Health(ctx) → status                 // Health check
-    Close() → error                      // Cleanup
-}
+srcSvc := srcUC.Service{Repo: pgRepo.NewSourceRepo(database)}
+artSvc := artUC.Service{Repo: pgRepo.NewArticleRepo(database)}
 ```
 
-**Implementations:**
-- **GRPCAIProvider**: Primary implementation (gRPC client to catchup-ai)
-- **NoopAIProvider**: Stub for testing and when AI disabled
+### `cmd/worker/`(393 行)
 
-**DTOs (Data Transfer Objects):**
-- `EmbedRequest/Response` - Embedding generation
-- `SearchRequest/Response` - Semantic search
-- `QueryRequest/Response` - Q&A with sources
-- `SummaryRequest/Response` - Digest with highlights
-- `HealthStatus` - Provider health
+Pi 常駐のバックグラウンドワーカー。robfig/cron で 2 つの定期実行(毎時クロール / 古いメディアの掃除)を回しつつ、`jobs` テーブルのコンシューマを並行して動かします。
 
-**Embedding Hook:**
+### `cmd/radio/`(185 行)
 
-`embedding_hook.go` provides async embedding generation during article creation:
+Mac の夜間バッチ(launchd 起動)。`internal/radio.Pipeline` に必要な実装を注入して 1 回実行し終了します。
 
-```go
-type EmbeddingHook struct {
-    aiProvider AIProvider
-    aiEnabled  bool
-}
+### `cmd/hash-password/`(81 行) / `cmd/crawl-once/`(167 行)
 
-func (h *EmbeddingHook) EmbedArticleAsync(article entity.Article) {
-    // Fire-and-forget goroutine
-    go func() {
-        ctx := context.Background() // Detached context
-        ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-        defer cancel()
-
-        _, err := h.aiProvider.EmbedArticle(ctx, EmbedRequest{
-            ArticleID: article.ID,
-            Title:     article.Title,
-            Content:   article.Content,
-            URL:       article.URL,
-        })
-
-        if err != nil {
-            slog.Warn("Embedding failed", slog.Any("error", err))
-        }
-    }()
-}
-```
-
-**Key Features:**
-- Non-blocking execution (goroutine)
-- Detached context (not inherited from crawl context)
-- 30s timeout for embedding generation
-- Logs warnings but doesn't propagate errors
-
-### Presentation Layer
-
-#### HTTP Layer (`internal/handler/http/`)
-
-**Purpose:** HTTP request handling and response formatting
-
-**Directory Structure:**
-
-```
-handler/http/
-├── middleware.go          # Core middleware (Logging, Recover, RateLimiter)
-├── middleware_test.go     # Middleware unit tests
-├── metrics.go             # Prometheus metrics middleware
-├── timeout.go             # Request timeout handling
-├── validation.go          # Request validation utilities
-├── article/               # Article endpoint handlers
-│   ├── handler.go         # List, GetByID, Delete handlers
-│   ├── search.go          # Search endpoint
-│   └── *_test.go          # Handler tests
-├── source/                # Source endpoint handlers
-│   ├── handler.go         # Create, List handlers
-│   └── *_test.go          # Handler tests
-├── auth/                  # Authentication handlers
-│   ├── endpoints.go       # Public endpoints definition
-│   ├── token_handler.go   # JWT token generation
-│   ├── middleware.go      # JWT validation middleware
-│   └── validator.go       # Credential validation
-├── middleware/            # Additional middleware
-│   ├── cors.go            # CORS handling
-│   ├── csp.go             # Content Security Policy
-│   ├── ip_extractor.go    # Client IP extraction
-│   ├── ratelimit.go       # Rate limiting
-│   └── degradation.go     # Graceful degradation
-├── requestid/             # Request ID generation
-│   └── requestid.go       # X-Request-ID middleware
-├── respond/               # Response utilities
-│   ├── respond.go         # JSON response helpers
-│   └── sanitize.go        # Error sanitization
-├── responsewriter/        # Response writer wrapper
-│   └── responsewriter.go  # Status code and size tracking
-└── pathutil/              # Path utilities
-    ├── id.go              # ID extraction from URL
-    └── normalize.go       # Path normalization
-```
-
-#### gRPC Layer (`internal/interface/grpc/`)
-
-**Purpose:** gRPC service handlers for inter-service communication
-
-**Files:**
-- `embedding_server.go` - gRPC server implementation for EmbeddingService
-- `pb/embedding/` - Generated Protocol Buffer code (from proto/)
-
-**Key Server: EmbeddingServer**
-```go
-type EmbeddingServer struct {
-    pb.UnimplementedEmbeddingServiceServer
-    repo repository.ArticleEmbeddingRepository
-}
-
-// RPC Methods:
-// - StoreEmbedding: Store or update article embedding (upsert)
-// - GetEmbeddings: Retrieve all embeddings for an article
-// - SearchSimilar: Find similar articles using vector search
-```
-
-**Integration:**
-- External AI service (`catchup-ai`) calls gRPC endpoints
-- Uses ArticleEmbeddingRepository for persistence
-- Returns validation errors as gRPC status codes
-
-**Protocol Buffers:**
-```
-proto/
-└── embedding/
-    └── embedding.proto  # Service and message definitions
-```
-
-#### Key Middleware Components
-
-**`middleware.go` - Core Middleware**
-- `Logging()` - Structured request/response logging
-- `Recover()` - Panic recovery with stack traces
-- `LimitRequestBody()` - Body size limiting (DoS prevention)
-- `RateLimiter` - Legacy IP-based rate limiting (sliding window)
-
-**`middleware/cors.go` - CORS Handling**
-- Configurable allowed origins (env: `CORS_ALLOWED_ORIGINS`)
-- Supports wildcard origins for development
-- Security warning for wildcard in production
-- Configurable methods, headers, credentials
-
-**`middleware/csp.go` - Content Security Policy**
-- Path-based policy selection
-- Strict default policy
-- Swagger UI exception policy
-- Report-only mode support
-
-**`middleware/ratelimit.go` - Rate Limiting**
-- IP-based rate limiting (global)
-- User-based rate limiting (tier-based, post-auth)
-- Circuit breaker integration
-- Graceful degradation on failures
-- Prometheus metrics
-
-**`auth/middleware.go` - JWT Authentication**
-- Token validation with HS256 algorithm
-- Role-based access control (Admin, Viewer)
-- Public endpoint exemption
-- Token expiry check (24 hours)
-
-#### Response Utilities
-
-**`respond/respond.go`**
-- `JSON()` - Success response with data
-- `Error()` - Error response with message
-- `SafeError()` - Error response with sanitization
-- `Created()` - 201 response with Location header
-
-**`respond/sanitize.go`**
-- Secret masking (API keys, passwords, tokens)
-- PII removal (email, phone, SSN)
-- SQL injection pattern removal
-- Path traversal pattern removal
-
-### Infrastructure Layer (`internal/infra/`)
-
-**Purpose:** External service adapters and infrastructure implementations
-
-#### `internal/infra/grpc/` - gRPC Client Implementations
-
-**Files:**
-- `ai_client.go` - GRPCAIProvider implementation (599 lines)
-- `noop_ai_provider.go` - NoopAIProvider stub for testing
-
-**Key Implementation: GRPCAIProvider**
-
-Provides gRPC client for catchup-ai service with resilience patterns:
-
-**Features:**
-- Circuit breaker (sony/gobreaker)
-- Prometheus metrics (3 metrics)
-- Input validation (4 validators)
-- gRPC error mapping
-- Connection health check
-- Context timeout management
-
-**Configuration:**
-```go
-type GRPCAIProvider struct {
-    conn           *grpc.ClientConn
-    client         pb.ArticleAIClient
-    config         *config.AIConfig
-    circuitBreaker *gobreaker.CircuitBreaker
-    logger         *slog.Logger
-}
-```
-
-**Methods:**
-1. **EmbedArticle()** - Generate embeddings (30s timeout)
-2. **SearchSimilar()** - Semantic search (30s timeout)
-3. **QueryArticles()** - RAG-based Q&A (60s timeout)
-4. **GenerateSummary()** - Weekly/monthly digest (120s timeout)
-5. **Health()** - Check gRPC connection state and circuit breaker
-
-**Validation Functions:**
-- `validateEmbedRequest()` - ArticleID positive, title/content not empty, length limits
-- `validateSearchRequest()` - Query not empty, limit non-negative, similarity 0.0-1.0
-- `validateQueryRequest()` - Question not empty, max length 2000, context non-negative
-- `validateSummaryRequest()` - Period is WEEK or MONTH, highlights non-negative
-
-**Error Mapping:**
-```go
-codes.DeadlineExceeded  → ErrTimeout
-codes.Unavailable       → ErrAIServiceUnavailable
-codes.InvalidArgument   → ErrInvalidQuery
-gobreaker.ErrOpenState  → ErrCircuitBreakerOpen
-```
-
-**Metrics:**
-```go
-ai_client_requests_total{method, status}
-ai_client_request_duration_seconds{method}
-ai_client_circuit_breaker_state{name}
-```
-
-**Key Implementation: NoopAIProvider**
-
-Stub implementation for testing and when AI disabled:
-
-```go
-type NoopAIProvider struct{}
-
-func (n *NoopAIProvider) SearchSimilar(ctx, req) → empty response
-func (n *NoopAIProvider) QueryArticles(ctx, req) → empty response
-func (n *NoopAIProvider) GenerateSummary(ctx, req) → empty response
-func (n *NoopAIProvider) Health(ctx) → healthy status
-```
-
-**Usage:** Development and testing when catchup-ai is unavailable
-
-#### `internal/infra/adapter/persistence/` - Data Persistence
-
-**PostgreSQL Adapter (`postgres/`):**
-
-**Files:**
-- `article_repo.go` - Article repository implementation (14,298 lines with tests)
-- `article_query_builder.go` - Dynamic SQL query builder for search
-- `source_repo.go` - Source repository implementation (8,714 lines)
-- `article_embedding_repo.go` - ArticleEmbedding repository with pgvector support
-
-**Key Implementation: ArticleRepository**
-```go
-// Methods:
-// - Create(ctx, article) - Insert new article
-// - GetByID(ctx, id) - Retrieve by primary key
-// - List(ctx, filter) - Paginated list with filters
-// - Search(ctx, query) - Full-text search
-// - Delete(ctx, id) - Soft delete
-// - ExistsByURL(ctx, url) - Duplicate check
-// - ExistsByURLBatch(ctx, urls) - Batch duplicate check
-```
-
-**Key Implementation: ArticleEmbeddingRepository**
-```go
-// Methods:
-// - Upsert(ctx, embedding) - Insert or update embedding (ON CONFLICT DO UPDATE)
-// - FindByArticleID(ctx, articleID) - Retrieve all embeddings for an article
-// - SearchSimilar(ctx, embedding, type, limit) - Vector similarity search
-// - DeleteByArticleID(ctx, articleID) - Delete all embeddings for an article
-
-// Dependencies:
-// - github.com/pgvector/pgvector-go - Vector type conversion
-// - pgvector extension - Vector data type and operators
-```
-
-**Vector Search Implementation:**
-```sql
--- Cosine distance operator (<=>)
-SELECT article_id, 1 - (embedding <=> $1) AS similarity
-FROM article_embeddings
-WHERE embedding_type = $2
-ORDER BY embedding <=> $1
-LIMIT $3
-```
-
-**Query Builder Features:**
-- Dynamic WHERE clause construction
-- Keyword search with LIKE/ILIKE patterns
-- Source ID filtering
-- Published date range filtering
-- Parameterized queries (SQL injection prevention)
-
-**Key Implementation: SourceRepository**
-```go
-// Methods:
-// - Create(ctx, source) - Insert new source
-// - List(ctx) - All sources
-// - ListActive(ctx) - Active sources only
-// - GetByID(ctx, id) - Retrieve by primary key
-// - TouchCrawledAt(ctx, id, time) - Update crawl timestamp
-// - Disable(ctx, id) - Soft delete (set is_active=false)
-```
-
-#### `internal/infra/summarizer/` - AI Summarization
-
-**Files:**
-- `claude.go` - Anthropic Claude API client (274 lines)
-- `openai.go` - OpenAI API client
-- `noop.go` - No-op summarizer for testing
-- `metrics.go` - Summarizer metrics
-
-**Key Implementation: Claude Summarizer**
-
-**Features:**
-- Circuit breaker (5 failures → 1 minute open)
-- Retry with exponential backoff (3 attempts)
-- Character limit configuration (100-5000, default: 900)
-- Request/response metrics
-- Compliance tracking (≥95% within limit)
-
-**Configuration:**
-- Model: Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`)
-- Max tokens: 1024
-- Timeout: 60 seconds
-- Character limit: Configurable via `SUMMARIZER_CHAR_LIMIT`
-
-**Metrics:**
-- `summary_length_characters` - Histogram of summary lengths
-- `summary_generation_duration_seconds` - Duration histogram
-- `summary_limit_compliance` - Compliance with character limit
-- `summary_limit_exceeded_total` - Count of limit violations
-
-#### `internal/infra/fetcher/` - Content Fetching
-
-**Files:**
-- `readability.go` - Mozilla Readability implementation (252 lines)
-- `config.go` - Configuration loading
-- `url_validation.go` - SSRF prevention
-
-**Key Implementation: ReadabilityFetcher**
-
-**Purpose:** Extract clean article text from web pages
-
-**Features:**
-- SSRF prevention (block private IPs)
-- Size limiting (max 10MB)
-- Timeout protection (10 seconds)
-- Redirect validation (max 5 redirects)
-- Circuit breaker protection
-- Custom User-Agent
-
-**Security:**
-- Block localhost, 127.0.0.1, 169.254.x.x, 192.168.x.x, 10.x.x.x
-- Validate all redirect targets
-- Enforce TLS 1.2+
-- Size limits prevent memory exhaustion
-
-**Fallback Strategy:**
-- Fetch failure → Use RSS content
-- Extracted content shorter → Use RSS content
-- Timeout → Use RSS content
-
-#### `internal/infra/notifier/` - Notification Services
-
-**Files:**
-- `discord.go` - Discord webhook client (353 lines)
-- `slack.go` - Slack webhook client
-- `common.go` - Shared utilities
-- `ratelimit.go` - Rate limiter implementation
-- `noop.go` - No-op notifier for testing
-
-**Key Implementation: DiscordNotifier**
-
-**Features:**
-- Webhook-based notifications
-- Rate limiting (0.5 req/s, burst of 3)
-- Retry with exponential backoff (2 attempts)
-- Rich embed formatting
-- Title/description truncation (Discord limits)
-
-**Embed Format:**
-- Title: Article title (max 256 chars)
-- Description: Summary (max 4096 chars)
-- URL: Article link
-- Color: Discord blue (#5865F2)
-- Footer: Source name
-- Timestamp: Publication time
-
-**Error Handling:**
-- 429 (rate limit) → Retry with retry_after
-- 4xx (client error) → No retry, fail immediately
-- 5xx (server error) → Retry with exponential backoff
-
-#### `internal/infra/scraper/` - Feed Parsing
-
-**Files:**
-- `rss.go` - RSS/Atom feed parser (uses `mmcdole/gofeed`)
-- Web scraper implementations (domain-specific)
-
-**Key Implementation: RSSFetcher**
-
-**Supported Formats:**
-- RSS 2.0
-- Atom 1.0
-- RSS 1.0 (RDF)
-
-**Features:**
-- HTTP client with timeout (30 seconds)
-- TLS 1.2+ enforcement
-- Connection pooling
-- Content extraction from multiple fields
-
-#### `internal/infra/db/` - Database Utilities
-
-**Files:**
-- `open.go` - Database connection factory
-- `migrate.go` - Database migrations including pgvector setup
-- `migrations/` - SQL migration files
-
-**Key Functions:**
-- `Open()` - Create PostgreSQL connection from `DATABASE_URL`
-- `MigrateUp()` - Apply pending migrations (includes embedding tables)
-- Connection pool configuration
-
-**Embedding-Related Migrations:**
-```go
-// Enable pgvector extension
-_, _ = db.Exec(`CREATE EXTENSION IF NOT EXISTS vector`)
-
-// Create article_embeddings table
-db.Exec(`
-CREATE TABLE IF NOT EXISTS article_embeddings (
-    id              SERIAL PRIMARY KEY,
-    article_id      BIGINT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
-    embedding_type  VARCHAR(50) NOT NULL,
-    provider        VARCHAR(50) NOT NULL,
-    model           VARCHAR(100) NOT NULL,
-    dimension       INT NOT NULL,
-    embedding       vector(1536) NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(article_id, embedding_type, provider, model)
-)`)
-
-// Create IVFFlat index for vector search
-db.Exec(`
-CREATE INDEX IF NOT EXISTS idx_article_embeddings_vector
-    ON article_embeddings USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100)`)
-```
-
-### Service Layer (`internal/service/auth/`)
-
-**Purpose:** Domain services (cross-entity operations)
-
-**Files:**
-- `service.go` - Authentication service
-- Multi-user authentication provider
-- JWT token generation and validation
-
-**Key Features:**
-- Multi-user support (Admin, Viewer)
-- Bcrypt password hashing (cost: 12)
-- Weak password detection
-- Public endpoint management
-
-### Configuration (`internal/config/`)
-
-**Purpose:** Configuration loading and validation
-
-**Files:**
-- `ai.go` - AI configuration (NEW)
-- Security configuration (CSP, CORS, authentication)
-- Rate limiting configuration
-- Environment variable parsing
-
-**AI Configuration (`ai.go`):**
-
-```go
-type AIConfig struct {
-    Enabled           bool
-    GRPCAddress       string
-    ConnectionTimeout time.Duration
-
-    Timeouts struct {
-        EmbedArticle    time.Duration
-        SearchSimilar   time.Duration
-        QueryArticles   time.Duration
-        GenerateSummary time.Duration
-    }
-
-    Search struct {
-        DefaultLimit         int32
-        MaxLimit             int32
-        DefaultMinSimilarity float32
-        DefaultMaxContext    int32
-        MaxContext           int32
-    }
-
-    CircuitBreaker struct {
-        MaxRequests      uint32
-        Interval         time.Duration
-        Timeout          time.Duration
-        FailureThreshold float64
-        MinRequests      uint32
-    }
-}
-```
-
-**Environment Variables:**
-- `AI_ENABLED` - Enable/disable AI features (default: true)
-- `AI_GRPC_ADDRESS` - catchup-ai gRPC address (default: localhost:50051)
-- `AI_CONNECTION_TIMEOUT` - Connection timeout (default: 10s)
-- `AI_TIMEOUT_*` - Operation-specific timeouts
-- `AI_SEARCH_*` - Search configuration
-- `AI_CB_*` - Circuit breaker configuration
-
-**Configuration Sources:**
-1. Environment variables (highest priority)
-2. `.env` file (development)
-3. Default values (fallback)
-
-### Observability (`internal/observability/`)
-
-**Purpose:** Monitoring, logging, and tracing
-
-#### `internal/observability/logging/`
-
-**Files:**
-- `logger.go` - Structured logging utilities (85 lines)
-
-**Features:**
-- JSON output for production
-- Text output for development
-- Context-based logger propagation
-- Request ID injection
-- Log level control (env: `LOG_LEVEL`)
-
-**Key Functions:**
-- `NewLogger()` - JSON logger
-- `NewTextLogger()` - Human-readable logger
-- `WithRequestID()` - Inject request ID
-- `WithFields()` - Add structured fields
-
-#### `internal/observability/metrics/`
-
-**Files:**
-- `registry.go` - Prometheus metrics registration
-- `business.go` - Business metrics (articles, feeds, summarization)
-
-**Business Metrics:**
-- `articles_created_total` - Article creation counter
-- `feed_crawl_duration_seconds` - Crawl duration histogram
-- `articles_summarized_total` - Summarization success/failure
-- `notification_sent_total` - Notification dispatch counter
-- `content_fetch_attempts_total` - Content fetching attempts
-
-#### `internal/observability/tracing/`
-
-**Files:**
-- `tracer.go` - OpenTelemetry tracer initialization
-- `middleware.go` - HTTP tracing middleware
-
-**Integration:**
-- OpenTelemetry for distributed tracing
-- Trace ID injection in logs
-- Span context propagation
-
-#### `internal/observability/slo/`
-
-**Files:**
-- `metrics.go` - SLO metrics (SLI tracking)
-
-**SLO Tracking:**
-- Request latency percentiles (p50, p95, p99)
-- Error rate monitoring
-- Availability tracking
-
-### Resilience (`internal/resilience/`)
-
-**Purpose:** Resilience patterns (circuit breaker, retry)
-
-#### `internal/resilience/circuitbreaker/`
-
-**Files:**
-- `circuitbreaker.go` - Generic circuit breaker
-- `db.go` - Database-specific wrapper (102 lines)
-
-**Key Implementation: DBCircuitBreaker**
-
-**Features:**
-- Wraps `*sql.DB` with circuit breaker
-- Open after 5 consecutive failures
-- 30-second timeout in open state
-- 3 test requests in half-open state
-
-**Configuration:**
-- `MaxRequests`: 3 (half-open test requests)
-- `Interval`: 1 minute (failure count reset)
-- `Timeout`: 30 seconds (open state duration)
-- `FailureThreshold`: 1.0 (100% failure rate)
-- `MinRequests`: 5 (minimum before tripping)
-
-#### `internal/resilience/retry/`
-
-**Files:**
-- `retry.go` - Retry logic with exponential backoff
-
-**Retry Strategies:**
-- AI API calls: 3 attempts, exponential backoff
-- HTTP requests: 2 attempts, linear backoff
-- Database: No retry (fail fast)
-
-### Utilities (`internal/utils/`)
-
-#### `internal/utils/text/`
-
-**Files:**
-- `counter.go` - Unicode-aware text utilities (33 lines)
-
-**Key Functions:**
-- `CountRunes()` - Count Unicode characters (not bytes)
-- Used for AI character limit enforcement
+前者は `ADMIN_PASSWORD_HASH` に設定する bcrypt ハッシュを標準入力から生成します(`make admin-hash`)。後者は開発用の単発クロールです。
 
 ---
 
-## Shared Packages (`pkg/`)
+## 4. `internal/` — アプリケーション本体
 
-**Purpose:** Reusable packages potentially usable outside the project
+### 4.1 `internal/domain/entity/` — Domain 層(516 行)
 
-### Directory Structure
+エンティティと不変条件。**標準ライブラリ以外に依存せず**、ORM / DB タグを持ちません。
 
-```
-pkg/
-├── config/                # Configuration utilities
-│   ├── config.go          # Rate limit config
-│   └── security.go        # Security config (CSP)
-├── ratelimit/             # Rate limiting package
-│   ├── algorithm.go       # Sliding window algorithm
-│   ├── store.go           # In-memory store
-│   ├── metrics.go         # Rate limit metrics
-│   └── circuitbreaker.go  # Circuit breaker integration
-└── security/              # Security utilities
-    └── csp/               # Content Security Policy
-        └── builder.go     # CSP header builder
-```
+| ファイル | 内容 |
+|---|---|
+| `article.go` `source.go` `summary.go` | 記事・収集元・要約。`Source.Validate()` を持つ |
+| `episode.go` `segment.go` | 番組とそのセグメント |
+| `job.go` | ジョブ種別定数(`regenerate_feed` / `notify_episode` / `notify_error` / `cleanup_old_media` / `transcribe` / `book_ingest`)とペイロード構造体。json タグを持つ唯一のファイル(`jobs.payload` の JSONB 用) |
+| `feed_token.go` | 配信トークン。`GenerateFeedToken()` / `HashFeedToken()`(SHA-256)と `IsRevoked()` |
+| `feed_access_log.go` | アクセスログ |
+| `subscriber.go` `viewer.go` | 友人・ダッシュボード閲覧者。`IsActive()` |
+| `validation.go` | `ValidateURL` — スキーム検証とプライベート IP 帯の拒否(SSRF 対策の一次防御) |
+| `errors.go` | `ValidationError` |
 
-### `pkg/config/` - Configuration Management
+### 4.2 `internal/repository/` — Port 層(791 行)
 
-**Files:**
-- `config.go` - Rate limiting configuration
-- `security.go` - Security configuration (CSP, CORS)
+永続化インターフェース **14 本**と、境界を越える構造体(`ArticleWithSource` / `ArticleSearchFilters` / `PendingReview` / `RadioArticle` 等)。実装は持ちません。
 
-**Key Features:**
-- Environment variable parsing
-- Validation with sensible defaults
-- Type-safe configuration structs
+`article_repository.go` `book_admin_repository.go` `book_review_repository.go` `episode_repository.go` `feed_access_log_repository.go` `feed_token_repository.go` `job_repository.go` `learning_admin_repository.go` `learning_repository.go` `radio_article_repository.go` `source_repository.go` `subscriber_repository.go` `summary_repository.go` `viewer_repository.go`
 
-### `pkg/ratelimit/` - Rate Limiting
+### 4.3 `internal/usecase/` — UseCase 層(3,394 行)
 
-**Purpose:** Reusable rate limiting implementation
+| パッケージ | 行数 | 責務 |
+|---|---|---|
+| `fetch/` | 1,543 | クロール本体。RSS / YouTube / ポッドキャストの取り込み、本文抽出、要約、ニュースレターのリンク展開、期限切れ記事のスイープ。ポート 6 本を自パッケージに定義 |
+| `book/` | 509 | 書籍 PDF のアップロード・一覧・削除(D-25) |
+| `article/` | 334 | 記事 CRUD・検索・ページネーション |
+| `viewer/` | 311 | 閲覧者アカウント管理(bcrypt 照合を含む) |
+| `subscriber/` | 230 | 友人管理・配信トークンの発行/失効 |
+| `source/` | 213 | 収集元 CRUD |
+| `learning/` | 167 | 復習キューの取得・採点・リタイア |
+| `accesslog/` | 87 | アクセスログ集計 |
 
-**Key Components:**
-- `SlidingWindowAlgorithm` - Token bucket with sliding window
-- `InMemoryRateLimitStore` - Thread-safe storage
-- `CircuitBreaker` - Graceful degradation on storage failures
+各パッケージは `service.go`(本体)と `errors.go`(センチネルエラー)で構成します。`Service` はリポジトリインターフェースを公開フィールドで受け取ります。
 
-**Features:**
-- Configurable limits per identifier (IP, user)
-- Sliding window accuracy
-- Memory-efficient cleanup
-- Prometheus metrics integration
+### 4.4 `internal/handler/http/` — Presentation 層(5,720 行)
 
-### `pkg/security/csp/` - Content Security Policy
+| パッケージ | 責務 |
+|---|---|
+| (直下) | `health.go`(`/health` `/ready` `/live`)、`middleware.go`(Recover / Logging / BodyLimit)、`timeout.go`、`validation.go` |
+| `article/` `source/` | CRUD + 検索。`register.go` がルート登録、`dto.go` が入出力変換 |
+| `subscriber/` | 友人管理 + トークン発行/失効(`tokens.go`) |
+| `viewer/` | 閲覧者アカウント管理(D-27) |
+| `learning/` | 復習キュー(`reviews.go`)・アイテム(`items.go`)・書籍(`books.go`) |
+| `book/` | PDF アップロード/削除(`handlers.go`)、tailnet 限定のファイル配信(`private.go`) |
+| `accesslog/` | アクセスログ参照 |
+| `auth/` | JWT 発行・検証(`token.go` `middleware.go`)、HttpOnly Cookie(`cookie.go`)、管理者資格情報の検証(`provider.go` `validator.go`)、`GET /auth/me`(`me.go`) |
+| `middleware/` | CORS(4 ファイル)、CSP、レート制限、`IPExtractor`(XFF 詐称対策) |
+| `respond/` | JSON レスポンスとエラーのサニタイズ |
+| `pathutil/` | パスパラメータの ID 抽出・正規化・ログ用の秘匿化 |
+| `requestid/` | リクエスト ID の採番と context 伝播 |
+| `responsewriter/` | ステータスコード記録用のラッパー |
 
-**Purpose:** CSP header generation for security
+ルーティングは各パッケージの `Register(mux, service, ...)` に集約し、`cmd/server` からはそれを呼ぶだけにしています。
 
-**Key Functions:**
-- `StrictPolicy()` - Restrictive default policy
-- `SwaggerUIPolicy()` - Relaxed policy for Swagger
-- CSP builder with fluent API
+### 4.5 `internal/infra/` — Infrastructure 層(5,703 行)
 
----
+| パッケージ | 行数 | 責務 |
+|---|---|---|
+| `adapter/persistence/postgres/` | 2,936 | `repository` の 14 インターフェースを実装。1 リポジトリ 1 ファイル + `article_query_builder.go`(動的検索クエリ組み立て) |
+| `summarizer/` | 1,207 | 要約 LLM。`chain.go` がフォールバック連鎖(Gemini → Groq → Ollama)、`gemini.go` `groq.go` `ollama.go` `gemini_video.go` が各プロバイダ、`noop.go` はキー未設定時 |
+| `fetcher/` | 668 | HTTP 取得。`readability.go`(本文抽出)、`url_validation.go`(ホップごとの SSRF 検証)、`config.go`(サイズ・リダイレクト上限)、`useragent.go` |
+| `worker/` | 424 | ワーカーの設定とヘルスチェック |
+| `db/` | 377 | 接続(`open.go`)と冪等マイグレーション(`migrate.go`)。`seeds/sources.sql` に初期収集元 |
+| `scraper/` | 91 | gofeed による RSS / Atom パース |
 
-## Infrastructure Configuration (`config/`)
+### 4.6 用途別パッケージ
 
-**Purpose:** Non-code configuration files
+層ではなく用途で切ったパッケージです。「利用」列は `go list` で確認した実際の import 元(`cmd/` 配下)です。
 
-### Directory Structure
+#### radio(Mac 夜間バッチ)専用
 
-```
-config/
-├── security.yaml          # Security policies
-├── environments/          # Environment-specific configs
-├── grafana/               # Grafana dashboard definitions
-│   └── dashboards/        # JSON dashboard files
-├── prometheus/            # Prometheus configuration
-│   └── rules/             # Alert rules
-├── logrotate/             # Log rotation config
-└── cron/                  # Cron job definitions
-```
+| パッケージ | 行数 | 主なファイルと責務 |
+|---|---|---|
+| `radio/` | 1,849 | `pipeline.go`(番組生成の全工程 + 必要な依存 10 本の interface 定義)、`transfer.go`(rsync 転送。`Transferer` / `RunFunc` で差し替え可能)、`bookreview.go`(書籍コーナー)、`weeklyreview.go`(週次振り返り)、`jingle.go`、`config.go` |
+| `script/` | 1,440 | `generator.go`(台本生成)、`plan.go`(構成計画)、`quiz.go` `quizcorner.go`(クイズ)、`format.go`(番組の定型句を集約 — D-37)、`shownotes.go`、`prompts.go` + `prompts/`(テンプレート)、`bookreview.go` `weeklyreview.go` |
+| `tts/` | 771 | `voicevox.go`(HTTP API 直叩き)、`ffmpeg.go`(結合・loudnorm)、`silence.go`(無音生成)、`wav.go`、`sentence.go`(文分割)、`jingle.go` + `assets/` |
 
-### Key Configuration Files
+#### 複数バイナリが使うもの
 
-**`security.yaml`**
-- CSP policies
-- CORS allowed origins
-- Authentication requirements
+| パッケージ | 行数 | 利用 | 主なファイルと責務 |
+|---|---|---|---|
+| `feed/` | 817 | **server** + worker | `server.go`(公開/私的フィードのハンドラ・トークン検証・mp3 配信)、`rss.go`(XML 生成)、`artwork.go` + `assets/`、`config.go`。配信ハンドラは `cmd/server` が使い、worker は `LoadConfig()` から `FEED_AUDIO_DIR` / `FEED_PRIVATE_BASE_URL` を読むためだけに参照する。**radio からは参照しない** |
+| `jobs/` | 666 | worker + radio | `consumer.go`(kind ごとのディスパッチ・`ClaimNext` / `RequeueRunning`)、`regenerate_feed.go` `notify_episode.go` `notify_error.go` `cleanup.go`。コンシューマを回すのは worker、radio は投入側(`NewNotifyErrorPayload`)としてのみ使う |
+| `learning/` | 433 | server + radio | `transition.go`(SRS 遷移の純関数)、`date.go`(JST 放送日)、`item.go`、`weekly.go`、`config.go`(ラダー既定値 `1,7,30`)。採点 API と radio が同じ遷移関数を共有する。**外側に依存しない** |
+| `notify/` | 324 | worker | `notify.go`(`Destination` インターフェースと `Message`)、`email.go`(唯一の実装 = 管理者宛メール)、`smtp.go`(SMTP クライアント)、`config.go`(`SMTP_*` / `NOTIFY_ERROR_EMAIL_TO`)。Webhook 系チャネルは D-29 で廃止済み |
 
-**`environments/`**
-- Development, staging, production configs
-- Environment-specific overrides
+### 4.7 共通パッケージ
 
----
+| パッケージ | 行数 | 責務 |
+|---|---|---|
+| `common/pagination/` | 303 | ページネーションのパラメータ解析・メタデータ生成・戦略切り替え |
+| `pkg/config/` | 685 | 設定値のロード・検証と、警告付きのロード結果表現 |
+| `pkg/validation/` | 140 | クエリパラメータのパース |
+| `pkg/search/` | 130 | 検索キーワードのエスケープと正規化 |
+| `service/auth/` | 44 | `AuthProvider` インターフェース(実装は `handler/http/auth/provider.go`) |
+| `config/` | 108 | `config/security.yaml` の読み込み |
+| `utils/text/` | 22 | 文字数カウント(要約の文字数上限チェック用) |
 
-## Test Infrastructure (`tests/`)
-
-**Purpose:** Test utilities, fixtures, and integration tests
-
-### Directory Structure
-
-```
-tests/
-├── fixtures/              # Test data and fixtures
-│   ├── articles.go        # Sample article data
-│   └── articles_test.go   # Fixture tests
-├── integration/           # Integration tests
-├── performance/           # Performance benchmarks
-├── e2e/                   # End-to-end tests
-└── unit/                  # Additional unit tests
-```
-
-### `tests/fixtures/` - Test Data
-
-**Files:**
-- `articles.go` - Sample article fixtures (189 lines with tests)
-- `embeddings.go` - Sample embedding fixtures for testing
-
-**Key Fixtures:**
-- `SampleArticle()` - Basic article instance
-- `SampleArticles()` - Collection of test articles
-- `SampleEmbedding()` - Basic embedding instance with 1536-dim vector
-- `SampleEmbeddings()` - Collection of test embeddings
-- Builder pattern for test data customization
-
-**Usage:**
-```go
-article := fixtures.SampleArticle()
-articles := fixtures.SampleArticles(10) // Generate 10 test articles
-
-embedding := fixtures.SampleEmbedding()
-embeddings := fixtures.SampleEmbeddings(5) // Generate 5 test embeddings
-```
+> **既知の重複**: 設定まわりが `internal/config`(YAML)、`internal/pkg/config`(ロード結果と警告)、`pkg/config`(環境変数ヘルパ)の 3 箇所に分かれています。役割は異なりますが名前が同一で紛らわしく、統合の余地があります。
 
 ---
 
-## Documentation (`docs/`)
+## 5. `pkg/` — 公開パッケージ
 
-**Purpose:** Project documentation and design artifacts
+外部から import 可能な位置に置くパッケージ(計 770 行)。現状 2 つのみです。
 
-### Directory Structure
-
-```
-docs/
-├── designs/               # Design documents (EDAF Designer output)
-├── plans/                 # Task plans (EDAF Planner output)
-├── reviews/               # Code review reports (EDAF Evaluators output)
-├── screenshots/           # UI screenshots (chrome-devtools MCP)
-├── reports/               # Various reports
-├── deployment/            # Deployment guides
-├── operations/            # Operations runbooks
-├── security/              # Security documentation
-└── *.md                   # General documentation files
-```
-
-### Key Documentation Files
-
-**Root Documentation:**
-- `README.md` - Project overview and quickstart
-- `CHANGELOG.md` - Version history (semantic versioning)
-- `AGENTS.md` - Repository guidelines
-
-**EDAF System:**
-- `.claude/CLAUDE.md` - EDAF v1.0 system guide
-- `.claude/agents/` - Agent definitions
-- `.claude/evaluators/` - Evaluator configurations
+| パッケージ | 内容 |
+|---|---|
+| `pkg/config/` | `env.go`(環境変数の型付き読み取り)、`duration.go`、`csp.go` |
+| `pkg/security/csp/` | CSP ポリシービルダー。`StrictPolicy()` と `SwaggerUIPolicy()` |
 
 ---
 
-## Monitoring & Operations (`monitoring/`)
+## 6. `config/` `deploy/` `scripts/` — 運用
 
-**Purpose:** Monitoring configuration and operational dashboards
+### `config/`
 
-### Directory Structure
+| パス | 内容 |
+|---|---|
+| `security.yaml` | セキュリティ設定(`internal/config` が読む) |
+| `environments/*.env` | development / staging / production の環境変数(git 管理外、README のみ追跡) |
+| `cron/` | crontab の例 |
+| `logrotate/` | メール通知ログのローテーション設定 |
 
-```
-monitoring/
-├── prometheus.yml         # Prometheus scrape config
-├── alerts/                # Alert rule definitions
-│   ├── catchup-alerts.yml     # Application alerts
-│   ├── worker-config.yml      # Worker alerts
-│   ├── csp.yml                # CSP violation alerts
-│   └── ratelimit.yml          # Rate limit alerts
-└── grafana/               # Grafana configuration
-    └── provisioning/      # Auto-provisioning
-        ├── datasources/   # Data source config
-        └── dashboards/    # Dashboard auto-import
-```
+### `deploy/`
 
-### Key Alerts
+| パス | 内容 |
+|---|---|
+| `compose.pi.yml` | 本番 Pi 用の override(`compose.yml` に重ねる) |
+| `systemd/pulse.service` | Pi 側のサービス定義 |
+| `launchd/*.plist` | Mac 側の定期実行(radio / transcribe / backup / morningcheck) |
+| `scripts/` | `radio-run.sh` `transcribe-run.sh` `pi-health-check.sh` `morning-check.sh` `backup-pulse-db.sh` `alert-mail.sh` |
+| `cloudflared/config.example.yml` | Cloudflare Tunnel の設定例 |
+| `pi.md` / `mac.md` / `ai.md` / `README.md` | ホスト別の手順書 |
+| `env.pi.example` / `env.mac.example` | ホスト別の環境変数テンプレート |
 
-**Application Alerts (`catchup-alerts.yml`):**
-- High error rate (>5%)
-- Slow response time (p95 >1s)
-- Low availability (<99.9%)
+### `scripts/`(レガシー)
 
-**Worker Alerts (`worker-config.yml`):**
-- Crawl failures
-- Stale data (no crawl in 24h)
-- High summarization error rate
+ルート直下の `scripts/` は**初代由来の Compose ベースのユーティリティ**で、ルートの `.env` が揃った開発機での実行を前提としています。**Pi の実運用はここを使いません** — 現行の Pi 監視と DB バックアップは `deploy/scripts/` 側が正です。
 
-**Security Alerts (`csp.yml`, `ratelimit.yml`):**
-- CSP violations
-- Rate limit exceeded
-- Suspicious traffic patterns
+| 用途 | 現行(Pi 運用) | ルート `scripts/`(レガシー) |
+|---|---|---|
+| ヘルスチェック | `deploy/scripts/pi-health-check.sh`(5 分ごと。メールは状態遷移時のみ — D-30) | `health-check.sh`(異常が続く間ずっと送るスパム問題があり D-30 で置き換え済み) |
+| DB バックアップ | `deploy/scripts/backup-pulse-db.sh` | `backup-db.sh` / `restore-db.sh` |
+
+上記以外にディスク監視(`disk-usage-check.sh`)、Docker 掃除(`docker-cleanup.sh`)、マルチアーキビルド(`build-multiarch.sh`)、フィード診断(`diagnose_feeds.go`)があります。共通処理は `lib/` です。
 
 ---
 
-## Build & Deployment
+## 7. `tests/` `docs/` — テストとドキュメント
 
-### Build Artifacts
+### `tests/`
 
-**`Dockerfile`**
-- Multi-stage build (builder + runtime)
-- Minimal runtime image (alpine-based)
-- Non-root user execution
-- Health check definition
+Go のテストは**対象コードと同じパッケージに置く**方針のため、`tests/` にはシェルベースの通知テストと共有フィクスチャのみを置きます。
 
-**`compose.yml`**
-- Service orchestration (app, worker, db, prometheus, grafana)
-- Volume management
-- Network configuration
-- Environment variable injection
+| パス | 内容 |
+|---|---|
+| `fixtures/articles.go` | テスト用の記事データ |
+| `unit/` `integration/` `e2e/` `performance/` | メール通知まわりのシェルスクリプトテスト |
 
-**`Makefile`**
-- Build automation targets:
-  - `make build` - Compile binaries
-  - `make test` - Run all tests
-  - `make lint` - Static analysis
-  - `make docker-build` - Build container
-  - `make dev-shell` - Enter dev container
+DB を必要とするテストは `internal/infra/db/*_integration_test.go` に、外部ネットワークを使うテストは `//go:build integration` タグ付きで各パッケージに配置します。
 
-### CI/CD Workflows (`.github/workflows/`)
+### `docs/`
 
-**`ci.yml`**
-- Lint, test, build on every PR
-- Code coverage reporting
-- Security scanning
+| ファイル | 内容 | 種別 |
+|---|---|---|
+| `architecture.md` | 層構成・依存ルール・データフロー・セキュリティ・技術選定 | 手書き |
+| `repository-structure.md` | 本ドキュメント | 手書き |
+| `swagger.json` `swagger.yaml` `docs.go` | API 仕様 | `make swagger` の生成物 |
 
-**`docker.yml`**
-- Container image build and push
-- Multi-platform builds (linux/amd64, linux/arm64)
+初代 catchup-feed(EDAF 体制期)の `development-guidelines.md` / `functional-design.md` /
+`product-requirements.md` / `glossary.md` は 2026-08-13 に削除しました。gRPC・サーキット
+ブレーカー・Prometheus・OpenAI/Claude 要約・RBAC など**現行に存在しない機能を現行として
+記述しており**、放置すると読み手を誤らせるためです。内容が必要になったら git 履歴を参照
+してください。コーディング規約は本ファイル §8 と `CLAUDE.md`、機能仕様は `/swagger/` と
+親リポジトリの設計書が引き継いでいます。
 
-**`release.yml`**
-- Automated releases on version tags
-- Semantic versioning
-- Release notes generation
+> Phase 別の設計と決定ログ(D-xx / C-xx)は親リポジトリの `docs/` が正です。食い違う場合は設計書を優先してください。
+
+### `.github/workflows/`
+
+| ファイル | 内容 |
+|---|---|
+| `ci.yml` | 5 ジョブ。**Test**(pgvector サービスコンテナ → `go mod verify` → Swagger 生成 → `go test -race` → Codecov)/ **Lint**(Swagger 生成 → golangci-lint v2.12.2)/ **Build**(server / worker のビルドとバイナリサイズ表示)/ **Security Scan**(gosec → SARIF)/ **Dependency Vulnerability Scan**(govulncheck → SARIF) |
+| `docker.yml` | QEMU + buildx によるマルチアーキイメージのビルド(Pi の arm64 向け) |
 
 ---
 
-## Module Dependencies
+## 8. 配置と命名の規約
 
-### Core Dependencies (from `go.mod`)
-
-**Database:**
-- `jackc/pgx/v5` - PostgreSQL driver and toolkit
-- `pgvector/pgvector-go` - PostgreSQL vector extension support (embeddings)
-
-**HTTP & Web:**
-- `net/http` (stdlib) - HTTP server and client
-- `swaggo/http-swagger/v2` - Swagger UI integration
-
-**AI & ML:**
-- `anthropics/anthropic-sdk-go` - Anthropic Claude API client
-- `sashabaranov/go-openai` - OpenAI API client
-
-**RSS & Content:**
-- `mmcdole/gofeed` - RSS/Atom feed parser
-- `go-shiori/go-readability` - Mozilla Readability algorithm
-
-**Authentication:**
-- `golang-jwt/jwt/v5` - JWT token handling
-
-**Monitoring:**
-- `prometheus/client_golang` - Prometheus metrics
-- `go.opentelemetry.io/otel` - OpenTelemetry tracing
-
-**Resilience:**
-- `sony/gobreaker` - Circuit breaker implementation
-- `golang.org/x/time/rate` - Rate limiting
-
-**Scheduling:**
-- `robfig/cron/v3` - Cron job scheduler
-
-**Testing:**
-- `stretchr/testify` - Test assertions and mocking
-- `DATA-DOG/go-sqlmock` - Database mocking
-
-**Utilities:**
-- `google/uuid` - UUID generation
-- `PuerkitoBio/goquery` - HTML parsing
+| 対象 | 規約 |
+|---|---|
+| テストファイル | 対象と同じディレクトリに `*_test.go`。table-driven + testify |
+| DB を使うテスト | `*_integration_test.go` として `internal/infra/db/` に配置 |
+| 外部ネットワークを使うテスト | `//go:build integration` タグを付与 |
+| ハンドラのルート登録 | 各パッケージの `register.go` に `Register(mux, service, ...)` を実装し、`cmd/server` はそれを呼ぶだけ |
+| DTO | ハンドラパッケージの `dto.go` に集約 |
+| ユースケースのエラー | `errors.go` にセンチネルエラーを定義し、ハンドラ側で `errors.Is` により HTTP ステータスへ写像 |
+| リポジトリ実装 | 1 インターフェース 1 ファイル(`*_repo.go`) |
+| モック | 生成ツールを使わず、テストファイル内に手書き(interface が小さいため) |
+| 設計判断 | コメントに決定ログ番号(D-xx / C-xx / §x.x)を残し、設計書と対応付ける |
 
 ---
 
-## File Organization Patterns
+## 9. コード規模
 
-### Naming Conventions
+2026-08-13 時点。テストを除く行数です。
 
-**Files:**
-- `{entity}_repo.go` - Repository implementation
-- `{entity}_handler.go` - HTTP handler
-- `{entity}_test.go` - Unit tests
-- `{entity}_integration_test.go` - Integration tests
-- `{entity}_bench_test.go` - Benchmarks
+| 区分 | パッケージ | 行数 |
+|---|---|---|
+| Presentation | `internal/handler` | 5,720 |
+| Infrastructure | `internal/infra` | 5,703 |
+| UseCase | `internal/usecase` | 3,394 |
+| Port | `internal/repository` | 791 |
+| Domain | `internal/domain/entity` | 516 |
+| 用途別(radio) | `internal/radio` | 1,849 |
+| 用途別(radio) | `internal/script` | 1,440 |
+| 用途別(server + worker) | `internal/feed` | 817 |
+| 用途別(radio) | `internal/tts` | 771 |
+| 用途別(worker + radio) | `internal/jobs` | 666 |
+| 用途別(server + radio) | `internal/learning` | 433 |
+| 用途別(worker) | `internal/notify` | 324 |
+| 共通 | `internal/pkg` `common` `service` `config` `utils` | 1,432 |
+| 公開 | `pkg/` | 770 |
+| エントリポイント | `cmd/` | 1,387 |
+| **本体合計** | | **26,013** |
+| テスト | 162 ファイル | 48,283 |
 
-**Packages:**
-- Single purpose per package
-- Package name matches directory name
-- No `_` in package names (except test packages)
-
-### Test Organization
-
-**Test File Placement:**
-- Unit tests: Same package (`package article`)
-- Integration tests: `_test` package (`package article_test`) or `tests/integration/`
-- Benchmarks: Same package with `_bench_test.go` suffix
-
-**Test Helpers:**
-- Fixtures in `tests/fixtures/`
-- Mocks generated or in test files
-- Integration test utilities in `tests/integration/`
-
-### Documentation Standards
-
-**Code Documentation:**
-- Package-level doc in `doc.go`
-- Public functions documented with godoc format
-- Complex algorithms explained with comments
-
-**Markdown Documentation:**
-- Architecture in `docs/architecture.md`
-- API reference in Swagger annotations
-- Operations in `docs/operations/`
-
----
-
-## Architecture Decision Records
-
-**Key Decisions:**
-
-1. **Clean Architecture:** Chosen for maintainability and testability
-2. **PostgreSQL:** Chosen for ACID compliance and JSON support
-3. **Standard `net/http`:** Chosen over frameworks for simplicity and performance
-4. **Repository Pattern:** Chosen for database abstraction and testing
-5. **Interface-based design:** Chosen for dependency inversion and mocking
-
-**Trade-offs:**
-- Clean Architecture adds boilerplate but improves long-term maintainability
-- Standard library HTTP requires more manual setup but has zero dependencies
-- Repository pattern adds abstraction layer but enables easy database switching
-
----
-
-## Future Considerations
-
-**Scalability:**
-- Consider message queue (RabbitMQ, Kafka) for notification dispatching
-- Implement database read replicas for scaling reads
-- Add Redis for caching frequently accessed articles
-
-**Observability:**
-- Implement distributed tracing with Jaeger
-- Add structured logging aggregation (ELK stack)
-- Implement real-time alerting (PagerDuty, Slack)
-
-**Testing:**
-- Increase integration test coverage (currently minimal)
-- Add contract tests for external APIs
-- Implement load testing (k6, Locust)
-
----
-
-**Document Version:** 1.1
-**Last Updated:** 2026-01-23
-**Maintained By:** Development Team
+interface 定義は 47 本、テスト内のモック・スタブは 65 個です。

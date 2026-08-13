@@ -79,7 +79,7 @@ chmod +x ~/pulse/bin/transcribe-run.sh
 
 ## 3. uv 導入と依存同期
 
-パッケージ管理は uv(Python 3.13 は uv が自動取得する。システムの Python は使わない):
+パッケージ管理は uv(Python は `.python-version`(**3.14**)を見て uv が自動取得する。システムの Python は使わない):
 
 ```bash
 brew install uv

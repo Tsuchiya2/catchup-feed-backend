@@ -21,7 +21,7 @@ catchup-feed は**単一ユーザー**が**ゼロ円**で運用する自宅ホ�
 
 ## アーキテクチャ
 
-Go 1.26 の単一モジュールで、**3つのバイナリ**を持ちます。内部 HTTP/RPC はなく、`server` / `worker` / `radio` はすべて **PostgreSQL 経由**(`jobs` テーブル+状態テーブル)で連携します。
+Go 1.25.6 の単一モジュールで、**3つのバイナリ**を持ちます。内部 HTTP/RPC はなく、`server` / `worker` / `radio` はすべて **PostgreSQL 経由**(`jobs` テーブル+状態テーブル)で連携します。
 
 | バイナリ | 配置 | 役割 |
 |---|---|---|
@@ -33,7 +33,7 @@ Go 1.26 の単一モジュールで、**3つのバイナリ**を持ちます。�
 
 ### ホスト配置
 
-```
+```text
 ┌──────────── Raspberry Pi 5(常時稼働)──────────────┐
 │  server  : 公開フィード配信 / 管理 API / 私的フィード  │
 │  worker  : クロール・要約・通知(cron 常駐)          │
@@ -42,7 +42,7 @@ Go 1.26 の単一モジュールで、**3つのバイナリ**を持ちます。�
           ▲ Tailscale(rsync / PostgreSQL 接続)
 ┌──────────── M3 MacBook Pro(夜間バッチ)────────────┐
 │  radio   : 台本構成 → VOICEVOX → ffmpeg 結合         │
-│  VOICEVOX Engine(ずんだもん)                        │
+│  VOICEVOX Engine(現行話者: No.7 アナウンス)         │
 │  Ollama(要約・書籍のローカル LLM フォールバック)     │
 └──────────────────────────────────────────────────┘
 
@@ -55,30 +55,71 @@ Go 1.26 の単一モジュールで、**3つのバイナリ**を持ちます。�
 
 ### 日次フロー
 
-```
+```text
 [worker/Pi]  毎時       : クロール → articles 挿入 → 要約 → summaries 更新
 [radio/Mac]  04:30 JST  : 当日分エピソード生成
    1. 対象記事選定(前回エピソード以降の要約済み記事)
    2. 台本生成(LLM): セグメントごとの読み上げ原稿(番組の言い回し・定型句は `internal/script/format.go` に集約 — D-37)
-   3. VOICEVOX でセグメント別に合成 → ffmpeg で結合・mp3 化(64kbps mono)
+   3. VOICEVOX でセグメント別に合成 → 前後にオープニング/エンディングジングルを付けて
+      ffmpeg で結合・mp3 化(64kbps mono。ジングルは `internal/tts/assets/` に go:embed — D-36)
    4. rsync で Pi の episodes/ へ転送、episodes / segments を INSERT
       → jobs に regenerate_feed / notify_episode を積む
-[worker/Pi]  ジョブ検知  : フィード XML 再生成 → Discord/Slack/メール通知
+   5. 私的版(復習クイズ・週次振り返り・書籍コーナー入り)を best-effort で追加生成
+[worker/Pi]  ジョブ検知  : 管理者宛メールで新着エピソードを通知(D-29)
 ```
 
 Mac が閉じていた日はエピソードが生成されないだけで、システムは壊れません(翌日に持ち越し)。
+
+### レイヤー構成
+
+管理 API(`cmd/server`)は Clean Architecture のレイヤーに沿って分割し、依存は常に内向きです。永続化のインターフェースを内側(`internal/repository`)に置き、PostgreSQL アダプタが外側からそれを実装します(依存性逆転)。
+
+```text
+外 ─────────────────────────────────────────────────→ 内
+handler/http/*  →  usecase/*  →  repository/*(interface)  →  domain/entity
+                                        ▲
+infra/adapter/persistence/postgres ─────┘ 実装を cmd/ で注入
+```
+
+| ディレクトリ | 層 | 責務 |
+|---|---|---|
+| `internal/domain/entity` | Domain | エンティティ・不変条件・SSRF を含む URL 検証。**標準ライブラリ以外に依存しない**(ORM/DB タグを持たない) |
+| `internal/repository` | Port | 永続化インターフェース(14 本)。実装は持たない |
+| `internal/usecase/*` | UseCase | アプリケーションロジック(記事・ソース・友人・閲覧者・学習・書籍・クロール) |
+| `internal/handler/http/*` | Presentation | ルーティング・DTO・JWT 認証・CORS/CSP・レート制限 |
+| `internal/infra/*` | Infrastructure | PostgreSQL アダプタ・HTTP フェッチャ・要約 LLM クライアント |
+
+残りは層ではなく**用途別のパッケージ**に切っています。外部依存は「必要なメソッドだけを利用側で定義する」Go 流のポート(consumer-side interface)で抽象化します。「利用」列は `go list` で確認した実際の import 元です。
+
+| ディレクトリ | 利用 | 責務 |
+|---|---|---|
+| `internal/radio` | radio | 番組生成パイプライン。必要な依存を 10 本の interface として自パッケージに定義(`ArticleSource` / `EpisodeStore` / `Synthesizer` / `Transferer` 等)し、`repository` や `tts` の具象型には依存しない |
+| `internal/script` | radio | LLM 台本生成・クイズ生成・番組の定型句(D-37) |
+| `internal/tts` | radio | VOICEVOX 合成・無音生成・ffmpeg 結合 |
+| `internal/feed` | **server** + worker | RSS XML 生成と公開/私的フィードの配信ハンドラ。配信は `cmd/server` の担当で、worker は `FEED_AUDIO_DIR`(mp3 の掃除先)などの設定を読むためだけに参照する。**radio からは参照しない** |
+| `internal/jobs` | worker + radio | `jobs` テーブルのコンシューマ(`regenerate_feed` / `notify_episode` / `notify_error` / `cleanup_old_media`)。radio は投入側としてのみ使う |
+| `internal/learning` | server + radio | SRS の遷移純関数・JST 放送日ヘルパ。採点 API と radio の共有コアのため**外側に一切依存させない** |
+| `internal/notify` | worker | 管理者向けメール通知(SMTP)。`Destination` インターフェースの実装はメール 1 種のみ(D-29) |
+
+依存ルールは `go list` で検証しています。
+
+- `handler` → `infra` の直接参照: **0 件**(永続化は必ず `usecase` 経由)
+- `usecase` / `domain` / `repository` → `handler` / `infra` の逆流: **0 件**
+- `domain/entity` の外部依存: **0 件**(標準ライブラリのみ)
+
+**意図的な逸脱**: `internal/feed` は配信ハンドラを持ちながら `handler/` の外に、`internal/tts` と `internal/notify` は実体がインフラでありながら `infra/` の外にあります。「1 バイナリの責務を、そのバイナリだけが使うパッケージにまとめる」ことを層の見た目より優先した結果です。判断の背景は [docs/architecture.md](docs/architecture.md) に記載しています。
 
 ---
 
 ## 技術スタック
 
-- **言語 / ランタイム**: Go 1.26.x(単一モジュール、標準ライブラリの `net/http` ルーター — 外部ルーター依存なし)
+- **言語 / ランタイム**: Go 1.25.6(単一モジュール、標準ライブラリの `net/http` ルーター — 外部ルーター依存なし)。バージョンは `.go-version` / `go.mod` / `Dockerfile` / CI の `GO_VERSION` で統一。
 - **データベース**: PostgreSQL(ドライバは pgx/v5)。マイグレーションは `cmd/server` 起動時に冪等 SQL を自動適用。
 - **認証**: 管理 API は JWT(golang-jwt/v5)+ 単一管理者(環境変数 + bcrypt ハッシュ)。フィード配信は URL 埋め込みの不透明トークン(`crypto/rand` 32byte → base64url、DB には SHA-256 ハッシュのみ保存)。
 - **クローラー**: gofeed(RSS/Atom パース)+ go-readability(本文抽出)。リダイレクトごとに SSRF ガード。
 - **要約 LLM(フォールバック連鎖)**: Gemini → Groq → Ollama。無料枠 API が全滅してもローカル(Ollama)で縮退継続。API キー未設定のプロバイダは連鎖から自動除外。
-- **音声合成 (TTS)**: VOICEVOX(HTTP API を直叩き、既定話者はずんだもん)。
-- **音声処理**: ffmpeg(結合・loudnorm・mp3 エンコード)、rsync(Pi への転送)を `exec.Command` で呼び出し。
+- **音声合成 (TTS)**: VOICEVOX(HTTP API を直叩き。話者はコード既定 3 = ずんだもん、実運用は `VOICEVOX_SPEAKER=30`(No.7 アナウンス)— D-2)。
+- **音声処理**: ffmpeg(ジングル結合・loudnorm・mp3 エンコード)、rsync(Pi への転送)を `exec.Command` で呼び出し。ジングル mp3 は VOICEVOX 出力の実測 WAV フォーマットへ実行時デコードしてから concat する(D-36)。
 - **スケジューラ**: robfig/cron(worker)、launchd(radio の夜間起動)。
 - **学習ループ(Phase 3)**: `internal/learning/` に spaced repetition(SRS)の間隔ラダー・出題キュー飽和算術・理解トラッカーを実装。復習クイズをラジオ番組に音声注入する。
 - **API ドキュメント**: Swagger(swaggo、`/swagger/` で配信、フロントエンドの型生成元)。
@@ -91,7 +132,7 @@ Mac が閉じていた日はエピソードが生成されないだけで、シ�
 ### 前提
 
 - Docker / Docker Compose(Pi 上での server + worker + PostgreSQL 実行)
-- radio バッチ用に Mac 側で: Go 1.26.x、[VOICEVOX Engine](https://voicevox.hiroshiba.jp/)、[Ollama](https://ollama.com/)、ffmpeg、rsync
+- radio バッチ用に Mac 側で: Go 1.25.6、[VOICEVOX Engine](https://voicevox.hiroshiba.jp/)、[Ollama](https://ollama.com/)、ffmpeg、rsync
 
 ### 開発環境
 
@@ -164,7 +205,11 @@ go build -o radio ./cmd/radio
 | `PRIVATE_FEED_ADDR` | tailnet 限定リスナーのバインドアドレス(例: `100.64.0.1:8081`。空で無効。ワイルドカードバインドは拒否) |
 | `CORS_ALLOWED_ORIGINS` / `CORS_ALLOWED_METHODS` / `CORS_ALLOWED_HEADERS` / `CORS_MAX_AGE` | CORS 設定 |
 | `CSP_ENABLED` / `CSP_REPORT_ONLY` | Content-Security-Policy |
-| `RATELIMIT_ENABLED` / `RATE_LIMIT_TRUST_PROXY` / `RATE_LIMIT_TRUSTED_PROXIES` | レート制限(公開ルートは per-IP) |
+| `RATE_LIMIT_TRUST_PROXY` / `RATE_LIMIT_TRUSTED_PROXIES` | レート制限の送信元 IP 判定。`true` のとき、列挙した CIDR からのリクエストに限り `X-Forwarded-For` を信頼する(Cloudflare Tunnel 配下の本番向け)。既定は無効 = `RemoteAddr` のみを見る |
+| `AUTH_COOKIE_DOMAIN` | 認証 cookie の Domain 属性(D-22)。空なら属性を付けず応答ホストに限定(localhost 開発の既定)。本番は `.catchup-feed.com` |
+| `PAGINATION_DEFAULT_PAGE` / `PAGINATION_DEFAULT_LIMIT` / `PAGINATION_MAX_LIMIT` | 一覧 API のページネーション(既定 1 / 20 / 100) |
+
+> レート制限そのものは**常時有効**で、無効化する環境変数はありません(`/auth/token` 5 req/min、検索 100 req/min、公開フィード 60 req/min の固定値)。
 
 ### 要約 LLM(worker・radio 共通)
 
@@ -182,7 +227,11 @@ go build -o radio ./cmd/radio
 | `CONTENT_FETCH_ENABLED` / `CONTENT_FETCH_THRESHOLD` / `CONTENT_FETCH_PARALLELISM` / `CONTENT_FETCH_TIMEOUT` | go-readability 本文抽出 |
 | `CONTENT_FETCH_MAX_REDIRECTS` / `CONTENT_FETCH_DENY_PRIVATE_IPS` / `CONTENT_FETCH_MAX_BODY_SIZE` | SSRF ガード・取得上限 |
 | `NEWSLETTER_MAX_ARTICLES` | newsletter ソース(リンク集型)の号あたり展開記事数上限(既定 10)。号内リンクを文書順の先頭から N 件だけ fetch → 要約する |
-| `JOBS_POLL_INTERVAL` | jobs コンシューマのポーリング間隔 |
+| `JOBS_POLL_INTERVAL` | jobs コンシューマのポーリング間隔(既定 10s) |
+| `CRON_SCHEDULE` | クロールのスケジュール(compose の既定 `0 * * * *` = 毎時。Go 側の既定値は `30 5 * * *`)。前回実行が次の発火に届いていたら重ねずスキップする |
+| `CRAWL_TIMEOUT` | 1 サイクルの上限時間(既定 30m、許容 1m〜4h)。範囲外は警告して既定へ戻す |
+| `WORKER_TIMEZONE` | cron のタイムゾーン(既定 `Asia/Tokyo`) |
+| `WORKER_HEALTH_PORT` | worker のヘルスチェックポート(既定 9091、許容 1024〜65535) |
 | `CLEANUP_CRON_SCHEDULE` | mp3 保持ジョブの投入スケジュール(既定 `30 6 * * *`) |
 
 ### radio(音声生成・TTS)
@@ -196,10 +245,12 @@ go build -o radio ./cmd/radio
 | `RADIO_TIMEZONE` | 放送日判定のタイムゾーン(既定 `Asia/Tokyo`) |
 | `RADIO_TIMEOUT` | ラン全体のタイムアウト(既定 1h) |
 | `VOICEVOX_URL` | VOICEVOX Engine のエンドポイント(既定 `http://127.0.0.1:50021`) |
-| `VOICEVOX_SPEAKER` / `VOICEVOX_SPEAKER_NAME` | 話者 ID(既定 3 = ずんだもん)/ クレジット表記用の話者名 |
+| `VOICEVOX_SPEAKER` / `VOICEVOX_SPEAKER_NAME` | 話者 style ID(コード既定 3 = ずんだもん。**実運用は 30 = No.7 アナウンス** — D-2)/ クレジット表記用の話者名(未設定なら Engine の `/speakers` から解決。両方失敗なら当日スキップ — U-13) |
 | `VOICEVOX_SPEED_SCALE` / `VOICEVOX_TIMEOUT` | 話速 / 合成タイムアウト |
 | `FFMPEG_PATH` | ffmpeg のパス |
-| `BOOK_REVIEW_OLLAMA_MODEL` / `BOOK_REVIEW_CHUNKS` | 書籍コーナー(私的データ)のローカルモデル・チャンク数 |
+| `RADIO_LEARNING_URL` | 私的版ショーノートに載せる採点ページ URL(既定 `https://pulse.catchup-feed.com/learning`)。聴取 → 採点の唯一の導線 |
+| `BOOK_REVIEW_OLLAMA_MODEL` / `BOOK_REVIEW_CHUNKS` | 書籍コーナー(私的データ)のローカルモデル(既定 `gemma4:12b`)・1 回あたりのチャンク数(既定 3) |
+| `PRIVATE_EPISODE_MAX_MINUTES` | 私的版の尺の上限(既定 18 分)。ニュース + 復習 + 振り返り + ジングルがこれに迫る日は書籍コーナーを翌日へ回す(カーソルは進めない) |
 
 > **ソースのカテゴリを増やしたら `internal/script/format.go` の `cornerNameBySlug` に1行足すこと。**
 > `sources.category` はダッシュボードから自由入力でき、DB の CHECK 制約も無い。対応表に無いスラッグは
@@ -238,6 +289,12 @@ make test-coverage # カバレッジ HTML 生成
 ---
 
 ## ドキュメント
+
+リポジトリ内:
+
+- [docs/architecture.md](docs/architecture.md) — 層構成・依存ルール・データフロー・縮退設計・技術選定
+- [docs/repository-structure.md](docs/repository-structure.md) — ディレクトリとパッケージの責務、配置規約
+- [deploy/README.md](deploy/README.md) — Pi / Mac の導入・運用手順の入口
 
 Phase 別の設計は親リポジトリの `docs/` にあります(このリポジトリと食い違う場合は設計書が正)。
 

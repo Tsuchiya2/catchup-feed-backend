@@ -172,11 +172,11 @@ func TestWhitelistValidator_GetAllowedOrigins_DefensiveCopy(t *testing.T) {
 // origins are normalized during construction
 func TestWhitelistValidator_Normalization(t *testing.T) {
 	validator := NewWhitelistValidator([]string{
-		"HTTP://LOCALHOST:3000/",  // uppercase + trailing slash
-		"https://Example.COM",      // mixed case
-		"  http://test.com  ",      // whitespace
-		"",                         // empty (should be filtered)
-		"   ",                      // whitespace only (should be filtered)
+		"HTTP://LOCALHOST:3000/", // uppercase + trailing slash
+		"https://Example.COM",    // mixed case
+		"  http://test.com  ",    // whitespace
+		"",                       // empty (should be filtered)
+		"   ",                    // whitespace only (should be filtered)
 	})
 
 	allowedOrigins := validator.GetAllowedOrigins()
@@ -299,7 +299,7 @@ func TestWhitelistValidator_IPv6Origins(t *testing.T) {
 	}{
 		{"http://[::1]:8080", true},
 		{"https://[2001:db8::1]:443", true},
-		{"http://[::1]:9000", false}, // Different port
+		{"http://[::1]:9000", false},        // Different port
 		{"http://[2001:db8::2]:443", false}, // Different address
 	}
 
