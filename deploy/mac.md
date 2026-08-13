@@ -144,7 +144,7 @@ Host <pi の MagicDNS 名>
 ~/pulse/bin/radio-run.sh -since 2026-07-01T00:00:00+09:00
 ```
 
-成功したら Pi 側で確認: `EPISODES_DIR` に mp3 があり、私的フィード(`http://<pi>:8081/private/feed.xml`)にエピソードが載り、Discord/Slack に通知が来る(有効化していれば)。
+成功したら Pi 側で確認: `EPISODES_DIR` に mp3 があり、私的フィード(`http://<pi>:8081/private/feed.xml`)にエピソードが載り、`NOTIFY_ERROR_EMAIL_TO` 宛に新着エピソードのメールが届く(`SMTP_ENABLED=true` のとき。D-29 で通知はメールへ一本化し、D-32 で友人向けメールは廃止した)。
 
 ## 9. launchd(04:30 実行)+ 自動ウェイク(U-10)
 
@@ -159,7 +159,7 @@ launchctl print gui/$(id -u)/com.pulse.radio | head   # 登録確認
 launchctl kickstart gui/$(id -u)/com.pulse.radio
 ```
 
-失敗時の挙動: リトライしない(plist に KeepAlive を付けていない)。radio が `notify_error` ジョブを積み、Pi の worker が Discord/Slack へ通知する。ログは `~/pulse/logs/radio.{out,err}.log`。
+失敗時の挙動: リトライしない(plist に KeepAlive を付けていない)。radio が `notify_error` ジョブを積み、Pi の worker が管理者宛メールで通知する(D-29)。tailnet 断のように DB へ到達できない障害では jobs に積めないため、`radio-run.sh` が非ゼロ終了を検知して SMTP 直送でもアラートする(上記 5 章の `alert-mail.sh`)。ログは `~/pulse/logs/radio.{out,err}.log`。
 
 【ユーザー作業】スリープからの自動ウェイク登録(クラムシェル運用は電源接続時のみ有効。欠番許容なので神経質にならなくてよい):
 

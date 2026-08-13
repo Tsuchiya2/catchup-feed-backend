@@ -1,6 +1,6 @@
 # アーキテクチャ
 
-**対象**: catchup-feed-backend(Go 1.26 単一モジュール)
+**対象**: catchup-feed-backend(Go 1.25.6 単一モジュール)
 **最終更新**: 2026-08-13
 
 このドキュメントは**現行実装**のアーキテクチャを記述します。Phase 別の要件・決定ログ(D-xx / C-xx)は親リポジトリの `docs/` が正で、記述が食い違う場合は設計書を優先してください。ディレクトリとファイル単位の責務は [repository-structure.md](repository-structure.md) にあります。
@@ -52,7 +52,7 @@
           ▲ Tailscale(rsync / PostgreSQL 接続)
 ┌──────────── M3 MacBook Pro(夜間バッチ)────────────┐
 │  radio   : 台本構成 → VOICEVOX → ffmpeg 結合        │
-│  VOICEVOX Engine(ずんだもん)                       │
+│  VOICEVOX Engine(現行話者: No.7 アナウンス / D-2)   │
 │  Ollama(要約・書籍のローカル LLM フォールバック)     │
 └──────────────────────────────────────────────────┘
 
@@ -115,7 +115,7 @@ infra/adapter/persistence/postgres ─────┘ 実装を cmd/server で�
 | `internal/feed` | RSS XML 生成・公開/私的フィードの配信ハンドラ・アートワーク | 817 | 0 |
 | `internal/jobs` | `jobs` テーブルのコンシューマとジョブハンドラ | 666 | 3 |
 | `internal/learning` | SRS 遷移の純関数・JST 放送日ヘルパ・クイズパラメータ | 433 | 0 |
-| `internal/notify` | メール(SMTP)・Webhook 通知 | 324 | 2 |
+| `internal/notify` | 管理者向けメール通知(SMTP)。D-29 でメールに一本化、D-32 で友人向けメールを廃止 | 324 | 2 |
 
 `internal/radio/pipeline.go` は自分に必要なメソッドのみを定義します。
 
@@ -141,14 +141,27 @@ type JobQueue      interface { Enqueue(ctx, kind, payload, runAfter) (int64, err
 | `domain/entity` の ORM / DB タグ | **0 件**(json タグは `job.go` の 5 箇所のみ。`jobs.payload` の JSONB 用) |
 | `internal/learning` の外側依存 | **0 件**(`pkg/config` のみ) |
 
-検証コマンド:
+検証コマンド(いずれも出力が空であること):
 
 ```bash
-# 層飛ばし・逆流の検出(いずれも 0 件であること)
+# 1. 層飛ばし: handler が infra を直接 import していないか
 go list -f '{{.ImportPath}} -> {{join .Imports " "}}' ./... \
-  | grep -E '^catchup-feed/internal/(handler|usecase|domain|repository)' \
-  | grep -E 'internal/(infra|handler)'
+  | grep '^catchup-feed/internal/handler' | grep 'catchup-feed/internal/infra'
+
+# 2. 逆流: 内側の層が外側を import していないか
+go list -f '{{.ImportPath}} -> {{join .Imports " "}}' ./... \
+  | grep -E '^catchup-feed/internal/(usecase|domain|repository)' \
+  | grep -E 'catchup-feed/internal/(handler|infra)'
+
+# 3. domain/entity が標準ライブラリ以外に依存していないか
+go list -f '{{join .Imports "\n"}}' ./internal/domain/entity | grep -E '\.|catchup-feed'
+
+# 4. learning が外側に依存していないか(pkg/config のみ許容)
+go list -f '{{join .Imports "\n"}}' ./internal/learning \
+  | grep catchup-feed | grep -v '^catchup-feed/pkg/config$'
 ```
+
+1 と 2 は `^` でパッケージ側を固定するのが要点です。これを外すと handler 同士の import(`handler/http/article` → `handler/http/auth` など、層内の正当な参照)が拾われ、違反があるように見えます。
 
 依存方向を機械的に強制する lint(depguard 等)は導入していません。`.golangci.yml` は `errcheck` / `govet` / `staticcheck` / `unused` / `ineffassign` のみで、レイヤー規律はレビューで担保しています。
 
@@ -163,7 +176,7 @@ go list -f '{{.ImportPath}} -> {{join .Imports " "}}' ./... \
 | **オーケストレーションと I/O の同居** | `internal/radio` は選定・構成のロジックと `os.WriteFile` / `exec.Command`(rsync)を同一パッケージに持つ | 分割しても利用者が radio だけなら間接層が増えるだけ。副作用は `Transferer` / `RunFunc` として interface 化してあり、テスト可能性は確保している |
 | **repository の型が handler まで到達** | `usecase/article.Service.ListWithSource()` は `[]repository.ArticleWithSource` を返し、`handler/http/learning/dto.go` は `repository.PendingReview` を DTO 化する | 層ごとに DTO を再定義すると、単一ユーザー・単一フロントエンドの規模では変換コードが増えるだけ。境界の型は `repository` パッケージに集約し、そこが唯一の定義元であることを規約とした |
 | **認証実装が Presentation 層** | bcrypt 検証と JWT 発行が `handler/http/auth/` にある(`service/auth` はポート 44 行のみ) | 管理者は環境変数 + bcrypt ハッシュの単一アカウントで、DB レコードを持たない(C-7)。永続化を伴わないため usecase 層に置く必然性が薄い。viewer 認証は `usecase/viewer` 経由で DB 照合する |
-| **ドメインモデルが薄い** | `entity` のメソッドは 5 個(`Validate` / `IsRevoked` / `IsActive` ×2 / `ValidateURL`)。ビジネスルールは usecase に集中 | 本システムのドメインは「収集した記事を並べて読み上げる」であり、エンティティ単体の不変条件が少ない。無理にリッチモデル化せず、SSRF 検証など**外部入力に対する不変条件のみ** entity に置く方針 |
+| **ドメインモデルが薄い** | `entity` のメソッドは 5 個(`Source.Validate` / `FeedToken.IsRevoked` / `IsActive` ×2 / `ValidationError.Error`)。残りはパッケージ関数(`ValidateURL` / `GenerateFeedToken` 等)で、ビジネスルールは usecase に集中 | 本システムのドメインは「収集した記事を並べて読み上げる」であり、エンティティ単体の不変条件が少ない。無理にリッチモデル化せず、SSRF 検証など**外部入力に対する不変条件のみ** entity に置く方針 |
 
 ### 3.5 コード規模
 
@@ -187,15 +200,28 @@ interface は全体で **47 本**(`repository` 14 / `radio` 10 / `usecase/fetch`
 
 ```
 robfig/cron(毎時)
-  └→ usecase/fetch.Service.Run
-       ├→ infra/scraper(gofeed)        : RSS / Atom をパース
-       ├→ infra/fetcher(go-readability): 本文抽出。リダイレクトごとに SSRF 検証
-       ├→ repository.ArticleRepository : URL 重複を排除して articles へ INSERT
-       └→ infra/summarizer.Chain       : Gemini → Groq → Ollama の順に試行
-            └→ repository.SummaryRepository: summaries へ UPSERT(provider 名も記録)
+  ├→ usecase/fetch.Service.CrawlAllSources
+  │    ├→ infra/scraper(gofeed)        : RSS / Atom をパース
+  │    ├→ 14 日より古い item を破棄     : 全 kind 共通のバックログカットオフ(D-15 / D-15b)
+  │    ├→ infra/fetcher(go-readability): 本文抽出。リダイレクトごとに SSRF 検証
+  │    ├→ infra/summarizer.Chain       : Gemini → Groq → Ollama の順に試行
+  │    └→ ArticleRepository.CreateWithSummary : articles + summaries を原子的に INSERT
+  └→ usecase/fetch.Service.SweepUnsummarized
+       └→ 挿入後に content が埋まった記事(文字起こし)を要約して summaries へ UPSERT
 ```
 
-YouTube / ポッドキャストのソースは音声・動画の URL を `jobs`(`transcribe`)に積み、catchup-ai(Python)側が文字起こしを担当します。
+要約は記事と同一トランザクションで永続化します(要約に失敗した記事は INSERT ごとロールバックされ、URL が未知のまま次の毎時クロールで再試行される)。`summaries.provider` に採用プロバイダを記録し、フォールバックの発生を事後観測します。
+
+kind ごとに取り込み経路が分かれます。
+
+| `sources.kind` | 取り込み |
+|---|---|
+| `rss` | go-readability で本文抽出 → 要約 |
+| `youtube` | 第1段: Gemini に動画 URL を直接入力(1サイクル最大 3 件)。失敗時は `transcribe` ジョブへ |
+| `podcast` | enclosure の音声 URL を `transcribe` ジョブへ。記事は content なしで先に INSERT |
+| `newsletter` | 1 item = 1 号として号内リンクを展開し、先頭 N 件(既定 10)を取得・要約 |
+
+`transcribe` ジョブは Pi の worker がハンドラを登録せず、Mac の catchup-ai(Python)だけが取得します。クロール順は `youtube` / `podcast` を `rss` より先に処理します — 要約詰まりで末尾のソースが毎サイクル未到達になる本番障害への対策です。
 
 ### 4.2 番組生成(radio / Mac・04:30 JST)
 
@@ -206,20 +232,24 @@ cmd/radio
        2. LearningStore.AutoResolve/ListDue  : 48h 未採点を自動繰り上げ、当日出題分を取得
        3. ScriptGenerator.GenerateEpisode    : 台本 + クイズ草稿を同一 LLM コールで生成(D-19)
        4. Synthesizer.SynthesizeScript       : VOICEVOX でセグメント別に合成
-       5. ffmpeg 結合(loudnorm / 64kbps mono)+ クイズ間の 3 秒無音を挿入
+       5. ffmpeg 結合(loudnorm / 64kbps mono / 44.1kHz)+ 前後にジングルを付与
        6. Transferer.Transfer                : rsync over Tailscale で Pi へ転送
        7. EpisodeStore.Create                : episodes / segments を INSERT
        8. JobQueue.Enqueue                   : regenerate_feed / notify_episode を投入
+       9. 私的版(private twin)を best-effort で生成 : ニュース wav を公開版と共用し、
+          復習コーナー(問題 → 3 秒無音 → 答え)・週次振り返り・書籍コーナーを追加
 ```
 
-記事ゼロかつ出題対象なしの日は `ErrNoArticles` で正常終了します(D-1: 欠番は障害ではない)。
+公開エピソードの確定後に私的版を作ります。私的版の失敗は公開版を巻き添えにしません(縮退方向は「公開版は出す、私的版のみ諦める」)。同日再実行は上書きせず `rev2` 以降の別ファイルになります。
+
+記事ゼロかつ出題対象・アクティブ書籍なしの日は `ErrNoArticles` で正常終了します(D-1: 欠番は障害ではない)。記事ゼロでも出題対象があれば私的版のみを配信します。
 
 ### 4.3 フィード配信(server / Pi)
 
 ```
 ポッドキャストアプリ
   └→ Cloudflare Tunnel → server:8080
-       └→ feed.Server.PublicHandler
+       └→ feed.Server.RegisterPublic が登録したルート
             ├→ トークン検証(URL 埋め込み・SHA-256 照合)
             ├→ FeedTokenRepository / EpisodeRepository
             ├→ feed_access_logs へ記録
@@ -248,8 +278,8 @@ PostgreSQL 14 テーブル。マイグレーションは `internal/infra/db.Migr
 
 | テーブル | 用途 |
 |---|---|
-| `sources` | 収集元(RSS / YouTube / ポッドキャスト)。論理削除対応 |
-| `articles` | 収集した記事。URL で重複排除 |
+| `sources` | 収集元。`kind` = `rss` / `youtube` / `podcast` / `newsletter`。**論理削除**(`articles` が FK 参照するため物理削除できない) |
+| `articles` | 収集した記事。URL で重複排除。`content` が NULL の間は文字起こし待ち |
 | `summaries` | 記事の要約。`provider` に採用した LLM を記録(縮退の事後観測用) |
 | `episodes` | 生成した番組。`feed_kind` で公開 / 私的を区別 |
 | `segments` | 番組内のセグメント(記事・クイズ・書籍コーナー) |
@@ -279,12 +309,12 @@ radio(Mac) ──INSERT──→ [ jobs ] ←──ClaimNext── worker(Pi)
 
 | kind | 生成元 | 処理内容 |
 |---|---|---|
-| `regenerate_feed` | radio | RSS XML の再生成 |
-| `notify_episode` | radio | Discord / Slack / メールへの新着通知 |
-| `notify_error` | radio | 本人向けの障害通知(best-effort) |
-| `cleanup_old_media` | worker(cron) | 45 日より古い mp3 の削除(D-4) |
-| `transcribe` | worker | 音声・動画の文字起こし依頼(catchup-ai が消費) |
-| `book_ingest` | server | 書籍 PDF の取り込み依頼(catchup-ai が消費) |
+| `regenerate_feed` | radio | 現在は no-op。feed.xml はリクエスト毎に描画するため再生成対象のキャッシュが存在しない。将来キャッシュを導入する場合にハンドラの変更だけで済むよう kind は残している |
+| `notify_episode` | radio(**公開エピソードのみ**) | 管理者宛メールにタイトル + ショーノート + 私的エピソード URL を送る(D-29 でメールに一本化、D-32 で友人向けメールを廃止)。私的版はジョブを積まない — ショーノートに学習コンテンツを含むため(§12-7) |
+| `notify_error` | radio | 管理者宛の障害通知(best-effort。通知失敗を再通知するループを作らないため常に成功扱い) |
+| `cleanup_old_media` | worker(cron) | 45 日より古い mp3 の削除 + どのエピソードからも参照されない孤児 mp3(rsync 成功後に INSERT が失敗した残骸)の削除。孤児は更新から 48 時間経過したものだけを対象にする(D-4) |
+| `transcribe` | worker | 音声・動画の文字起こし依頼。**Pi の worker はハンドラを登録せず**、Mac の catchup-ai だけが claim する |
+| `book_ingest` | server | 書籍 PDF の取り込み依頼。同上(取り込みは Ollama を使うためローカル LLM 側でしか実行できない) |
 
 ---
 

@@ -1,6 +1,6 @@
 # リポジトリ構成
 
-**対象**: catchup-feed-backend(Go 1.26.5 単一モジュール、module name: `catchup-feed`)
+**対象**: catchup-feed-backend(Go 1.25.6 単一モジュール、module name: `catchup-feed`)
 **最終更新**: 2026-08-13
 
 ディレクトリとパッケージの責務を記述します。層の設計思想・依存ルール・技術選定の理由は [architecture.md](architecture.md) を参照してください。
@@ -43,7 +43,7 @@ catchup-feed-backend/
 │   ├── feed/              #   [batch] RSS 生成・フィード配信
 │   ├── jobs/              #   [batch] ジョブコンシューマ
 │   ├── learning/          #   [shared] SRS 純関数(server / radio 共有)
-│   ├── notify/            #   [batch] 通知(SMTP / Webhook)
+│   ├── notify/            #   [batch] 管理者向けメール通知(SMTP)
 │   ├── common/pagination/ #   共通: ページネーション
 │   ├── pkg/               #   共通: 検索・バリデーション・設定ロード
 │   ├── service/auth/      #   認証ポート
@@ -135,7 +135,7 @@ Mac の夜間バッチ(launchd 起動)。`internal/radio.Pipeline` に必要な�
 | `article.go` `source.go` `summary.go` | 記事・収集元・要約。`Source.Validate()` を持つ |
 | `episode.go` `segment.go` | 番組とそのセグメント |
 | `job.go` | ジョブ種別定数(`regenerate_feed` / `notify_episode` / `notify_error` / `cleanup_old_media` / `transcribe` / `book_ingest`)とペイロード構造体。json タグを持つ唯一のファイル(`jobs.payload` の JSONB 用) |
-| `feed_token.go` | 配信トークン。`HashToken`(SHA-256)と `IsRevoked()` |
+| `feed_token.go` | 配信トークン。`GenerateFeedToken()` / `HashFeedToken()`(SHA-256)と `IsRevoked()` |
 | `feed_access_log.go` | アクセスログ |
 | `subscriber.go` `viewer.go` | 友人・ダッシュボード閲覧者。`IsActive()` |
 | `validation.go` | `ValidateURL` — スキーム検証とプライベート IP 帯の拒否(SSRF 対策の一次防御) |
@@ -203,7 +203,7 @@ Mac の夜間バッチ(launchd 起動)。`internal/radio.Pipeline` に必要な�
 | `feed/` | 817 | `server.go`(公開/私的フィードのハンドラ・トークン検証・mp3 配信)、`rss.go`(XML 生成)、`artwork.go` + `assets/`、`config.go` |
 | `jobs/` | 666 | `consumer.go`(kind ごとのディスパッチ・`ClaimNext` / `RequeueRunning`)、`regenerate_feed.go` `notify_episode.go` `notify_error.go` `cleanup.go` |
 | `learning/` | 433 | `transition.go`(SRS 遷移の純関数)、`date.go`(JST 放送日)、`item.go`、`weekly.go`、`config.go`(ラダー既定値 `1,7,30`)。**外側に依存しない** |
-| `notify/` | 324 | `smtp.go` `email.go`(メール送信)、`notify.go`(Webhook)、`config.go` |
+| `notify/` | 324 | `notify.go`(`Destination` インターフェースと `Message`)、`email.go`(唯一の実装 = 管理者宛メール)、`smtp.go`(SMTP クライアント)、`config.go`(`SMTP_*` / `NOTIFY_ERROR_EMAIL_TO`)。Webhook 系チャネルは D-29 で廃止済み |
 
 ### 4.7 共通パッケージ
 
@@ -280,9 +280,14 @@ DB を必要とするテストは `internal/infra/db/*_integration_test.go` に�
 |---|---|---|
 | `architecture.md` | 層構成・依存ルール・データフロー・セキュリティ・技術選定 | 手書き |
 | `repository-structure.md` | 本ドキュメント | 手書き |
-| `development-guidelines.md` | コーディング規約 | 手書き(**初代の内容が残存**) |
-| `functional-design.md` `product-requirements.md` `glossary.md` | 機能設計・要件・用語集 | 手書き(**初代の内容が残存**) |
 | `swagger.json` `swagger.yaml` `docs.go` | API 仕様 | `make swagger` の生成物 |
+
+初代 catchup-feed(EDAF 体制期)の `development-guidelines.md` / `functional-design.md` /
+`product-requirements.md` / `glossary.md` は 2026-08-13 に削除しました。gRPC・サーキット
+ブレーカー・Prometheus・OpenAI/Claude 要約・RBAC など**現行に存在しない機能を現行として
+記述しており**、放置すると読み手を誤らせるためです。内容が必要になったら git 履歴を参照
+してください。コーディング規約は本ファイル §8 と `CLAUDE.md`、機能仕様は `/swagger/` と
+親リポジトリの設計書が引き継いでいます。
 
 > Phase 別の設計と決定ログ(D-xx / C-xx)は親リポジトリの `docs/` が正です。食い違う場合は設計書を優先してください。
 
@@ -290,7 +295,7 @@ DB を必要とするテストは `internal/infra/db/*_integration_test.go` に�
 
 | ファイル | 内容 |
 |---|---|
-| `ci.yml` | Test ジョブ(`go mod verify` → Swagger 生成 → テスト → Codecov アップロード)と Lint ジョブ(Swagger 生成 → golangci-lint) |
+| `ci.yml` | 5 ジョブ。**Test**(pgvector サービスコンテナ → `go mod verify` → Swagger 生成 → `go test -race` → Codecov)/ **Lint**(Swagger 生成 → golangci-lint v2.12.2)/ **Build**(server / worker のビルドとバイナリサイズ表示)/ **Security Scan**(gosec → SARIF)/ **Dependency Vulnerability Scan**(govulncheck → SARIF) |
 | `docker.yml` | QEMU + buildx によるマルチアーキイメージのビルド(Pi の arm64 向け) |
 
 ---
