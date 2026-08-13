@@ -23,7 +23,7 @@
 
 ## 1. 全体像
 
-```
+```text
 catchup-feed-backend/
 ├── cmd/                   # エントリポイント(composition root)
 │   ├── server/            #   Pi 常駐: 管理 API + フィード配信
@@ -37,13 +37,13 @@ catchup-feed-backend/
 │   ├── usecase/           #   [UseCase]        アプリケーションロジック
 │   ├── handler/http/      #   [Presentation]   HTTP ハンドラ・ミドルウェア
 │   ├── infra/             #   [Infrastructure] DB アダプタ・外部 API
-│   ├── radio/             #   [batch] 番組生成パイプライン
-│   ├── script/            #   [batch] 台本・クイズ生成
-│   ├── tts/               #   [batch] 音声合成・ffmpeg
-│   ├── feed/              #   [batch] RSS 生成・フィード配信
-│   ├── jobs/              #   [batch] ジョブコンシューマ
-│   ├── learning/          #   [shared] SRS 純関数(server / radio 共有)
-│   ├── notify/            #   [batch] 管理者向けメール通知(SMTP)
+│   ├── radio/             #   [radio]  番組生成パイプライン
+│   ├── script/            #   [radio]  台本・クイズ生成
+│   ├── tts/               #   [radio]  音声合成・ffmpeg
+│   ├── feed/              #   [server+worker] RSS 生成・フィード配信
+│   ├── jobs/              #   [worker+radio]  ジョブコンシューマ / 投入
+│   ├── learning/          #   [server+radio]  SRS 純関数(共有コア)
+│   ├── notify/            #   [worker] 管理者向けメール通知(SMTP)
 │   ├── common/pagination/ #   共通: ページネーション
 │   ├── pkg/               #   共通: 検索・バリデーション・設定ロード
 │   ├── service/auth/      #   認証ポート
@@ -61,7 +61,7 @@ catchup-feed-backend/
 └── Makefile               # 開発・テスト・リントのタスク
 ```
 
-`internal/` の各パッケージが 4 層に属するもの(`[Domain]` 〜 `[Infrastructure]`)と、バッチ専用のもの(`[batch]`)に分かれる点が本リポジトリの構成上の特徴です。判断根拠は [architecture.md §3.4](architecture.md#34-意図的な逸脱とその理由) にあります。
+`internal/` の各パッケージが、Clean Architecture の 4 層に属するもの(`[Domain]` 〜 `[Infrastructure]`)と、**層ではなく用途で切ったもの**に分かれる点が本リポジトリの構成上の特徴です。後者は角括弧に**利用するバイナリ**を書いてあります。`feed` は `cmd/server`(配信ハンドラ)と `cmd/worker`(`FEED_AUDIO_DIR` 等の設定読み取り)が使う **server 側のパッケージ**で、`cmd/radio` からは参照しません。判断根拠は [architecture.md §3.4](architecture.md#34-意図的な逸脱とその理由) にあります。
 
 ---
 
@@ -193,17 +193,26 @@ Mac の夜間バッチ(launchd 起動)。`internal/radio.Pipeline` に必要な�
 | `db/` | 377 | 接続(`open.go`)と冪等マイグレーション(`migrate.go`)。`seeds/sources.sql` に初期収集元 |
 | `scraper/` | 91 | gofeed による RSS / Atom パース |
 
-### 4.6 バッチ専用パッケージ
+### 4.6 用途別パッケージ
+
+層ではなく用途で切ったパッケージです。「利用」列は `go list` で確認した実際の import 元(`cmd/` 配下)です。
+
+#### radio(Mac 夜間バッチ)専用
 
 | パッケージ | 行数 | 主なファイルと責務 |
 |---|---|---|
 | `radio/` | 1,849 | `pipeline.go`(番組生成の全工程 + 必要な依存 10 本の interface 定義)、`transfer.go`(rsync 転送。`Transferer` / `RunFunc` で差し替え可能)、`bookreview.go`(書籍コーナー)、`weeklyreview.go`(週次振り返り)、`jingle.go`、`config.go` |
 | `script/` | 1,440 | `generator.go`(台本生成)、`plan.go`(構成計画)、`quiz.go` `quizcorner.go`(クイズ)、`format.go`(番組の定型句を集約 — D-37)、`shownotes.go`、`prompts.go` + `prompts/`(テンプレート)、`bookreview.go` `weeklyreview.go` |
 | `tts/` | 771 | `voicevox.go`(HTTP API 直叩き)、`ffmpeg.go`(結合・loudnorm)、`silence.go`(無音生成)、`wav.go`、`sentence.go`(文分割)、`jingle.go` + `assets/` |
-| `feed/` | 817 | `server.go`(公開/私的フィードのハンドラ・トークン検証・mp3 配信)、`rss.go`(XML 生成)、`artwork.go` + `assets/`、`config.go` |
-| `jobs/` | 666 | `consumer.go`(kind ごとのディスパッチ・`ClaimNext` / `RequeueRunning`)、`regenerate_feed.go` `notify_episode.go` `notify_error.go` `cleanup.go` |
-| `learning/` | 433 | `transition.go`(SRS 遷移の純関数)、`date.go`(JST 放送日)、`item.go`、`weekly.go`、`config.go`(ラダー既定値 `1,7,30`)。**外側に依存しない** |
-| `notify/` | 324 | `notify.go`(`Destination` インターフェースと `Message`)、`email.go`(唯一の実装 = 管理者宛メール)、`smtp.go`(SMTP クライアント)、`config.go`(`SMTP_*` / `NOTIFY_ERROR_EMAIL_TO`)。Webhook 系チャネルは D-29 で廃止済み |
+
+#### 複数バイナリが使うもの
+
+| パッケージ | 行数 | 利用 | 主なファイルと責務 |
+|---|---|---|---|
+| `feed/` | 817 | **server** + worker | `server.go`(公開/私的フィードのハンドラ・トークン検証・mp3 配信)、`rss.go`(XML 生成)、`artwork.go` + `assets/`、`config.go`。配信ハンドラは `cmd/server` が使い、worker は `LoadConfig()` から `FEED_AUDIO_DIR` / `FEED_PRIVATE_BASE_URL` を読むためだけに参照する。**radio からは参照しない** |
+| `jobs/` | 666 | worker + radio | `consumer.go`(kind ごとのディスパッチ・`ClaimNext` / `RequeueRunning`)、`regenerate_feed.go` `notify_episode.go` `notify_error.go` `cleanup.go`。コンシューマを回すのは worker、radio は投入側(`NewNotifyErrorPayload`)としてのみ使う |
+| `learning/` | 433 | server + radio | `transition.go`(SRS 遷移の純関数)、`date.go`(JST 放送日)、`item.go`、`weekly.go`、`config.go`(ラダー既定値 `1,7,30`)。採点 API と radio が同じ遷移関数を共有する。**外側に依存しない** |
+| `notify/` | 324 | worker | `notify.go`(`Destination` インターフェースと `Message`)、`email.go`(唯一の実装 = 管理者宛メール)、`smtp.go`(SMTP クライアント)、`config.go`(`SMTP_*` / `NOTIFY_ERROR_EMAIL_TO`)。Webhook 系チャネルは D-29 で廃止済み |
 
 ### 4.7 共通パッケージ
 
@@ -221,9 +230,9 @@ Mac の夜間バッチ(launchd 起動)。`internal/radio.Pipeline` に必要な�
 
 ---
 
-## 5. `pkg/` — 公開パッケージ(770 行)
+## 5. `pkg/` — 公開パッケージ
 
-外部から import 可能な位置に置くパッケージ。現状 2 つのみです。
+外部から import 可能な位置に置くパッケージ(計 770 行)。現状 2 つのみです。
 
 | パッケージ | 内容 |
 |---|---|
@@ -255,9 +264,16 @@ Mac の夜間バッチ(launchd 起動)。`internal/radio.Pipeline` に必要な�
 | `pi.md` / `mac.md` / `ai.md` / `README.md` | ホスト別の手順書 |
 | `env.pi.example` / `env.mac.example` | ホスト別の環境変数テンプレート |
 
-### `scripts/`
+### `scripts/`(レガシー)
 
-バックアップ(`backup-db.sh` / `restore-db.sh`)、ヘルスチェック(`health-check.sh`)、ディスク監視(`disk-usage-check.sh`)、Docker 掃除(`docker-cleanup.sh`)、マルチアーキビルド(`build-multiarch.sh`)、フィード診断(`diagnose_feeds.go`)。共通処理は `lib/` にあります。
+ルート直下の `scripts/` は**初代由来の Compose ベースのユーティリティ**で、ルートの `.env` が揃った開発機での実行を前提としています。**Pi の実運用はここを使いません** — 現行の Pi 監視と DB バックアップは `deploy/scripts/` 側が正です。
+
+| 用途 | 現行(Pi 運用) | ルート `scripts/`(レガシー) |
+|---|---|---|
+| ヘルスチェック | `deploy/scripts/pi-health-check.sh`(5 分ごと。メールは状態遷移時のみ — D-30) | `health-check.sh`(異常が続く間ずっと送るスパム問題があり D-30 で置き換え済み) |
+| DB バックアップ | `deploy/scripts/backup-pulse-db.sh` | `backup-db.sh` / `restore-db.sh` |
+
+上記以外にディスク監視(`disk-usage-check.sh`)、Docker 掃除(`docker-cleanup.sh`)、マルチアーキビルド(`build-multiarch.sh`)、フィード診断(`diagnose_feeds.go`)があります。共通処理は `lib/` です。
 
 ---
 
@@ -327,13 +343,13 @@ DB を必要とするテストは `internal/infra/db/*_integration_test.go` に�
 | UseCase | `internal/usecase` | 3,394 |
 | Port | `internal/repository` | 791 |
 | Domain | `internal/domain/entity` | 516 |
-| batch | `internal/radio` | 1,849 |
-| batch | `internal/script` | 1,440 |
-| batch | `internal/feed` | 817 |
-| batch | `internal/tts` | 771 |
-| batch | `internal/jobs` | 666 |
-| shared | `internal/learning` | 433 |
-| batch | `internal/notify` | 324 |
+| 用途別(radio) | `internal/radio` | 1,849 |
+| 用途別(radio) | `internal/script` | 1,440 |
+| 用途別(server + worker) | `internal/feed` | 817 |
+| 用途別(radio) | `internal/tts` | 771 |
+| 用途別(worker + radio) | `internal/jobs` | 666 |
+| 用途別(server + radio) | `internal/learning` | 433 |
+| 用途別(worker) | `internal/notify` | 324 |
 | 共通 | `internal/pkg` `common` `service` `config` `utils` | 1,432 |
 | 公開 | `pkg/` | 770 |
 | エントリポイント | `cmd/` | 1,387 |

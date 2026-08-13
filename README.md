@@ -33,7 +33,7 @@ Go 1.25.6 の単一モジュールで、**3つのバイナリ**を持ちます�
 
 ### ホスト配置
 
-```
+```text
 ┌──────────── Raspberry Pi 5(常時稼働)──────────────┐
 │  server  : 公開フィード配信 / 管理 API / 私的フィード  │
 │  worker  : クロール・要約・通知(cron 常駐)          │
@@ -55,7 +55,7 @@ Go 1.25.6 の単一モジュールで、**3つのバイナリ**を持ちます�
 
 ### 日次フロー
 
-```
+```text
 [worker/Pi]  毎時       : クロール → articles 挿入 → 要約 → summaries 更新
 [radio/Mac]  04:30 JST  : 当日分エピソード生成
    1. 対象記事選定(前回エピソード以降の要約済み記事)
@@ -74,7 +74,7 @@ Mac が閉じていた日はエピソードが生成されないだけで、シ�
 
 管理 API(`cmd/server`)は Clean Architecture のレイヤーに沿って分割し、依存は常に内向きです。永続化のインターフェースを内側(`internal/repository`)に置き、PostgreSQL アダプタが外側からそれを実装します(依存性逆転)。
 
-```
+```text
 外 ─────────────────────────────────────────────────→ 内
 handler/http/*  →  usecase/*  →  repository/*(interface)  →  domain/entity
                                         ▲
@@ -89,17 +89,17 @@ infra/adapter/persistence/postgres ─────┘ 実装を cmd/ で注入
 | `internal/handler/http/*` | Presentation | ルーティング・DTO・JWT 認証・CORS/CSP・レート制限 |
 | `internal/infra/*` | Infrastructure | PostgreSQL アダプタ・HTTP フェッチャ・要約 LLM クライアント |
 
-バッチ(`cmd/radio` / `cmd/worker`)は層ではなく**用途別のパッケージ**に切っています。外部依存は「必要なメソッドだけを利用側で定義する」Go 流のポート(consumer-side interface)で抽象化します。
+残りは層ではなく**用途別のパッケージ**に切っています。外部依存は「必要なメソッドだけを利用側で定義する」Go 流のポート(consumer-side interface)で抽象化します。「利用」列は `go list` で確認した実際の import 元です。
 
-| ディレクトリ | 責務 |
-|---|---|
-| `internal/radio` | 番組生成パイプライン。必要な依存を 10 本の interface として自パッケージに定義(`ArticleSource` / `EpisodeStore` / `Synthesizer` / `Transferer` 等)し、`repository` や `tts` の具象型には依存しない |
-| `internal/script` | LLM 台本生成・クイズ生成・番組の定型句(D-37) |
-| `internal/tts` | VOICEVOX 合成・無音生成・ffmpeg 結合 |
-| `internal/jobs` | `jobs` テーブルのコンシューマ(`regenerate_feed` / `notify_episode` / `notify_error` / `cleanup_old_media`) |
-| `internal/feed` | RSS XML 生成と公開/私的フィードの配信ハンドラ |
-| `internal/learning` | SRS の遷移純関数・JST 放送日ヘルパ。`radio` と `server` の共有コアのため**外側に一切依存させない** |
-| `internal/notify` | 管理者向けメール通知(SMTP)。`Destination` インターフェースの実装はメール 1 種のみ(D-29) |
+| ディレクトリ | 利用 | 責務 |
+|---|---|---|
+| `internal/radio` | radio | 番組生成パイプライン。必要な依存を 10 本の interface として自パッケージに定義(`ArticleSource` / `EpisodeStore` / `Synthesizer` / `Transferer` 等)し、`repository` や `tts` の具象型には依存しない |
+| `internal/script` | radio | LLM 台本生成・クイズ生成・番組の定型句(D-37) |
+| `internal/tts` | radio | VOICEVOX 合成・無音生成・ffmpeg 結合 |
+| `internal/feed` | **server** + worker | RSS XML 生成と公開/私的フィードの配信ハンドラ。配信は `cmd/server` の担当で、worker は `FEED_AUDIO_DIR`(mp3 の掃除先)などの設定を読むためだけに参照する。**radio からは参照しない** |
+| `internal/jobs` | worker + radio | `jobs` テーブルのコンシューマ(`regenerate_feed` / `notify_episode` / `notify_error` / `cleanup_old_media`)。radio は投入側としてのみ使う |
+| `internal/learning` | server + radio | SRS の遷移純関数・JST 放送日ヘルパ。採点 API と radio の共有コアのため**外側に一切依存させない** |
+| `internal/notify` | worker | 管理者向けメール通知(SMTP)。`Destination` インターフェースの実装はメール 1 種のみ(D-29) |
 
 依存ルールは `go list` で検証しています。
 

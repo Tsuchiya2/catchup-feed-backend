@@ -43,7 +43,7 @@
 
 ### ホスト配置
 
-```
+```text
 ┌──────────── Raspberry Pi 5(常時稼働)──────────────┐
 │  server  : 公開フィード配信 / 管理 API / 私的フィード │
 │  worker  : クロール・要約・ジョブ処理(cron 常駐)     │
@@ -80,11 +80,11 @@
 
 ## 3. レイヤーアーキテクチャ
 
-本システムは **HTTP API 側は Clean Architecture、バッチ側は用途別パッケージ + Go 流のポート**というハイブリッド構成です。両者に共通するのは「依存は常に内向き」「外部との境界は必ず interface」の 2 点です。
+本システムは **管理 API 側は Clean Architecture、それ以外は用途別パッケージ + Go 流のポート**というハイブリッド構成です。両者に共通するのは「依存は常に内向き」「外部との境界は必ず interface」の 2 点です。
 
 ### 3.1 server 側 — Clean Architecture
 
-```
+```text
 外 ─────────────────────────────────────────────────→ 内
 handler/http/*  →  usecase/*  →  repository/*(interface)  →  domain/entity
                                         ▲
@@ -103,19 +103,21 @@ infra/adapter/persistence/postgres ─────┘ 実装を cmd/server で�
 
 **クロール系のポートは usecase 側**: `internal/usecase/fetch` は `ContentFetcher` / `FeedFetcher` / `Summarizer` / `ProviderSummarizer` / `VideoDescriber` / `HTMLFetcher` の 6 インターフェースを定義し、`internal/infra/fetcher` と `internal/infra/scraper` がそれを import して実装します(依存の向きは外 → 内)。
 
-### 3.2 batch 側 — 用途別パッケージ + consumer-side interface
+### 3.2 用途別パッケージ + consumer-side interface
 
-`cmd/radio` / `cmd/worker` が使うパッケージは、層ではなく**用途**で切っています。外部依存は「必要なメソッドだけを利用側で定義する」Go 流のポート(consumer-side interface)で抽象化します。
+Clean Architecture の 4 層に載せていないパッケージ群です。層ではなく**用途**で切り、外部依存は「必要なメソッドだけを利用側で定義する」Go 流のポート(consumer-side interface)で抽象化します。
 
-| ディレクトリ | 責務 | 行数 | interface |
-|---|---|---|---|
-| `internal/radio` | 番組生成パイプライン(選定 → 台本 → 合成 → 結合 → 転送 → 登録) | 1,849 | 10 |
-| `internal/script` | LLM 台本生成・クイズ生成・番組の定型句(D-37) | 1,440 | 2 |
-| `internal/tts` | VOICEVOX 合成・無音生成・ffmpeg 結合・WAV 操作 | 771 | 0 |
-| `internal/feed` | RSS XML 生成・公開/私的フィードの配信ハンドラ・アートワーク | 817 | 0 |
-| `internal/jobs` | `jobs` テーブルのコンシューマとジョブハンドラ | 666 | 3 |
-| `internal/learning` | SRS 遷移の純関数・JST 放送日ヘルパ・クイズパラメータ | 433 | 0 |
-| `internal/notify` | 管理者向けメール通知(SMTP)。D-29 でメールに一本化、D-32 で友人向けメールを廃止 | 324 | 2 |
+「利用」列は `go list` で確認した実際の import 元です。**`feed` は server 側のパッケージ**であり、radio からは参照しません — 配信ハンドラを `cmd/server` が使い、`cmd/worker` は `LoadConfig()` で `FEED_AUDIO_DIR`(mp3 の掃除先)と `FEED_PRIVATE_BASE_URL`(通知メールのリンク)を読むためだけに触ります。
+
+| ディレクトリ | 利用 | 責務 | 行数 | interface |
+|---|---|---|---|---|
+| `internal/radio` | radio | 番組生成パイプライン(選定 → 台本 → 合成 → 結合 → 転送 → 登録) | 1,849 | 10 |
+| `internal/script` | radio | LLM 台本生成・クイズ生成・番組の定型句(D-37) | 1,440 | 2 |
+| `internal/tts` | radio | VOICEVOX 合成・無音生成・ffmpeg 結合・WAV 操作 | 771 | 0 |
+| `internal/feed` | **server** + worker | RSS XML 生成・公開/私的フィードの配信ハンドラ・アートワーク | 817 | 0 |
+| `internal/jobs` | worker + radio | `jobs` テーブルのコンシューマ(worker)とジョブ投入(radio) | 666 | 3 |
+| `internal/learning` | server + radio | SRS 遷移の純関数・JST 放送日ヘルパ・クイズパラメータ | 433 | 0 |
+| `internal/notify` | worker | 管理者向けメール通知(SMTP)。D-29 でメールに一本化、D-32 で友人向けメールを廃止 | 324 | 2 |
 
 `internal/radio/pipeline.go` は自分に必要なメソッドのみを定義します。
 
@@ -198,7 +200,7 @@ interface は全体で **47 本**(`repository` 14 / `radio` 10 / `usecase/fetch`
 
 ### 4.1 クロールと要約(worker / Pi・毎時)
 
-```
+```text
 robfig/cron(毎時)
   ├→ usecase/fetch.Service.CrawlAllSources
   │    ├→ infra/scraper(gofeed)        : RSS / Atom をパース
@@ -225,7 +227,7 @@ kind ごとに取り込み経路が分かれます。
 
 ### 4.2 番組生成(radio / Mac・04:30 JST)
 
-```
+```text
 cmd/radio
   └→ radio.Pipeline.Run
        1. ArticleSource.ListSummarizedSince  : 前回エピソード以降の要約済み記事(上限 200)
@@ -246,7 +248,7 @@ cmd/radio
 
 ### 4.3 フィード配信(server / Pi)
 
-```
+```text
 ポッドキャストアプリ
   └→ Cloudflare Tunnel → server:8080
        └→ feed.Server.RegisterPublic が登録したルート
@@ -260,7 +262,7 @@ cmd/radio
 
 ### 4.4 学習ループ(Phase 3)
 
-```
+```text
 [radio]  番組生成時 : 放送記事からクイズを生成 → learning_items へ INSERT
                      出題した item を review_logs に記録(asked)
 [server] ダッシュボード: GET /learning/reviews/pending → ○△× を POST で採点
@@ -299,7 +301,7 @@ PostgreSQL 14 テーブル。マイグレーションは `internal/infra/db.Migr
 
 内部 RPC を持たない代わりに、`jobs` テーブルを単一の連携点にしています。
 
-```
+```text
 radio(Mac) ──INSERT──→ [ jobs ] ←──ClaimNext── worker(Pi)
                           │
               kind ごとに登録された Handler へディスパッチ
@@ -335,7 +337,7 @@ radio(Mac) ──INSERT──→ [ jobs ] ←──ClaimNext── worker(Pi)
 
 公開リスナー(`cmd/server/main.go:applyMiddleware`)の適用順(外 → 内):
 
-```
+```text
 CORS → RequestID → Recover → Logging → BodyLimit(1MB / PDF は 101MB) → CSP → routes
 ```
 
