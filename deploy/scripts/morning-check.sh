@@ -35,8 +35,9 @@
 #   PULSE_FEED_CHECK_URL          公開チェック先(既定: https://radio.catchup-feed.com/)
 #   PULSE_PRIVATE_FEED_CHECK_URL  私的チェック先【必須。既定値は持たない】
 #                                 例: http://<pi の MagicDNS 名>:8081/private/feed.xml
-#                                 未設定なら「tailnet 監視が無効」として
-#                                 公開チェックと同じ経路でアラートする
+#                                 未設定・CHANGEME を含むプレースホルダのままなら
+#                                 「tailnet 監視が無効」として公開チェックと
+#                                 同じ経路でアラートする
 #   PULSE_FEED_CHECK_ATTEMPTS     試行回数(既定: 3。両系統共通)
 #   PULSE_FEED_CHECK_WAIT         試行間隔秒(既定: 20。両系統共通)
 #   SMTP_ENABLED / SMTP_HOST / SMTP_PORT / SMTP_USERNAME / SMTP_PASSWORD /
@@ -123,20 +124,29 @@ fi
 # 未設定を黙ってスキップすると「監視しているつもりで何も見ていない」状態に
 # なり、2026-08-07 障害(7日間沈黙)がそのまま再現する。このスクリプトは
 # 検知そのものが役目で、下流に失敗して代わりに知らせてくれる仕組みが無い。
-# よって未設定は設定漏れではなく異常として、同じアラート経路で報告する
-if [ -z "$PRIVATE_URL" ]; then
+# よって未設定は設定漏れではなく異常として、同じアラート経路で報告する。
+# env.mac.example のプレースホルダ(CHANGEME)のままも未設定と同じ扱いにする
+# — そうしないと到達不能ホストへの空振りになり、「tailnet 断が濃厚」という
+# 誤った診断のメールが飛ぶ(実際は .env の記入漏れ)
+private_unset=0
+case "$PRIVATE_URL" in
+    "" | *CHANGEME*) private_unset=1 ;;
+esac
+
+if [ "$private_unset" -eq 1 ]; then
     fail=1
-    log "ALERT: PULSE_PRIVATE_FEED_CHECK_URL 未設定 — 私的フィード(tailnet)の監視が無効"
+    log "ALERT: PULSE_PRIVATE_FEED_CHECK_URL 未設定/プレースホルダのまま — 私的フィード(tailnet)の監視が無効"
     send_alert_mail "[pulse] private feed check NOT CONFIGURED" <<EOF || true
 morning-check は私的フィード(tailnet 経由 :8081)を確認できなかった。
-PULSE_PRIVATE_FEED_CHECK_URL が未設定のため、tailnet 経路の監視が無効になっている。
+PULSE_PRIVATE_FEED_CHECK_URL が未設定(またはプレースホルダのまま)のため、
+tailnet 経路の監視が無効になっている。
 
   host: $(hostname) (Mac morning check, D-29)
 
 この状態では 2026-08-07 障害(Pi のノードキー 180 日失効で Mac→Pi 全断。
 公開面は生きていたため7日間気づけなかった)と同じ故障を検知できない。
 
-対処: Mac の ~/pulse/.env に以下を追記する(deploy/env.mac.example 参照)
+対処: Mac の ~/pulse/.env の該当行を実ホスト名に書き換える(deploy/mac.md 6章)
   PULSE_PRIVATE_FEED_CHECK_URL=http://<pi の MagicDNS 名>:8081/private/feed.xml
 EOF
 elif ! check_feed private "$PRIVATE_URL" "200"; then
@@ -156,7 +166,7 @@ morning-check detected a problem with the PRIVATE feed (tailnet 経由 :8081).
 2026-08-07 障害は Pi のノードキー 180 日失効が原因だった。
 
 Check from the Mac:
-  tailscale status                  # Pi(ubuntu)が offline / key expired になっていないか
+  tailscale status                  # Pi($pi_host)が offline / key expired になっていないか
   ping -c 3 $pi_host
 Check on the Pi(tailnet 断でも LAN / 物理コンソールから入れる):
   sudo tailscale status             # "Log in" 表示ならキー失効
