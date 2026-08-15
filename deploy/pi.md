@@ -1,9 +1,18 @@
 # Pi 5 セットアップ手順(catchup-feed Phase 1)
 
 対象: Raspberry Pi 5(常時稼働)。server + worker + PostgreSQL 18 + mp3 アーカイブを載せる(設計書 §3)。
-旧 catchup-feed スタックとは **§9 の停止手順まで共存**する。コンテナ名・ポート・DB はすべて分離済みなので、旧側には触らない。
 
-前提(既に済んでいるもの): Docker + docker compose plugin、Tailscale 参加済み、旧システム用の cloudflared が稼働中。
+**ステータス(2026-08-15 現在)**: 本書はもともと初代 catchup-feed スタックとの**共存**を前提に書かれていたが、
+初代の停止は **2026-07-06 に完了**し、docker 資産・systemd unit・Cloudflare の旧ホスト名
+(`catchup` / `grafana` / `prometheus`。DNS レコードごと)も撤去済み(legacy-shutdown.md。同書8章の
+チェックリストには実害の無い後片付けが3件だけ残っている)。Pi で動いているのは pulse だけである。**一回限りの移行手順である 3.5章と10章**は
+いずれも実行対象が無い履歴なので、新規セットアップでは読み飛ばしてよい(章冒頭の注記を読むこと)。
+**名前の重なりへの注意喚起は現役** — compose
+プロジェクト名・ディレクトリ名・unit 名・コンテナ名がすべて `catchup-feed` 系で重なるため、
+停止・削除系のコマンドは今も打つ前に実体を確認する(legacy-shutdown.md 8章「地雷」)。
+
+前提(既に済んでいるもの): Docker + docker compose plugin、Tailscale 参加済み、cloudflared が稼働中
+(初代が使っていた既存トンネルを pulse がそのまま引き継いでいる。5章)。
 
 表記: `<pi-user>` = Pi のログインユーザー。以下のパスは好みで変えてよいが、変えた場合は `.env` と Mac 側設定も揃えること。
 
@@ -50,7 +59,7 @@ chmod 600 deploy/.env
 | `SMTP_ENABLED` / `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` | メール通知(本人向け D-29。友人向けメールは D-32 で廃止)。Gmail なら `SMTP_HOST=smtp.gmail.com`・`SMTP_PORT=587`・`SMTP_USERNAME=<Gmail アドレス>`・`SMTP_PASSWORD=<アプリパスワード>`(U-11: 2 段階認証を有効にして [Google アカウント > セキュリティ > アプリパスワード] で発行)。`SMTP_FROM` は未設定なら `SMTP_USERNAME`。使う段階で `SMTP_ENABLED=true`。現用は旧システムの Gmail アカウント(Pi の `~/.msmtprc` と同一資格情報)を流用(D-30-1)。無効化されたら U-11 の手順で再発行 |
 | `NOTIFY_ERROR_EMAIL_TO` | 本人向け通知(notify_error の障害通知+新着エピソード通知)の宛先アドレス(D-29)。`SMTP_ENABLED=true` が前提。空なら本人向け通知は送られない |
 
-旧 catchup-feed の DB とは **PostgreSQL サーバーごと分離**する(このスタックは専用の `catchup-feed-postgres` コンテナ、database 名 `catchup-feed`、ホスト側ポート 5433)。**旧システムの `catchup-postgres`(ハイフンの後が違うだけの別コンテナ)と取り違えない**。旧 DB からデータは移行しない — sources 定義は `internal/infra/db/seeds/sources.sql` が server の**初回起動時(sources テーブルが0行のとき)のみ**自動投入される。2回目以降の起動では再投入されない(ダッシュボードで削除したソースが再起動で復活しないようにするため)。
+DB は**専用の PostgreSQL サーバー**を持つ(`catchup-feed-postgres` コンテナ、database 名 `catchup-feed`、ホスト側ポート 5433)。初代 catchup-feed の DB(`catchup-postgres`、ハイフンの後が違うだけの別コンテナ)とはサーバーごと分離してあり、**初代側は既に撤去済みで Pi 上に実体は無い**(2026-08-15 の棚卸しで `docker ps -a` / `docker volume ls` により**不在を実測確認**した。撤去そのものの時期は記録に無い)。**したがって `docker ps -a` / `docker volume ls` に出てくる `catchup*` のコンテナ・ボリュームは、すべて pulse の現用資産**である — 古い手順書やメモに残る `catchup-postgres` 等の名前を見て「初代の残骸だろう」と `catchup-feed-postgres` を落とさないこと(legacy-shutdown.md 8章「地雷」)。**この判定が効くのは Docker 資産に限る**: ローカルの `/etc/cloudflared/config.yml` には初代由来の `grafana` / `prometheus` が名前だけ残っており(legacy-shutdown.md 8章「未対応」)、`catchup-feed.service` が再び現れたら初代の復活か設定ミスである(4章)。初代 DB からデータは移行していない — sources 定義は `internal/infra/db/seeds/sources.sql` が server の**初回起動時(sources テーブルが0行のとき)のみ**自動投入される。2回目以降の起動では再投入されない(ダッシュボードで削除したソースが再起動で復活しないようにするため)。
 
 ## 3. ビルドと起動
 
@@ -79,27 +88,34 @@ docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env ps
 
 マイグレーション(§4 スキーマ)は `server` の起動時に毎回自動適用される。sources シードは sources テーブルが空のとき(初回セットアップ)のみ投入される。専用コマンドは無い。
 
-## 3.5. compose プロジェクト名リネーム(`pulse` → `catchup-feed`)の移行手順
+## 3.5. compose プロジェクト名リネーム(`pulse` → `catchup-feed`)の移行手順【履歴・実行対象なし】
+
+> **この章に実行対象はもう無い(2026-08-15 の棚卸しで確認)。以下は当時の記録。**
+> 現行 Pi はリネーム済みで、`pulse-*` コンテナ・`pulse_db-data` ボリュームは残っていない。
+> 新規 Pi のセットアップでもこの章は不要 — 3章のまま `up -d --build` でよい。
 
 過去に compose プロジェクト名 `pulse`(コンテナ `pulse-*`、ボリューム `pulse_db-data`)で稼働していた
 Pi を、現行の `name: catchup-feed`(コンテナ `catchup-feed-*`、ボリューム `catchup-feed_db-data`)へ
-移行する場合の手順。**データ喪失を許容する前提**(新プロジェクトは空ボリュームで起動し、sources は
-初回起動時に seeds が投入する)。まだ稼働していない新規 Pi ならこの節は不要で、3章のまま `up -d --build`。
+移行するための手順だった。**データ喪失を許容する前提**(新プロジェクトは空ボリュームで起動し、sources は
+初回起動時に seeds が投入する)。
 
-### precondition(必ず `up` 前に確認)
+### precondition(当時の判断基準。**今そのまま実行しないこと**)
 
-新プロジェクト名 `catchup-feed` が、**旧 catchup-feed compose プロジェクト**(名前が衝突しうる)と
-ぶつからないことを確認する。旧システム(§9)のプロジェクト・ボリュームが残っていると、同名衝突や
-意図しないボリューム再利用が起きうる。
+新プロジェクト名 `catchup-feed` が**初代 catchup-feed の compose プロジェクト**とぶつからないことを、
+`up` の前に確認する手順だった。初代のプロジェクト・ボリュームが残っていれば同名衝突や意図しない
+ボリューム再利用が起きうる、という想定である。
+
+**この確認を今日打つと必ず「衝突あり」と判定される** — `docker compose ls -a` に出てくる `catchup-feed`
+も `catchup-feed_*` ボリュームも**現行 pulse 自身**だからである(初代は 2026-07-06 に停止し、docker 資産も
+撤去済み。2026-08-15 に不在を実測確認した — legacy-shutdown.md 8章)。ここで「衝突あり」と読んで撤去手順
+(legacy-shutdown.md 6章)へ進むと、pulse の DB ボリュームを消すことになる。
 
 ```bash
-docker compose ls                       # catchup-feed という名の別プロジェクトが無いこと
-docker volume ls | grep catchup-feed    # 旧由来の catchup-feed_* ボリューム/ネットワークが無いこと
+docker compose ls -a                    # 出てくる catchup-feed は現行 pulse(-a で停止中も出す)
+docker volume ls | grep catchup-feed    # catchup-feed_db-data も現行 pulse のもの
 ```
 
-衝突しうるものが残っている場合は、先に legacy-shutdown.md(§9 / U-15)の停止・撤去を済ませる。
-
-### 手順
+### 手順(当時)
 
 1. **旧プロジェクトを明示的に落とす**。compose ファイルを編集した後は、`docker compose` は
    新プロジェクト名 `catchup-feed` で動くため、`-p pulse` を付けないと旧 `pulse-*` コンテナ・
@@ -131,8 +147,10 @@ docker volume ls | grep catchup-feed    # 旧由来の catchup-feed_* ボリュ�
 `docker volume rm pulse_db-data` で回収してよい。
 
 > 注: systemd unit 名は `pulse.service` のまま(改名しない)。unit は compose の
-> `up -d` を呼ぶだけで、compose プロジェクト名とは独立。旧システムの
-> `catchup-feed.service` と衝突させないため、あえて据え置いている(4章の注意も参照)。
+> `up -d` を呼ぶだけで、compose プロジェクト名とは独立。据え置いた理由は初代の
+> `catchup-feed.service` と衝突させないためで、初代 unit 自体は 2026-08-15 に削除済み
+> (legacy-shutdown.md 3章)。それでも改名しない — 名前を `catchup-feed.service` に寄せると
+> 初代の手順書・ログとの区別が付かなくなるため(4章の注意も参照)。
 
 ## 4. systemd による常時稼働化
 
@@ -149,7 +167,7 @@ sudo systemctl enable --now pulse.service
 systemctl status pulse.service   # active (exited) なら正常
 ```
 
-注意: 旧システムの `catchup-feed.service` とは**別 unit**。旧 unit は毎起動失敗していたため D-28 (3) で `systemctl disable` し、2026-08-15 にファイルごと削除 + `reset-failed` 済み(legacy-shutdown.md 3章・8章)。それ以外の旧側には触らない。
+注意: 初代の `catchup-feed.service` とは**別 unit**。初代 unit は毎起動失敗していたため D-28 (3) で `systemctl disable` し、2026-08-15 にファイルごと削除 + `reset-failed` 済み(legacy-shutdown.md 3章・8章)。**現在 Pi にある pulse 関連の unit は `pulse.service` だけ**なので、`catchup-feed.service` という名前が再び現れたらそれは初代の復活か設定ミスである。
 
 ## 5. Cloudflare Tunnel — ルート追加【ユーザー作業】(U-9)
 
@@ -172,7 +190,8 @@ catchup-feed が公開するのは `radio.catchup-feed.com` → `127.0.0.1:8090`
 2. Ingress: config ファイル運用なら `/etc/cloudflared/config.yml` の ingress に
    `hostname: radio.catchup-feed.com → service: http://localhost:8090` を追記し、
    `sudo systemctl restart cloudflared`。ダッシュボード管理のトンネルなら Public Hostname 追加のみで完了。
-3. 旧システム向けのルートは 2026-07-11 に削除済み(停止自体は 2026-07-06。未削除で残っている `catchup.catchup-feed.com` の扱いは legacy-shutdown.md 4章)。`pulse.catchup-feed.com`(ダッシュボード)は現用なので残す。
+3. 初代ダッシュボード向けの `catchup.catchup-feed.com` は、初代ポート 8080 を向いたままで管理 API が 502 になっていたため **2026-07-11 に pulse の 8090 へ向け直され**(削除ではない)、**2026-08-15 に Public Hostname と DNS ごと削除**された(legacy-shutdown.md 4章)。**この Tunnel を通るのは `radio.catchup-feed.com` だけ**で、ダッシュボード(`pulse.catchup-feed.com`)は Vercel 配信なので Public Hostname 一覧には出ない。
+   Zero Trust の Public Hostname 一覧に**初代由来の既知の名前(`catchup` / `grafana` / `prometheus`)**が出てきたら整理してよいが、**消す前に必ず legacy-shutdown.md 4章の参照元確認(CSP / `FEED_PUBLIC_BASE_URL` / `CORS_ALLOWED_ORIGINS`)を通すこと** — `catchup.` は「初代の名前なのに中身は pulse を指していた」実例で、**名前だけでは判断できない**。ただしこの3軸が示すのは**本アプリ内の参照の有無まで**で、外部クライアントからの直接アクセスの不在までは示せない(範囲と、より確実を期す場合の選択肢は legacy-shutdown.md 4章の注記)。**DNS ゾーン側は掃除の対象にしない**(Vercel 用の apex・検証レコードなど現用のレコードがある)。`AUTH_COOKIE_DOMAIN=.catchup-feed.com` はワイルドカードなので、不要なホスト名を残すとそこにも認証クッキーが飛ぶ。
 4. **レートリミットの前提(Tunnel 経由の公開では必須)**: `deploy/.env` に
    `RATE_LIMIT_TRUST_PROXY=true` と `RATE_LIMIT_TRUSTED_PROXIES=127.0.0.1/32`
    が入っていること(env.pi.example の既定値。2章で写していれば設定済み)。
@@ -294,10 +313,13 @@ Mac 側の朝チェック(mac.md、05:45 の morning-check)が外からの死活
 この5分監視が Pi 内部からの検知。両方ともメール経路は Gmail SMTP のみで、
 Cloudflare Tunnel / 公開面には何も追加しない。
 
-## 10. Pi での切替手順(単一ファイル構成 → override 構成)
+## 10. Pi での切替手順(単一ファイル構成 → override 構成)【履歴・実行対象なし】
+
+> **この章に実行対象はもう無い。** 現行 Pi は 2 枚重ね構成へ切替済みで、以下は当時の記録。
+> 新規 Pi のセットアップには不要(3章のとおり最初から 2 枚重ねで起動する)。
 
 compose.pi.yml が単体で完結していた構成(`docker compose -f deploy/compose.pi.yml ...`)で
-稼働中の Pi を、本書 3 章の 2 枚重ね構成へ切り替える手順。プロジェクト名(`catchup-feed`)・
+稼働中の Pi を、本書 3 章の 2 枚重ね構成へ切り替えた手順。プロジェクト名(`catchup-feed`)・
 コンテナ名・ポート・ボリュームはすべて不変なので **DB・mp3 に影響はない**。レンダリング結果の
 差分は pgvector イメージのピン(`pg18` → `0.8.5-pg18`。実体は同じ PG 18 系)のみ。
 
@@ -353,8 +375,9 @@ systemctl status pulse.service   # active (exited) なら正常
   **直前のビルドのイメージ(ロールバック用)と golang ビルドベースも消える**ため、
   `docker builder prune` と併用すると次回は完全なフルビルドになる。ロールバック先を残したい
   ときはタグ無しイメージだけを落とす `docker image prune`(`-a` なし)に留める。
-- 初代 catchup-feed の残骸(systemd unit・logrotate・旧バックアップ・Cloudflare の旧ホスト名)は
-  `legacy-shutdown.md` 8章のチェックリストで一巡する。
+- 初代 catchup-feed の残骸(systemd unit・logrotate・旧バックアップ・docker 資産・Cloudflare の
+  旧ホスト名)は 2026-08-15 までにすべて撤去済み。棚卸しの結果と**残る確認項目**は
+  `legacy-shutdown.md` 8章のチェックリストが正。
 
 ## トラブル時の見方(監視スタックは無い。これで足りる)
 

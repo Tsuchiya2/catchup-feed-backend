@@ -1,7 +1,8 @@
 # ============================================================
 # Cloudflare Tunnel ingress — pulse 追加分の例(U-9)
 # ============================================================
-# 旧 catchup-feed が使っている既存トンネルに「ルートを追加」する形。
+# 初代 catchup-feed が使っていた既存トンネル(pulse がそのまま引き継いでいる)に
+# 「ルートを追加」する形。
 # Pi 上の実ファイル(通常 /etc/cloudflared/config.yml)の ingress リストに
 # radio.catchup-feed.com のエントリを追記する。tunnel / credentials-file は
 # 既存の値をそのまま使うこと(このファイルは丸ごと置き換え用ではない)。
@@ -33,11 +34,13 @@ ingress:
   - hostname: radio.catchup-feed.com
     service: http://localhost:8090   # compose.pi.yml の API_PORT に合わせる
 
-  # --- 既存ルート(旧 catchup-feed / ダッシュボード等)はそのまま残す ---
-  # - hostname: pulse.catchup-feed.com
-  #   service: http://localhost:3000
-  # - hostname: <旧システムのホスト名>
-  #   service: http://localhost:8080
+  # --- 初代由来のルートはもう無い ---
+  # 旧ダッシュボード向けの catchup.catchup-feed.com は、初代ポート 8080 を向いたままで
+  # 管理 API が 502 になっていたため 2026-07-11 に pulse の 8090 へ向け直され(削除ではない)、
+  # 2026-08-15 に Public Hostname と DNS ごと削除された(legacy-shutdown.md 4章)。
+  # したがって **この Tunnel を通るのは radio.catchup-feed.com だけ**。
+  # ダッシュボード(pulse.catchup-feed.com)は Vercel 配信で Tunnel を通らないため、
+  # ここに ingress を書かない。
 
   # 最後のフォールバックは必須
   - service: http_status:404

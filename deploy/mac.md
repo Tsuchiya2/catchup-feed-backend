@@ -7,7 +7,7 @@ Mac が閉じている・電源が無い日はエピソード欠番で**正常**
 
 ディレクトリ規約(以下この配置を前提にする):
 
-```
+```text
 ~/pulse/
 ├── bin/        radio バイナリ、radio-run.sh、backup-pulse-db.sh
 ├── logs/       launchd の出力・VOICEVOX ログ
@@ -124,7 +124,7 @@ ssh-copy-id -i ~/.ssh/id_ed25519_pulse.pub <pi-user>@<pi の MagicDNS 名>
 
 `~/.ssh/config` に追記(radio の rsync と backup スクリプトが BatchMode で使えるように):
 
-```
+```text
 Host <pi の MagicDNS 名>
     User <pi-user>
     IdentityFile ~/.ssh/id_ed25519_pulse
@@ -228,8 +228,8 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pulse.morningcheck.p
 
 ---
 
-以下は Phase 2 の追加分(設計書は docs/pulse-phase2-design.md §3・§6)。
-transcribe worker の導入は別ドキュメント **deploy/ai.md**。
+以下は Phase 2 の追加分(Phase 2 設計書 §3・§6。設計書は親ディレクトリ側で管理しており、
+**本リポジトリには含まれない**)。transcribe worker の導入は別ドキュメント **deploy/ai.md**。
 
 ## 11. Ollama モデル追加(Phase 2、D-12)
 
@@ -337,7 +337,8 @@ catchup-feed-ai リポジトリの `openwebui/book_search_tool.py`。
 
 ---
 
-以下は Phase 3 の追加分(設計書は docs/pulse-phase3-design.md §3・§7)。
+以下は Phase 3 の追加分(Phase 3 設計書 §3・§7。設計書は親ディレクトリ側で管理しており、
+**本リポジトリには含まれない**)。
 
 ## 13. 学習ループ(Phase 3)
 
@@ -372,7 +373,7 @@ book_review)を生成して私的フィードに載せる。公開エピソー�
    公開経路(Cloudflare Tunnel)には構造上存在しない(pi.md 5章)
 3. **フィード取得を端末側で行うアプリを使う**こと。Overcast のようにサービス側
    サーバーがフィードを取得するアプリは tailnet に届かず購読できない
-   (Phase 1 検証時の既知の注意、docs/setup-and-roadmap.md)
+   (Phase 1 の購読検証で判明した既知の注意)
 4. 公開フィード側の購読は外してよい。**本人の公開フィードトークンは失効させず
    残してよい** — 友人視点(公開版がどう聴こえるか)の確認用に使える
 
