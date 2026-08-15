@@ -100,9 +100,11 @@ jobs:
   # シェルスクリプトの静的解析
   # 対象は deploy/scripts/*.sh(Pi / Mac の運用スクリプト)のみ。
   # 過去に本番のエピソード欠番を起こした面(tailnet プリフライト・アラート
-  # 送信)なので退行防止の下限として lint する。shellcheck は ubuntu-latest
-  # ランナーにプリインストール済みで、外部 action は増やさない(将来ランナー
-  # イメージから外れた場合に備えて apt へフォールバックする)。
+  # 送信)なので退行防止の下限として lint する。外部 action は増やさず、
+  # 公式リリースの静的バイナリを run: 内で取得して叩く。
+  # バージョン固定の理由: ランナー同梱の 0.9.0 は trap 経由の関数を SC2317
+  # (行ごと)で報告し、手元の 0.11.0(関数行の SC2329)と指摘コードがズレる。
+  # 他ジョブ(Go / golangci-lint / swag)と同じく固定して手元と CI を揃える。
   # -x: alert-mail.sh を source するため追跡を有効化する。
   # 除外(スクリプト側の disable コメントではなく、理由を1箇所に集約するため
   # ここで指定する):
@@ -120,12 +122,14 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Run shellcheck
+        env:
+          SHELLCHECK_VERSION: v0.11.0
         run: |
-          if ! command -v shellcheck >/dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          fi
-          shellcheck --version
-          shellcheck -x -e SC2329,SC2012 deploy/scripts/*.sh
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ -C "$RUNNER_TEMP"
+          SHELLCHECK="$RUNNER_TEMP/shellcheck-${SHELLCHECK_VERSION}/shellcheck"
+          "$SHELLCHECK" --version
+          "$SHELLCHECK" -x -e SC2329,SC2012 deploy/scripts/*.sh
 
   # ──────────────────────────────────────────────────────────
   # ビルド検証
