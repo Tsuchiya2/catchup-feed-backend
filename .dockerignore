@@ -19,6 +19,13 @@ docs/
 .env.*
 !.env.example
 .envrc
+# 上の .env / .env.* は「先頭が .env」の名前しか拾わないため、
+# config/environments/production.env のようなローカルの秘密ファイルは
+# ビルドコンテキストに入ってしまう(build ステージは COPY . . を使う)。
+# config/ は D-44 で追跡ファイルがゼロになり、Dockerfile が参照するものも
+# 無いのでディレクトリごと除外する。git 側の防御は .gitignore の
+# config/environments/*.env が別途担当する(役割が違うので両方要る)。
+config/
 
 # エディタ・IDE
 .vscode

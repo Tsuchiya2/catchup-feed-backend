@@ -6,6 +6,16 @@ on:
   pull_request:
     branches: [ main, develop ]
 
+# GITHUB_TOKEN は default-deny。ここで全ジョブの既定を contents: read
+# (actions/checkout に必要な最小)まで絞り、追加の権限が要るジョブだけが
+# ジョブ単位で上書きする。目的はリポジトリ既定の継承をやめること —
+# 新しいジョブを足しても「何も書かなければ read だけ」が効く。
+# 注意: ジョブ単位の permissions はワークフロー既定を*マージせず置き換える*。
+# 上書きするジョブ(security / vulnerability-scan)は checkout 用の
+# contents: read も自分で書き直す必要がある。
+permissions:
+  contents: read
+
 env:
   GO_VERSION: '1.25.6'
 
@@ -113,8 +123,6 @@ jobs:
   shellcheck:
     name: Shell Script Lint
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
 
     steps:
       - name: Checkout code
@@ -186,10 +194,16 @@ jobs:
   security:
     name: Security Scan
     runs-on: ubuntu-latest
+    # SARIF を code scanning へ上げるので security-events: write が要る
+    # (github/codeql-action/upload-sarif の要求権限)。public リポジトリでは
+    # これだけが必須で、docs が挙げる actions: read / contents: read は
+    # private リポジトリのときの追加要件なので actions: read は持たせない。
+    # contents: read は checkout 用 — ジョブ単位の permissions はワークフロー
+    # 既定を置き換えるため、ここに書き直さないと checkout が権限を失う。
+    # 非公開化するならこの2ジョブに actions: read を足すこと。
     permissions:
       contents: read
       security-events: write
-      actions: read
 
     steps:
       - name: Checkout code
@@ -245,6 +259,7 @@ jobs:
   vulnerability-scan:
     name: Dependency Vulnerability Scan
     runs-on: ubuntu-latest
+    # security ジョブと同じ理由(SARIF アップロード)で上書きする。
     permissions:
       contents: read
       security-events: write

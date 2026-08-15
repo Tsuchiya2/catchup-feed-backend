@@ -7,6 +7,13 @@ on:
   pull_request:
     branches: [ main ]
 
+# GITHUB_TOKEN は default-deny(ci.yml と同じ方針)。追加の権限が要るジョブ
+# だけがジョブ単位で上書きする。現状の唯一のジョブは自前で宣言しているので
+# 継承しているジョブは無いが、将来ジョブを足したときにリポジトリ既定を
+# 拾わないようにする。
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -18,6 +25,10 @@ jobs:
   build-and-push:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
+    # ジョブ単位の permissions はワークフロー既定を置き換えるので
+    # checkout 用の contents: read もここに書き直す。packages: write は
+    # GHCR への push(下の Log in ステップと push: true)を有効化したときに
+    # 要る権限で、ビルド検証のみの現状では使っていない。
     permissions:
       contents: read
       packages: write
