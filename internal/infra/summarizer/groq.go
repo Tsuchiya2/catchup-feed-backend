@@ -13,7 +13,13 @@ const (
 	ProviderGroq = "groq"
 
 	// defaultGroqModel is a free-tier model on Groq; override with GROQ_MODEL.
-	defaultGroqModel = "llama-3.3-70b-versatile"
+	//
+	// D-41: 旧既定 llama-3.3-70b-versatile が 2026-08-16 に Groq 側で
+	// decommission されたための差し替え。この機種は推論部分を message.reasoning
+	// に隔離するため message.content は要約本文のみで返り、リクエスト形式・
+	// レスポンス解析ともに素のままで足りる(下の groqRequest/groqResponse は不変)。
+	// 無料枠は RPD 1,000 / TPD 200,000 / TPM 8,000(TPM は旧 12,000 から減少)。
+	defaultGroqModel = "openai/gpt-oss-120b"
 
 	defaultGroqBaseURL = "https://api.groq.com"
 )
@@ -38,7 +44,7 @@ type GroqConfig struct {
 //
 // Environment variables:
 //   - GROQ_API_KEY: API key (empty means the provider is excluded from the chain)
-//   - GROQ_MODEL: model identifier (default: llama-3.3-70b-versatile)
+//   - GROQ_MODEL: model identifier (default: openai/gpt-oss-120b)
 func LoadGroqConfig(opts Options) GroqConfig {
 	model := os.Getenv("GROQ_MODEL")
 	if model == "" {

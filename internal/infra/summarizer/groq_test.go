@@ -29,7 +29,7 @@ func newGroq(t *testing.T, baseURL string, opts summarizer.Options) *summarizer.
 	t.Helper()
 	return summarizer.NewGroq(summarizer.GroqConfig{
 		APIKey:  "test-key",
-		Model:   "llama-3.3-70b-versatile",
+		Model:   "openai/gpt-oss-120b",
 		BaseURL: baseURL,
 		Options: opts,
 	})
@@ -56,7 +56,7 @@ func TestGroq_Summarize_Success(t *testing.T) {
 	assert.Equal(t, "Groq からの日本語要約。", summary)
 	assert.Equal(t, "/openai/v1/chat/completions", gotPath)
 	assert.Equal(t, "Bearer test-key", gotAuth)
-	assert.Contains(t, string(gotBody), `"model":"llama-3.3-70b-versatile"`)
+	assert.Contains(t, string(gotBody), `"model":"openai/gpt-oss-120b"`)
 	assert.Contains(t, string(gotBody), "500文字以内で要約")
 	assert.Contains(t, string(gotBody), "public article body")
 }
@@ -150,9 +150,9 @@ func TestLoadGroqConfig(t *testing.T) {
 		model     string
 		wantModel string
 	}{
-		{"defaults", "key", "", "llama-3.3-70b-versatile"},
+		{"defaults", "key", "", "openai/gpt-oss-120b"},
 		{"model override", "key", "openai/gpt-oss-20b", "openai/gpt-oss-20b"},
-		{"empty key preserved", "", "", "llama-3.3-70b-versatile"},
+		{"empty key preserved", "", "", "openai/gpt-oss-120b"},
 	}
 
 	for _, tt := range tests {
