@@ -215,10 +215,10 @@ go build -o radio ./cmd/radio
 
 | 変数 | 説明 |
 |---|---|
-| `GEMINI_API_KEY` / `GEMINI_MODEL` | 第1段(無料枠)。キー未設定なら連鎖から除外 |
-| `GROQ_API_KEY` / `GROQ_MODEL` | 第2段(無料枠)。キー未設定なら連鎖から除外 |
-| `OLLAMA_ENABLED` / `OLLAMA_HOST` / `OLLAMA_MODEL` | 最終段(ローカルフォールバック) |
-| `SUMMARIZER_TIMEOUT` / `SUMMARIZER_CHAR_LIMIT` | 要約タイムアウト・入力文字数上限 |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | 第1段(無料枠)。キー未設定なら連鎖から除外。モデルは既定 `gemini-2.5-flash` |
+| `GROQ_API_KEY` / `GROQ_MODEL` | 第2段(無料枠)。キー未設定なら連鎖から除外。モデルは既定 `openai/gpt-oss-120b`(D-41) |
+| `OLLAMA_ENABLED` / `OLLAMA_HOST` / `OLLAMA_MODEL` | 最終段(ローカルフォールバック)。既定は有効(`false` で無効化)・`http://localhost:11434`・`qwen2.5:7b` |
+| `SUMMARIZER_TIMEOUT` / `SUMMARIZER_CHAR_LIMIT` | 要約タイムアウト(既定 `60s`)・要約の文字数上限(既定 `900`、許容 100〜5000。範囲外・不正値は警告して既定へ戻す) |
 
 ### worker(クロール・ジョブ)
 

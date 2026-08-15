@@ -1,10 +1,13 @@
 package summarizer_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -351,7 +354,8 @@ func TestNewChainFromEnv_Composition(t *testing.T) {
 			t.Setenv("GROQ_API_KEY", tt.groqKey)
 			t.Setenv("OLLAMA_ENABLED", tt.ollamaEnabled)
 
-			chain, err := summarizer.NewChainFromEnv(nil)
+			var logs bytes.Buffer
+			chain, err := summarizer.NewChainFromEnv(slog.New(slog.NewJSONHandler(&logs, nil)))
 
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
@@ -360,6 +364,17 @@ func TestNewChainFromEnv_Composition(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantOrder, chain.ProviderNames())
+
+			// D-41: 実効 Groq モデルの確認手段は起動ログ
+			// "summarizer provider configured" の model フィールド、と PR #111 が
+			// 運用手順に書いた。メッセージ名・フィールド名の改名や、Groq 採用分岐の
+			// 外へログ行を動かす編集で手順が無音で壊れないよう固定する。
+			if slices.Contains(tt.wantOrder, summarizer.ProviderGroq) {
+				assert.Contains(t, logs.String(), `"msg":"summarizer provider configured"`)
+				assert.Contains(t, logs.String(), `"model":"`)
+			} else {
+				assert.NotContains(t, logs.String(), "summarizer provider configured")
+			}
 		})
 	}
 }
