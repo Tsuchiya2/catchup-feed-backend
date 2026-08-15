@@ -162,7 +162,7 @@ make swagger-host   # Docker を使わない場合(= go tool swag init -g cmd/se
 
 `make test` / `make lint` / `make ci` は生成を含みません。dev コンテナは `compose.yml` の `- .:/app` でホストのツリーをそのままマウントするため、ホストの `docs/` に生成物が無ければコンテナ内でも同じエラーで失敗します。逆に `make swagger` の生成物はマウント経由でホストの `docs/` に残るので、一度実行すれば以後の `make test` / `make lint` とホストの `go build ./...` / `go test -race ./...` はそのまま通ります。CI は Go を使う5ジョブ(Test / Lint / Build / Security Scan / Dependency Vulnerability Scan)が各自 `swag init` を実行するため、この手順に依存しません。
 
-`go tool swag` は go.mod の `tool` ディレクティブで固定した swag(CI と同じ v1.16.6。`--version` は upstream のバージョン定数が未更新のため `v1.16.4` と表示されますが、実体は `go list -m github.com/swaggo/swag` のとおり v1.16.6 です)を使います。なお `./cmd/radio` 単体のビルドは `docs` に依存しないため生成なしで通ります(後述の Mac の radio ビルド手順は影響を受けません)。
+`go tool swag` は go.mod の `tool` ディレクティブで固定した swag(v1.16.6。`--version` は upstream のバージョン定数が未更新のため `v1.16.4` と表示されますが、実体は `go list -m github.com/swaggo/swag` のとおり v1.16.6 です)を使います。CI の5ジョブと `Dockerfile` のビルドステージも同じ `go tool swag init` を使うため、**swag のバージョンは go.mod 一箇所で決まります**(`docs/docs.go` は `cmd/server` にブランクインポートされ本番バイナリに入るので、ここが浮動すると本番の再ビルドが上流の更新で落ちうる)。バージョンを上げるときは `go get github.com/swaggo/swag@vX.Y.Z` の1回で全経路に反映されます。なお `./cmd/radio` 単体のビルドは `docs` に依存しないため生成なしで通ります(後述の Mac の radio ビルド手順は影響を受けません)。
 
 ### server + worker(ローカル / Pi)
 

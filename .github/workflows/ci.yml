@@ -9,6 +9,17 @@ on:
 env:
   GO_VERSION: '1.25.6'
 
+# Swagger 生成について(下の5ジョブが同じ "Generate Swagger docs" を持つ)
+# 生成物 docs/docs.go は cmd/server がブランクインポートし、Dockerfile の
+# build ステージでも同じ手順で生成されて本番バイナリに入る(C-19: Swagger
+# 生成が API 契約の正)。そのため swag のバージョンは go.mod の tool
+# ディレクティブ(github.com/swaggo/swag v1.16.6)一箇所で固定し、各ジョブは
+# `go tool swag` で呼ぶ。ここに `go install ...@vX.Y.Z` のリテラルを書くと
+# Dockerfile / Makefile と多重管理になり、CI と本番で別バージョンの生成器が
+# 走り得る(2026-08-16 まで Dockerfile 側が @latest だった)。
+# バージョンを上げるときは `go get github.com/swaggo/swag@vX.Y.Z` の1回で
+# 全経路(CI / Docker / make swagger / make swagger-host)に反映される。
+
 jobs:
   # ──────────────────────────────────────────────────────────
   # テスト実行
@@ -48,10 +59,9 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      # swag のバージョンは go.mod の tool ディレクティブが唯一の正(冒頭コメント)
       - name: Generate Swagger docs
-        run: |
-          go install github.com/swaggo/swag/cmd/swag@v1.16.6
-          $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
+        run: go tool swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
       - name: Run tests
         env:
@@ -85,10 +95,9 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
+      # swag のバージョンは go.mod の tool ディレクティブが唯一の正(冒頭コメント)
       - name: Generate Swagger docs
-        run: |
-          go install github.com/swaggo/swag/cmd/swag@v1.16.6
-          $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
+        run: go tool swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
@@ -153,10 +162,9 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
+      # swag のバージョンは go.mod の tool ディレクティブが唯一の正(冒頭コメント)
       - name: Generate Swagger docs
-        run: |
-          go install github.com/swaggo/swag/cmd/swag@v1.16.6
-          $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
+        run: go tool swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
       - name: Build Server
         run: go build -v -o server ./cmd/server
@@ -201,10 +209,9 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
+      # swag のバージョンは go.mod の tool ディレクティブが唯一の正(冒頭コメント)
       - name: Generate Swagger docs
-        run: |
-          go install github.com/swaggo/swag/cmd/swag@v1.16.6
-          $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
+        run: go tool swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
       # 型検査を通らないパッケージがあると gosec は -no-fail のまま黙って
       # SSA 解析を飛ばす。ここで落としておけば「解析されなかったのに緑」に
@@ -212,8 +219,9 @@ jobs:
       - name: Verify packages type-check (gosec の SSA 解析の前提)
         run: go build ./...
 
-      # CI で実行する外部ツールは一律でバージョンを固定する(swag v1.16.6 /
-      # shellcheck v0.11.0 / golangci-lint v2.12.2 と同じ方針)。@master は
+      # CI で実行する外部ツールは一律でバージョンを固定する(shellcheck
+      # v0.11.0 / golangci-lint v2.12.2 はここのリテラルで、swag は go.mod の
+      # tool ディレクティブで固定する — いずれも1箇所)。@master は
       # レビューを経ずに上流の変更でスキャナ本体が入れ替わりうるため使わない。
       # 更新方法: https://github.com/securego/gosec/releases の新しいタグへ
       # 上げ、このジョブが緑になることを確認する意図的な変更として単独で行う
@@ -259,10 +267,9 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
+      # swag のバージョンは go.mod の tool ディレクティブが唯一の正(冒頭コメント)
       - name: Generate Swagger docs
-        run: |
-          go install github.com/swaggo/swag/cmd/swag@v1.16.6
-          $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
+        run: go tool swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
       # gosec と同じく固定する(CI で実行する外部ツールは一律固定)。脆弱性 DB は
       # バイナリに同梱されず実行時に https://vuln.go.dev から取得する
