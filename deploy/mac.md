@@ -197,11 +197,15 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pulse.backup.plist
 バックアップの後(05:45)に Mac から2系統を外形チェックし、**異常時のみ**メールで知らせる(`deploy/scripts/morning-check.sh`):
 
 1. **公開フィード**(Cloudflare Tunnel 経由、既定 `https://radio.catchup-feed.com/`)— 200/401 を正常とみなす(401 はトークン無しアクセスへの正規応答。スクリプトにフィードトークンを埋め込まないための設計)。「Pi は生きているが配信だけ死んでいる」故障モード(2026-07-22 停電障害の 502)を最大1日遅れで検知する。
-2. **私的フィード**(tailnet 経由 :8081、既定 `http://ubuntu.tailf91c78.ts.net:8081/private/feed.xml`、env `PULSE_PRIVATE_FEED_CHECK_URL`)— 200 のみ正常。tailnet 経路の断を検知する(2026-08-07 障害: Pi のノードキー 180 日失効で Mac→Pi 全断。公開面は生きていたため旧チェックでは7日間気づけなかった、の恒久対策)。
+2. **私的フィード**(tailnet 経由 :8081)— 200 のみ正常。tailnet 経路の断を検知する(2026-08-07 障害: Pi のノードキー 180 日失効で Mac→Pi 全断。公開面は生きていたため旧チェックでは7日間気づけなかった、の恒久対策)。チェック先は env `PULSE_PRIVATE_FEED_CHECK_URL` で**必ず指定する**(実ホスト名を資材に持たないため既定値は無い)。**未設定のまま走ると「tailnet 監視が無効」としてアラートが飛ぶ** — 黙ってスキップすると上記の7日間沈黙が再現するため。
 
 2系統は独立に判定し(公開 OK でも私的 NG ならアラート)、メール件名で公開/私的どちらの断かを区別する。
 
 ```bash
+# 私的フィードのチェック先を ~/pulse/.env に設定する(必須。既定値は無い)。
+# ホスト名は DATABASE_URL / RADIO_RSYNC_DEST と同じ Pi の MagicDNS 名でよい
+echo 'PULSE_PRIVATE_FEED_CHECK_URL=http://<pi の MagicDNS 名>:8081/private/feed.xml' >> ~/pulse/.env
+
 # 配置(6章の bin/ と同じ流儀。alert-mail.sh は 6章で配置済みならそのままでよい)
 cd <このリポジトリの checkout>
 cp deploy/scripts/morning-check.sh deploy/scripts/alert-mail.sh ~/pulse/bin/
