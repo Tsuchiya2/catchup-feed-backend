@@ -172,7 +172,7 @@ catchup-feed が公開するのは `radio.catchup-feed.com` → `127.0.0.1:8090`
 2. Ingress: config ファイル運用なら `/etc/cloudflared/config.yml` の ingress に
    `hostname: radio.catchup-feed.com → service: http://localhost:8090` を追記し、
    `sudo systemctl restart cloudflared`。ダッシュボード管理のトンネルなら Public Hostname 追加のみで完了。
-3. 旧システムのルートは §9 の停止まで**そのまま残す**。
+3. 旧システム向けのルートは 2026-07-06 の停止時に削除済み(未削除で残っている `catchup.catchup-feed.com` の扱いは legacy-shutdown.md 4章)。`pulse.catchup-feed.com`(ダッシュボード)は現用なので残す。
 4. **レートリミットの前提(Tunnel 経由の公開では必須)**: `deploy/.env` に
    `RATE_LIMIT_TRUST_PROXY=true` と `RATE_LIMIT_TRUSTED_PROXIES=127.0.0.1/32`
    が入っていること(env.pi.example の既定値。2章で写していれば設定済み)。
@@ -349,7 +349,10 @@ systemctl status pulse.service   # active (exited) なら正常
 
   2026-08-15 の棚卸しでは build cache 4.1GB のうち 3.3GB を回収し、**ディスク使用率が 43% → 32%**
   になった。次回ビルドはキャッシュ消失分だけ遅くなるが、Pi ネイティブ arm64 ビルドでも実用範囲。
-- 使われていないイメージは `docker image prune -a`(使用中のイメージは消えない)。
+- 使われていないイメージは `docker image prune -a`(使用中のイメージは消えない)。ただし
+  **直前のビルドのイメージ(ロールバック用)と golang ビルドベースも消える**ため、
+  `docker builder prune` と併用すると次回は完全なフルビルドになる。ロールバック先を残したい
+  ときはタグ無しイメージだけを落とす `docker image prune`(`-a` なし)に留める。
 - 初代 catchup-feed の残骸(systemd unit・logrotate・旧バックアップ・Cloudflare の旧ホスト名)は
   `legacy-shutdown.md` 8章のチェックリストで一巡する。
 

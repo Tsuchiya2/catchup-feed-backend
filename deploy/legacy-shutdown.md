@@ -1,6 +1,8 @@
 # 旧 catchup-feed 停止手順(設計書 §9 の具体化)
 
-実施条件(親セッションが確認してから着手): **pulse Phase 1 の完了条件達成** — 本人+友人1名がポッドキャストアプリで1週間購読できたこと(U-14 → U-15)。
+**ステータス(2026-08-15 現在)**: 旧 catchup-feed の停止は **2026-07-06 に完了済み**。1〜3・5〜7章は**実施済みの履歴**であり、そのまま再実行するものではない(特に6章は実行対象が存在しない — 章冒頭の警告を必ず読むこと)。**残る未実施は4章の `catchup.catchup-feed.com` 削除だけ**【ユーザー作業】。停止後の棚卸しで見つかった残骸の対応状況は8章のチェックリストが正。
+
+実施条件(着手時の判断基準。2026-07-06 に達成済み): **pulse Phase 1 の完了条件達成** — 本人+友人1名がポッドキャストアプリで1週間購読できたこと(U-14 → U-15)。
 
 方針(§9): 旧 DB から持ち越すのは sources 定義のみ。それ以外のデータ(記事・要約・通知履歴)は捨てる。旧リポジトリはアーカイブして残す。
 
@@ -40,10 +42,15 @@ ssh <pi-user>@<pi の MagicDNS 名> \
 
 ## 3. 旧コンテナの停止
 
+初代のチェックアウトは `/home/<pi-user>/catchup-feed` に置かれていた。これは**現在の pulse の親ディレクトリと同じパス**(8章「地雷」)なので、`cd` してから素の `docker compose down` を打つ形は使わない — カレントディレクトリの compose ファイルを拾って pulse を落とし得る。**プロジェクト名を明示**して落とす:
+
 ```bash
-# Pi 上、旧リポジトリのディレクトリで
-cd ~/catchup-feed   # 旧リポジトリの実パスに読み替え
-docker compose down   # ボリュームはまだ消さない(-v を付けない)
+# Pi 上。まず落とす対象の実体を確認する
+docker compose ls   # プロジェクト名。pulse は catchup-feed(現用。これは落とさない)
+docker ps           # コンテナ名でも確認(初代 catchup-* / pulse catchup-feed-*)
+
+cd ~                # compose ファイルの無いディレクトリから(カレントの compose を拾わせない)
+docker compose -p <初代のプロジェクト名> down   # ラベルベースで停止。ボリュームはまだ消さない(-v を付けない)
 ```
 
 旧スタック用の crontab エントリ(backup.sh / health-check.sh / disk-usage-check.sh / docker-cleanup.sh 等、`scripts/README.md` の推奨スケジュールで入れたもの)を無効化する:
@@ -56,10 +63,21 @@ crontab -e          # 該当行を削除またはコメントアウト
 旧スタック用の systemd unit(`catchup-feed.service`)も同時に始末する。**`systemctl disable` だけでは failed 状態が残る**ため、`reset-failed` まで打つこと:
 
 ```bash
-sudo systemctl disable --now catchup-feed.service
+# 1) 先に中身を見る。ExecStop と WorkingDirectory が pulse を巻き込まないことの確認
+#    (旧 unit の WorkingDirectory は pulse の親ディレクトリと同一だった。8章「地雷」)
+systemctl cat catchup-feed.service
+
+# 2) 自動起動を止める。**--now は付けない** — 旧 unit の ExecStop は `docker compose down` で、
+#    WorkingDirectory 次第で稼働中の pulse を落とし得る。旧スタックの停止はこの章の冒頭で
+#    プロジェクト名を明示して済ませており、unit 経由で stop させる必要はない
+sudo systemctl disable catchup-feed.service
+
+# 3) failed 記録を消してから unit ファイルを削除する(逆順だとアンロード済みで
+#    `Unit not loaded` を返す systemd 版がある。引数なしの systemctl reset-failed でもよい)
+sudo systemctl reset-failed catchup-feed.service
 sudo rm /etc/systemd/system/catchup-feed.service
 sudo systemctl daemon-reload
-sudo systemctl reset-failed catchup-feed.service   # disable / 削除だけでは failed 記録が消えない
+
 systemctl --failed            # catchup 系が残っていないこと
 systemctl is-system-running   # degraded なら --failed の unit 名まで見る(OS 由来の常連は pi.md 参照)
 ```
@@ -89,9 +107,16 @@ curl -sI https://pulse.catchup-feed.com/ | grep -i content-security-policy
 
 # 2) フィードの絶対 URL 生成に使っている値(Pi 側)
 docker exec catchup-feed-server printenv FEED_PUBLIC_BASE_URL
+
+# 3) ブラウザ由来で許可しているオリジン(`catchup.` が居ないことの直接証拠)
+docker exec catchup-feed-server printenv CORS_ALLOWED_ORIGINS
 ```
 
-両方が `radio.catchup-feed.com` を指していれば `catchup.` の参照元は無い。**この確認は 2026-08-15 に実施済み**で、1 は `connect-src 'self' https://radio.catchup-feed.com`、2 は `https://radio.catchup-feed.com` だった(= `radio.` 使用で確定)。残っているのは **Cloudflare ダッシュボードでの Public Hostname 削除(上の手順 1)と DNS レコード削除(手順 3)だけ**【ユーザー作業】。remote managed なので `/etc/cloudflared/config.yml` の編集と cloudflared の再起動(手順 2)は不要。削除後に手順 4 の検証を行う。
+3つとも `catchup.` を含まなければ参照元は無い。**この確認は 2026-08-15 に実施済み**で、1 は `connect-src 'self' https://radio.catchup-feed.com`、2 は `https://radio.catchup-feed.com` だった(= `radio.` 使用で確定)。
+
+注: 2 は `compose.yml` に `${FEED_PUBLIC_BASE_URL:-https://radio.catchup-feed.com}` の既定があるため、**この出力は「`.env` で明示設定されている」ことの証明にはならない**(実効値であることは変わらないので判定の結論は同じ)。3 は compose 側が `:?`(未設定なら起動失敗)なので `.env` の実値がそのまま出る。
+
+残っているのは **Cloudflare ダッシュボードでの Public Hostname 削除(上の手順 1)と DNS レコード削除(手順 3)だけ**【ユーザー作業】。remote managed なので `/etc/cloudflared/config.yml` の編集と cloudflared の再起動(手順 2)は不要。削除後に手順 4 の検証を行う。
 
 ## 5. 旧リポジトリのアーカイブ【ユーザー作業】
 
@@ -99,19 +124,33 @@ GitHub で旧リポジトリを Archive(Settings → Archive this repository)。
 
 ## 6. 後片付け(1〜2週間の安定稼働を見てから)
 
-```bash
-# 旧コンテナ・イメージ・ボリューム(旧 DB 実体)を削除
-cd ~/catchup-feed
-docker compose down -v
-docker image prune -a   # 使用中(pulse)のイメージは消えない
+> **この章に実行対象はもう無い(2026-08-15 の棚卸しで確認)。以下は履歴。**
+> 初代のコンテナ・イメージ・ボリュームは消滅済みで、Pi に残る docker 資産は pulse の3コンテナだけ。
+> 初代のチェックアウトも撤去済み。
+>
+> **`rm -rf ~/catchup-feed` を打たないこと。** `~/catchup-feed` は現在 **pulse の親ディレクトリ**で、
+> 配下に `catchup-feed-backend/`・`episodes/`(mp3 アーカイブ)・`books/`(書籍 PDF)・
+> `catchup-feed-backend/deploy/.env`(`POSTGRES_PASSWORD` / `JWT_SECRET` / API キー)がある。
+> **`.env` は `backup-pulse-db.sh` のミラー対象(db / episodes / books)に入っていないため復旧手段がない。**
+> 初代のチェックアウトも**このパスに置かれていた**(8章「地雷」)ので、「旧リポジトリの実パスに
+> 読み替える」ことはできない — 読み替え先が存在しない。
 
-# 旧リポジトリのチェックアウトを削除(GitHub にアーカイブ済みが前提)
-cd ~ && rm -rf ~/catchup-feed
+万一もう一度この掃除が必要になったら、コマンドを打つ前に対象の実体を確認する(8章「地雷」の手順):
+
+```bash
+docker compose ls   # 落とす対象のプロジェクト名。pulse は catchup-feed(現用。これは落とさない)
+docker ps           # コンテナ名でも確認(初代 catchup-* / pulse catchup-feed-*)
 ```
 
-`docker compose down -v` の前に 2章の最終スナップショットが取れていることを必ず確認。
+確認したうえで、**プロジェクト名を明示して**落とす(`cd` + 素の `docker compose` はカレントディレクトリの compose ファイルを拾うため、pulse のディレクトリにいると pulse の DB ボリュームごと消える):
 
-**`rm -rf ~/catchup-feed` をそのまま打たないこと**。`~/catchup-feed` は現在 **pulse の親ディレクトリ**(`catchup-feed-backend/` と `episodes/` `books/` がある)で、旧リポジトリのチェックアウトとは別物。上の `~/catchup-feed` は 3章と同じく**旧リポジトリの実パスに読み替える**。名前の重なりについては 8章「地雷」を参照。
+```bash
+cd ~                                              # compose ファイルの無いディレクトリから
+docker compose -p <初代のプロジェクト名> down -v   # 旧 DB 実体ごと削除
+docker image prune -a                             # 使用中(pulse)のイメージは消えない
+```
+
+`docker compose down -v` の前に 2章の最終スナップショットが取れていることを必ず確認。旧リポジトリのチェックアウトを消すときは、`rm -rf` の引数が pulse の親ディレクトリでないことを**打つ前に目視する**。
 
 ## 7. 完了の記録
 
@@ -132,7 +171,7 @@ cd ~ && rm -rf ~/catchup-feed
 
 ### 未対応
 
-- **Cloudflare の `catchup.catchup-feed.com`【ユーザー作業】** — 4章の確認は完了済み(`radio.` 使用で確定)。ダッシュボードでの Public Hostname と DNS レコードの削除だけが残っている
+- **Cloudflare の `catchup.catchup-feed.com`【ユーザー作業】** — 4章の確認は完了済み(`radio.` 使用で確定)。ダッシュボードでの Public Hostname と DNS レコードの削除だけが残っている。あわせて**初代由来の `grafana` / `prometheus` の DNS CNAME が残っていないかも一巡する**(ローカル ingress に名前が残っているもの。`AUTH_COOKIE_DOMAIN` がワイルドカードである以上、これらのホスト名にも同じく認証クッキーが飛ぶ)
 - `/etc/cloudflared/config.yml` のローカル ingress が陳腐化 — 現用 Tunnel は remote managed なので実害は出ていないが、`radio.catchup-feed.com` のエントリが無く初代由来の `grafana` / `prometheus` が残っている。**config ファイル運用に戻すとフィード配信が 404 に落ちる**(pi.md 5章の注を参照)
 - `~/crontab.bak-20260726` — 旧 cron のバックアップ。中身を確認して不要なら削除
 - `cloudflared-update.timer` — disabled のまま残置。cloudflared 自体は現用なので unit ごと消さない。実害なし
