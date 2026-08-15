@@ -149,7 +149,18 @@ make admin-hash               # 管理者パスワードの bcrypt ハッシュ�
 make dev-down                 # 停止
 ```
 
-主な Make ターゲット: `dev-up` / `dev-down` / `dev-shell` / `build` / `test` / `test-unit` / `test-coverage` / `lint` / `lint-fix` / `fmt` / `swagger` / `admin-hash` / `db-reset` / `db-shell` / `logs` / `clean`(一覧は `make help`)。
+主な Make ターゲット: `dev-up` / `dev-down` / `dev-shell` / `build` / `test` / `test-unit` / `test-coverage` / `lint` / `lint-fix` / `fmt` / `swagger` / `swagger-host` / `admin-hash` / `db-reset` / `db-shell` / `logs` / `clean`(一覧は `make help`)。
+
+#### Docker を使わずホストで直接ビルド/テストする場合
+
+`cmd/server` が swag 生成物(`docs/docs.go`。`.gitignore` 済みで追跡されない)をブランクインポートするため、**ホストで `./...` を対象にする前に Swagger を生成する**必要があります。未生成のまま `go build ./...` すると `package catchup-feed/docs is not in std` で失敗します。Docker 経由の `make` ターゲットと CI は各ジョブで `swag init` を自動実行するので、この手順は不要です。
+
+```bash
+make swagger-host   # = go tool swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
+go build ./... && go test -race ./...
+```
+
+`go tool swag` は go.mod の `tool` ディレクティブで固定した swag(CI と同じ v1.16.6)を使います。なお `./cmd/radio` 単体のビルドは `docs` に依存しないため生成なしで通ります(後述の Mac の radio ビルド手順は影響を受けません)。
 
 ### server + worker(ローカル / Pi)
 

@@ -97,6 +97,37 @@ jobs:
           args: --timeout=5m
 
   # ──────────────────────────────────────────────────────────
+  # シェルスクリプトの静的解析
+  # 対象は deploy/scripts/*.sh(Pi / Mac の運用スクリプト)のみ。
+  # 過去に本番のエピソード欠番を起こした面(tailnet プリフライト・アラート
+  # 送信)なので退行防止の下限として lint する。shellcheck は ubuntu-latest
+  # ランナーにプリインストール済みで、外部 action は増やさない(将来ランナー
+  # イメージから外れた場合に備えて apt へフォールバックする)。
+  # -x: alert-mail.sh を source するため追跡を有効化する。
+  # 除外(スクリプト側の disable コメントではなく、理由を1箇所に集約するため
+  # ここで指定する):
+  #   SC2329 … `trap cleanup EXIT` で呼ばれる関数を「未使用」と誤判定する。
+  #   SC2012 … ログ用のファイル数カウント `ls | wc -l` に find を薦める指摘。
+  #             出力はログ文言のみで、対象は本システムが生成する mp3 / PDF に
+  #             限られるため実害がない。
+  # ──────────────────────────────────────────────────────────
+  shellcheck:
+    name: Shell Script Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Run shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          fi
+          shellcheck --version
+          shellcheck -x -e SC2329,SC2012 deploy/scripts/*.sh
+
+  # ──────────────────────────────────────────────────────────
   # ビルド検証
   # ──────────────────────────────────────────────────────────
   build:
