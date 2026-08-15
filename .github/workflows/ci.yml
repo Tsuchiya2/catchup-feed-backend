@@ -212,8 +212,15 @@ jobs:
       - name: Verify packages type-check (gosec の SSA 解析の前提)
         run: go build ./...
 
+      # CI で実行する外部ツールは一律でバージョンを固定する(swag v1.16.6 /
+      # shellcheck v0.11.0 / golangci-lint v2.12.2 と同じ方針)。@master は
+      # レビューを経ずに上流の変更でスキャナ本体が入れ替わりうるため使わない。
+      # 更新方法: https://github.com/securego/gosec/releases の新しいタグへ
+      # 上げ、このジョブが緑になることを確認する意図的な変更として単独で行う
+      # (タグ側の action.yml がコンテナイメージを digest で固定しているので、
+      # 同じタグなら常に同じスキャナバイナリが走る)。
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@master
+        uses: securego/gosec@v2.28.0
         with:
           args: '-no-fail -fmt sarif -out results.sarif ./...'
 
@@ -257,8 +264,14 @@ jobs:
           go install github.com/swaggo/swag/cmd/swag@v1.16.6
           $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
+      # gosec と同じく固定する(CI で実行する外部ツールは一律固定)。脆弱性 DB は
+      # バイナリに同梱されず実行時に https://vuln.go.dev から取得する
+      # (`govulncheck -version` が DB URL と DB 更新日を出す)ため、ツールを
+      # 固定しても検出される脆弱性は常に最新で、@latest にする理由はない。
+      # 更新方法: https://github.com/golang/vuln/releases の新しいタグへ上げ、
+      # 解析側(呼び出しグラフ精度など)の改善を意図的な変更として取り込む。
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 
       # `cmd; c=$?` は使えない: run: の既定シェルは `bash -e` なので、
       # 非ゼロ終了の時点で $? を拾う前にステップが落ちる。`|| c=$?` で受ける。
