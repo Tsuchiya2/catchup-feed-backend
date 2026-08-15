@@ -1,7 +1,7 @@
 # リポジトリ構成
 
 **対象**: catchup-feed-backend(Go 1.25.6 単一モジュール、module name: `catchup-feed`)
-**最終更新**: 2026-08-13
+**最終更新**: 2026-08-15
 
 ディレクトリとパッケージの責務を記述します。層の設計思想・依存ルール・技術選定の理由は [architecture.md](architecture.md) を参照してください。
 
@@ -14,8 +14,8 @@
 3. [`cmd/` — エントリポイント](#3-cmd--エントリポイント)
 4. [`internal/` — アプリケーション本体](#4-internal--アプリケーション本体)
 5. [`pkg/` — 公開パッケージ](#5-pkg--公開パッケージ)
-6. [`config/` `deploy/` `scripts/` — 運用](#6-config-deploy-scripts--運用)
-7. [`tests/` `docs/` — テストとドキュメント](#7-tests-docs--テストとドキュメント)
+6. [`deploy/` — 運用](#6-deploy--運用)
+7. [`docs/` — ドキュメント](#7-docs--ドキュメント)
 8. [配置と命名の規約](#8-配置と命名の規約)
 9. [コード規模](#9-コード規模)
 
@@ -47,13 +47,9 @@ catchup-feed-backend/
 │   ├── common/pagination/ #   共通: ページネーション
 │   ├── pkg/               #   共通: 検索・バリデーション・設定ロード
 │   ├── service/auth/      #   認証ポート
-│   ├── config/            #   YAML セキュリティ設定
 │   └── utils/text/        #   文字数カウント
 ├── pkg/                   # 外部 import 可の公開パッケージ
-├── config/                # 実行環境の設定ファイル(YAML / env / cron)
-├── deploy/                # Pi / Mac へのデプロイ資材
-├── scripts/               # 運用スクリプト(バックアップ・ヘルスチェック)
-├── tests/                 # シェルベースの通知テスト + 共有フィクスチャ
+├── deploy/                # Pi / Mac へのデプロイ資材(運用スクリプトは deploy/scripts/)
 ├── docs/                  # 設計ドキュメント + Swagger 生成物
 ├── data/                  # ローカル実行時の mp3 / 書籍置き場(git 管理外)
 ├── compose.yml            # postgres / server / worker
@@ -223,10 +219,9 @@ Mac の夜間バッチ(launchd 起動)。`internal/radio.Pipeline` に必要な�
 | `pkg/validation/` | 140 | クエリパラメータのパース |
 | `pkg/search/` | 130 | 検索キーワードのエスケープと正規化 |
 | `service/auth/` | 44 | `AuthProvider` インターフェース(実装は `handler/http/auth/provider.go`) |
-| `config/` | 108 | `config/security.yaml` の読み込み |
 | `utils/text/` | 22 | 文字数カウント(要約の文字数上限チェック用) |
 
-> **既知の重複**: 設定まわりが `internal/config`(YAML)、`internal/pkg/config`(ロード結果と警告)、`pkg/config`(環境変数ヘルパ)の 3 箇所に分かれています。役割は異なりますが名前が同一で紛らわしく、統合の余地があります。
+> **注**: 設定まわりは `internal/pkg/config`(ロード結果と警告)と `pkg/config`(環境変数ヘルパ)の 2 箇所です。かつては `internal/config`(`config/security.yaml` の YAML 読み込み、108 行)もありましたが、**import 元がゼロ**で 2026-08-15 に削除しました(D-44)。
 
 ---
 
@@ -241,18 +236,7 @@ Mac の夜間バッチ(launchd 起動)。`internal/radio.Pipeline` に必要な�
 
 ---
 
-## 6. `config/` `deploy/` `scripts/` — 運用
-
-### `config/`
-
-| パス | 内容 |
-|---|---|
-| `security.yaml` | セキュリティ設定(`internal/config` が読む) |
-| `environments/*.env` | development / staging / production の環境変数(git 管理外、README のみ追跡) |
-| `cron/` | crontab の例 |
-| `logrotate/` | メール通知ログのローテーション設定 |
-
-### `deploy/`
+## 6. `deploy/` — 運用
 
 | パス | 内容 |
 |---|---|
@@ -264,31 +248,19 @@ Mac の夜間バッチ(launchd 起動)。`internal/radio.Pipeline` に必要な�
 | `pi.md` / `mac.md` / `ai.md` / `README.md` | ホスト別の手順書 |
 | `env.pi.example` / `env.mac.example` | ホスト別の環境変数テンプレート |
 
-### `scripts/`(レガシー)
+**運用スクリプトは `deploy/scripts/` だけが正です**。ルート直下にあった初代 EDAF 期の `scripts/` と `config/` は、Makefile・CI・本体コードからの参照がいずれもゼロだったため 2026-08-15 に削除しました(D-44)。
 
-ルート直下の `scripts/` は**初代由来の Compose ベースのユーティリティ**で、ルートの `.env` が揃った開発機での実行を前提としています。**Pi の実運用はここを使いません** — 現行の Pi 監視と DB バックアップは `deploy/scripts/` 側が正です。
+- **`scripts/`** — バックアップ・ヘルスチェック・ディスク監視・Docker 掃除・マルチアーキビルド・フィード診断。機能はすべて `deploy/scripts/` と `docker.yml` に移っている
+- **`config/cron/` `config/logrotate/`** — 前者は**現行に存在しない Prometheus の掃除 cron**、後者はローテート対象のログの書き手(`scripts/lib/email-functions.sh`)ごと消えた。pulse で必要な logrotate は `pulse-health-check` のみ(`deploy/pi.md` 9章)
+- **`config/security.yaml` `config/environments/` と `internal/config/`** — `security.yaml` は `/metrics` を公開エンドポイントに、認証を `basic` に指定しており現行(D-22 の JWT + HttpOnly クッキー)と食い違う。`environments/` は 3 環境 + Kubernetes + AWS Secrets Manager 前提で単一ユーザー右サイズの pulse とは別物。これらを読む `internal/config`(108 行)も **import 元がゼロ**だったため同時に削除した。env の正は `.env.example` と `deploy/env.pi.example` / `env.mac.example`
 
-| 用途 | 現行(Pi 運用) | ルート `scripts/`(レガシー) |
-|---|---|---|
-| ヘルスチェック | `deploy/scripts/pi-health-check.sh`(5 分ごと。メールは状態遷移時のみ — D-30) | `health-check.sh`(異常が続く間ずっと送るスパム問題があり D-30 で置き換え済み) |
-| DB バックアップ | `deploy/scripts/backup-pulse-db.sh` | `backup-db.sh` / `restore-db.sh` |
-
-上記以外にディスク監視(`disk-usage-check.sh`)、Docker 掃除(`docker-cleanup.sh`)、マルチアーキビルド(`build-multiarch.sh`)、フィード診断(`diagnose_feeds.go`)があります。共通処理は `lib/` です。
+Pi 実機側の残骸(systemd unit・logrotate・旧 cron・旧バックアップ)の撤去状況は `deploy/legacy-shutdown.md` 8章が正です。内容が必要になったら git 履歴を参照してください。
 
 ---
 
-## 7. `tests/` `docs/` — テストとドキュメント
+## 7. `docs/` — ドキュメント
 
-### `tests/`
-
-Go のテストは**対象コードと同じパッケージに置く**方針のため、`tests/` にはシェルベースの通知テストと共有フィクスチャのみを置きます。
-
-| パス | 内容 |
-|---|---|
-| `fixtures/articles.go` | テスト用の記事データ |
-| `unit/` `integration/` `e2e/` `performance/` | メール通知まわりのシェルスクリプトテスト |
-
-DB を必要とするテストは `internal/infra/db/*_integration_test.go` に、外部ネットワークを使うテストは `//go:build integration` タグ付きで各パッケージに配置します。
+ルート直下にあったシェルベースの通知テストと共有フィクスチャ(`tests/`)は、現行の `internal/notify/` と無関係な旧メール基盤のテストだったため 2026-08-15 に削除しました(D-44)。Go のテストの配置規約は §8 が正です。
 
 ### `docs/`
 
@@ -338,7 +310,13 @@ DB を必要とするテストは `internal/infra/db/*_integration_test.go` に�
 
 ## 9. コード規模
 
-2026-08-13 時点。テストを除く行数です。
+2026-08-15 時点の実測です。**計測範囲は `internal/` + `pkg/` + `cmd/` 配下の `*.go`** で、「行数」列はテスト(`*_test.go`)を除いた値、最下行の「テスト」だけが `*_test.go` を数えた値です。再現コマンド:
+
+```bash
+find internal pkg cmd -name '*.go' ! -name '*_test.go' -exec cat {} + | wc -l   # 本体合計
+find internal pkg cmd -name '*_test.go' | wc -l                                 # テストファイル数
+find internal pkg cmd -name '*_test.go' -exec cat {} + | wc -l                   # テスト行数
+```
 
 | 区分 | パッケージ | 行数 |
 |---|---|---|
@@ -354,10 +332,10 @@ DB を必要とするテストは `internal/infra/db/*_integration_test.go` に�
 | 用途別(worker + radio) | `internal/jobs` | 666 |
 | 用途別(server + radio) | `internal/learning` | 433 |
 | 用途別(worker) | `internal/notify` | 324 |
-| 共通 | `internal/pkg` `common` `service` `config` `utils` | 1,432 |
+| 共通 | `internal/pkg` `common` `service` `utils` | 1,324 |
 | 公開 | `pkg/` | 770 |
 | エントリポイント | `cmd/` | 1,387 |
-| **本体合計** | | **26,013** |
-| テスト | 162 ファイル | 48,283 |
+| **本体合計** | | **25,913** |
+| テスト | 161 ファイル | 47,930 |
 
 interface 定義は 47 本、テスト内のモック・スタブは 65 個です。

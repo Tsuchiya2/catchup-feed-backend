@@ -18,8 +18,3 @@ linters:
       - docs
       - vendor
       - node_modules
-      - "scripts/.*\\.go"
-    rules:
-      - path: "scripts/.*\\.go"
-        linters:
-          - errcheck

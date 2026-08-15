@@ -64,11 +64,11 @@ docker inspect --format '{{.Name}} {{index .Config.Labels "com.docker.compose.pr
 docker stop catchup-postgres catchup-server catchup-worker catchup-prometheus catchup-grafana
 ```
 
-旧スタック用の crontab エントリ(backup.sh / health-check.sh / disk-usage-check.sh / docker-cleanup.sh 等、`scripts/README.md` の推奨スケジュールで入れたもの)を無効化する:
+旧スタック用の crontab エントリ(backup.sh / health-check.sh / disk-usage-check.sh / docker-cleanup.sh 等)は **D-30(3) に沿って 2026-07-26 に削除済み**(バックアップが `~/crontab.bak-20260726` に残っている — 8章)。**残作業は無いが、念のため残存していないことだけ確認する**:
 
 ```bash
-crontab -l          # 旧 catchup-feed 行を確認
-crontab -e          # 該当行を削除またはコメントアウト
+crontab -l          # 旧 catchup-feed 行が無いことを確認(通常は 0 件)
+crontab -e          # 見つかった場合のみ、該当行を削除またはコメントアウト
 ```
 
 旧スタック用の systemd unit(`catchup-feed.service`)も同時に始末する。**`systemctl disable` だけでは failed 状態が残る**ため、`reset-failed` まで打つこと:
