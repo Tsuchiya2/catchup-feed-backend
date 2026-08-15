@@ -13,7 +13,7 @@ Phase 2 設計書 §3・§6・§7(transcribe worker / Open WebUI / pgvector)の�
 
 構成物:
 
-```
+```text
 deploy/
 ├── compose.pi.yml            # Pi 固有 override(ルート compose.yml に重ねる)
 ├── env.pi.example            # Pi 側 .env の雛形(キーのみ。値は書かない)

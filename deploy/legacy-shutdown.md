@@ -142,7 +142,7 @@ systemctl is-system-running   # degraded なら --failed の unit 名まで見�
 | `radio.catchup-feed.com`(`/`) | 401 | Tunnel ルートは無傷。401 は**ルート(`/`)がデフォルトの JWT 保護ハンドラに落ちた応答**で、「認証付きで公開されている」の意味ではない(pi.md 7章の注と同じ) |
 | `pulse.catchup-feed.com` | 200 | ダッシュボードは無影響 |
 
-**手順 4 の `radio.catchup-feed.com/feeds/<token>/feed.xml` → 200 は測っていない**(フィードトークンを手元に出さないため)。この軸は毎朝 05:45 の morning-check(mac.md 10b 章)が公開フィードの外形を叩いているので、**翌朝以降アラートが出なければ裏が取れる**。
+**手順 4 の `radio.catchup-feed.com/feeds/<token>/feed.xml` → 200 は測っていない**(フィードトークンを手元に出さないため)。**毎朝 05:45 の morning-check(mac.md 10b 章)でも代替できない** — あちらが叩くのは既定で `https://radio.catchup-feed.com/` = **ルートだけ**で、しかも 200 と 401 の**両方を正常と判定する**(スクリプトにフィードトークンを埋め込まないための設計)。つまり morning-check が確認しているのは **`radio.` ルートの到達性**までで、フィード取得の成否ではない。フィードの 200 まで確かめたいときは**フィード URL を直接測る**しかない(トークンを含む URL を扱うので、ログや履歴に残さないこと)。
 
 以下は削除前に行った「本当に誰も参照していないか」の確認手順。**同種の判断(あるホスト名を消してよいか)が再び必要になったときの型として残す**。Vercel コンソールにログインしなくても、**外形のレスポンスヘッダと Pi の env の突き合わせだけで判定できる**:
 
@@ -159,7 +159,9 @@ docker exec catchup-feed-server printenv FEED_PUBLIC_BASE_URL
 docker exec catchup-feed-server printenv CORS_ALLOWED_ORIGINS
 ```
 
-3つとも `catchup.` を含まなければ参照元は無い。**削除の判断に用いたのは 1 と 2**(1 は `connect-src 'self' https://radio.catchup-feed.com`、2 は `https://radio.catchup-feed.com` = `radio.` 使用で確定)。3 は本書に後から足した軸で、削除時点では打っていない — 上の実測どおり削除後もダッシュボードは 200 で、結論は変わらなかった。
+3つとも `catchup.` を含まなければ、**本アプリ内の主要な参照は無い**と判断できる。**削除の判断に用いたのは 1 と 2**(1 は `connect-src 'self' https://radio.catchup-feed.com`、2 は `https://radio.catchup-feed.com` = `radio.` 使用で確定)。3 は本書に後から足した軸で、削除時点では打っていない — 上の実測どおり削除後もダッシュボードは 200 で、結論は変わらなかった。
+
+**この3軸で示せない範囲**(取り違えやすいので明記する): 分かるのは「**このアプリ自身と主要なブラウザ経路がそのホスト名を参照していない**」ことまでで、「**誰もそのホスト名を使っていなかった**」ことの証明にはならない。外部クライアント(ポッドキャストアプリ・スクリプト・ブックマーク)からの直接アクセスや、過去のホスト別アクセス実績はここに出てこない。**`feed_access_logs` も Host を記録しない**ため、この判定には使えない。より確実を期すなら **Cloudflare の Analytics でホスト別のアクセスを見る**という選択肢はあるが、単一ユーザーの個人システムで毎回そこまで求めない(右サイズ)。今回の `catchup.` については、削除後も `radio.` 401 / `pulse.` 200 / morning-check 正常で問題は出ていない。
 
 注: 2 は `compose.yml` に `${FEED_PUBLIC_BASE_URL:-https://radio.catchup-feed.com}` の既定があるため、**この出力は「`.env` で明示設定されている」ことの証明にはならない**(実効値であることは変わらないので判定の結論は同じ)。3 は compose 側が `:?`(未設定なら起動失敗)なので `.env` の実値がそのまま出る。
 

@@ -7,7 +7,7 @@ Mac が閉じている・電源が無い日はエピソード欠番で**正常**
 
 ディレクトリ規約(以下この配置を前提にする):
 
-```
+```text
 ~/pulse/
 ├── bin/        radio バイナリ、radio-run.sh、backup-pulse-db.sh
 ├── logs/       launchd の出力・VOICEVOX ログ
@@ -124,7 +124,7 @@ ssh-copy-id -i ~/.ssh/id_ed25519_pulse.pub <pi-user>@<pi の MagicDNS 名>
 
 `~/.ssh/config` に追記(radio の rsync と backup スクリプトが BatchMode で使えるように):
 
-```
+```text
 Host <pi の MagicDNS 名>
     User <pi-user>
     IdentityFile ~/.ssh/id_ed25519_pulse

@@ -21,7 +21,7 @@ Mac が閉じている・電源が無い夜は文字起こしが**翌夜に持�
 transcribe worker は radio と同じ配置思想: Mac 夜間バッチ、Pi の Postgres に Tailscale 経由で直接接続、
 プロセス間連携は **jobs テーブルのみ**(C-4、内部 RPC なし)。
 
-```
+```text
 ┌─ Pi(常時稼働)──────────────────────────────────────────────┐
 │ worker(毎時 cron)                                              │
 │  ├ クロール: sources(kind=youtube|podcast)の RSS 新着検知      │
