@@ -106,16 +106,15 @@ jobs:
   # (行ごと)で報告し、手元の 0.11.0(関数行の SC2329)と指摘コードがズレる。
   # 他ジョブ(Go / golangci-lint / swag)と同じく固定して手元と CI を揃える。
   # -x: alert-mail.sh を source するため追跡を有効化する。
-  # 除外(スクリプト側の disable コメントではなく、理由を1箇所に集約するため
-  # ここで指定する):
-  #   SC2329 … `trap cleanup EXIT` で呼ばれる関数を「未使用」と誤判定する。
-  #   SC2012 … ログ用のファイル数カウント `ls | wc -l` に find を薦める指摘。
-  #             出力はログ文言のみで、対象は本システムが生成する mp3 / PDF に
-  #             限られるため実害がない。
+  # 個別の抑制はワークフローの -e ではなくスクリプト側の
+  # `# shellcheck disable=` で行う(既存 5 箇所と同じ慣習。一括除外は将来
+  # 足すスクリプトの本物の指摘まで殺すため)。抑制の根拠は各行のコメント。
   # ──────────────────────────────────────────────────────────
   shellcheck:
     name: Shell Script Lint
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -124,12 +123,18 @@ jobs:
       - name: Run shellcheck
         env:
           SHELLCHECK_VERSION: v0.11.0
+          # https://github.com/koalaman/shellcheck/releases/tag/v0.11.0 の
+          # linux.x86_64.tar.xz の SHA-256(Dockerfile の golangci-lint と
+          # 同じく、取得物を検証してから実行する)
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
         run: |
-          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
-            | tar -xJ -C "$RUNNER_TEMP"
+          curl -fsSL -o "$RUNNER_TEMP/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
           SHELLCHECK="$RUNNER_TEMP/shellcheck-${SHELLCHECK_VERSION}/shellcheck"
           "$SHELLCHECK" --version
-          "$SHELLCHECK" -x -e SC2329,SC2012 deploy/scripts/*.sh
+          "$SHELLCHECK" -x deploy/scripts/*.sh
 
   # ──────────────────────────────────────────────────────────
   # ビルド検証
@@ -169,6 +174,11 @@ jobs:
 
   # ──────────────────────────────────────────────────────────
   # セキュリティスキャン
+  # gosec の SSA 解析は対象パッケージが型検査を通ることが前提。swag 生成物が
+  # 無いと cmd/server(認証・リスナー分離・私的フィード配線)だけが
+  # "package main has type errors, skipping SSA analysis" で解析対象から
+  # 抜け落ち、-no-fail のため緑のまま気付けない。生成物はワークスペース経由で
+  # コンテナアクションからも見えるので、事前に生成しておく。
   # ──────────────────────────────────────────────────────────
   security:
     name: Security Scan
@@ -181,6 +191,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Generate Swagger docs
+        run: |
+          go install github.com/swaggo/swag/cmd/swag@v1.16.6
+          $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
       - name: Run Gosec Security Scanner
         uses: securego/gosec@master
@@ -195,6 +216,11 @@ jobs:
 
   # ──────────────────────────────────────────────────────────
   # 依存関係の脆弱性スキャン
+  # govulncheck は ./... をビルドできないと解析そのものを行わない。swag 生成物
+  # が無いと cmd/server の docs ブランクインポートで exit 1 になり、
+  # continue-on-error に飲まれて「緑だがスキャンはゼロ件も走っていない」
+  # 状態になる(SARIF も空で upload が JSON エラーになる)。他ジョブと同じ
+  # Swagger 生成を前置してこれを防ぐ。
   # ──────────────────────────────────────────────────────────
   vulnerability-scan:
     name: Dependency Vulnerability Scan
@@ -212,6 +238,11 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+
+      - name: Generate Swagger docs
+        run: |
+          go install github.com/swaggo/swag/cmd/swag@v1.16.6
+          $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest

@@ -79,7 +79,7 @@ catchup-feed-backend/
 | `.air.toml` | ホットリロード設定(開発コンテナ) |
 | `go.mod` / `go.sum` | 依存定義。直接依存は 14 パッケージのみ |
 
-主要な Make ターゲット: `setup` / `dev-up` / `dev-down` / `dev-shell` / `build` / `test` / `test-unit` / `test-coverage` / `lint` / `lint-fix` / `fmt` / `swagger` / `admin-hash` / `db-reset` / `db-shell` / `logs` / `ci` / `clean`(一覧は `make help`)。
+主要な Make ターゲット: `setup` / `dev-up` / `dev-down` / `dev-shell` / `build` / `test` / `test-unit` / `test-coverage` / `lint` / `lint-fix` / `fmt` / `swagger` / `swagger-host` / `admin-hash` / `db-reset` / `db-shell` / `logs` / `ci` / `clean`(一覧は `make help`)。`swagger-host` だけが Docker を使わずホストの Go で Swagger を生成する退避経路です(Docker 停止時用)。
 
 ---
 
@@ -296,7 +296,7 @@ DB を必要とするテストは `internal/infra/db/*_integration_test.go` に�
 |---|---|---|
 | `architecture.md` | 層構成・依存ルール・データフロー・セキュリティ・技術選定 | 手書き |
 | `repository-structure.md` | 本ドキュメント | 手書き |
-| `swagger.json` `swagger.yaml` `docs.go` | API 仕様 | `make swagger` の生成物 |
+| `swagger.json` `swagger.yaml` `docs.go` | API 仕様 | `make swagger`(Docker)/ `make swagger-host`(ホスト)の生成物。gitignore 済みだが `cmd/server` が `docs.go` をブランクインポートするため、clone 後に1度生成しないと `./...` のビルドが通らない |
 
 初代 catchup-feed(EDAF 体制期)の `development-guidelines.md` / `functional-design.md` /
 `product-requirements.md` / `glossary.md` は 2026-08-13 に削除しました。gRPC・サーキット
@@ -311,7 +311,7 @@ DB を必要とするテストは `internal/infra/db/*_integration_test.go` に�
 
 | ファイル | 内容 |
 |---|---|
-| `ci.yml` | 5 ジョブ。**Test**(pgvector サービスコンテナ → `go mod verify` → Swagger 生成 → `go test -race` → Codecov)/ **Lint**(Swagger 生成 → golangci-lint v2.12.2)/ **Build**(server / worker のビルドとバイナリサイズ表示)/ **Security Scan**(gosec → SARIF)/ **Dependency Vulnerability Scan**(govulncheck → SARIF) |
+| `ci.yml` | 6 ジョブ。**Test**(pgvector サービスコンテナ → `go mod verify` → Swagger 生成 → `go test -race` → Codecov)/ **Lint**(Swagger 生成 → golangci-lint v2.12.2)/ **Shell Script Lint**(shellcheck v0.11.0 で `deploy/scripts/*.sh` を `-x` 付き検査)/ **Build**(server / worker のビルドとバイナリサイズ表示)/ **Security Scan**(Swagger 生成 → gosec → SARIF)/ **Dependency Vulnerability Scan**(Swagger 生成 → govulncheck → SARIF)。Swagger 生成は Go を使う全ジョブに必要(未生成だと `cmd/server` が型検査を通らず、gosec は SSA 解析を、govulncheck は解析自体をスキップする) |
 | `docker.yml` | QEMU + buildx によるマルチアーキイメージのビルド(Pi の arm64 向け) |
 
 ---

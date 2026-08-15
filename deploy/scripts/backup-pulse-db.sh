@@ -79,6 +79,10 @@ if [ -n "${PULSE_PI_EPISODES_DIR:-}" ]; then
     log "mirroring episodes from $PULSE_PI_SSH:$PULSE_PI_EPISODES_DIR"
     if rsync -a -e "ssh ${SSH_OPTS[*]}" \
         "$PULSE_PI_SSH:$PULSE_PI_EPISODES_DIR/" "$BACKUP_DIR/episodes/"; then
+        # ログ表示用の件数カウント。mp3 名は internal/radio/pipeline.go の
+        # episodeNaming() が生成する `YYYY-MM-DD[-revN][-private].mp3` だけで、
+        # 改行を含む名前が入る経路がないため ls の行数で正しく数えられる。
+        # shellcheck disable=SC2012
         log "episodes mirror OK ($(ls "$BACKUP_DIR/episodes" | wc -l | tr -d ' ') files)"
     else
         log "WARN: episodes mirror failed(dump は保存済みなので継続)"
@@ -95,6 +99,12 @@ if [ -n "${PULSE_PI_BOOKS_DIR:-}" ]; then
     log "mirroring books from $PULSE_PI_SSH:$PULSE_PI_BOOKS_DIR"
     if rsync -a -e "ssh ${SSH_OPTS[*]}" --rsync-path="sudo rsync" \
         "$PULSE_PI_SSH:$PULSE_PI_BOOKS_DIR/" "$BACKUP_DIR/books/"; then
+        # ログ表示用の件数カウント。PDF 名はダッシュボードからの任意入力だが、
+        # internal/usecase/book/service.go の ValidateFilename() が制御文字
+        # (0x20 未満・0x7f)・`/` `\`・NUL・先頭ドットを拒否するので改行を
+        # 含む名前は保存されない(この検証を緩めるならここも find へ直す)。
+        # 先頭ドットが無いことで、ls は退避中の .upload-* も自然に除外する。
+        # shellcheck disable=SC2012
         log "books mirror OK ($(ls "$BACKUP_DIR/books" | wc -l | tr -d ' ') files)"
     else
         log "WARN: books mirror failed(dump は保存済みなので継続)"

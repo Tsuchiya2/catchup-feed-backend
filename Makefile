@@ -2,7 +2,7 @@
 # catchup-feed - Makefile for Docker Development
 # ============================================================
 # All development tasks run inside Docker containers
-# No local Go installation required!
+# No local Go installation required! (except swagger-host)
 # ============================================================
 
 .PHONY: help dev-up dev-down dev-shell test lint fmt swagger swagger-host admin-hash build clean logs

@@ -151,16 +151,18 @@ make dev-down                 # 停止
 
 主な Make ターゲット: `dev-up` / `dev-down` / `dev-shell` / `build` / `test` / `test-unit` / `test-coverage` / `lint` / `lint-fix` / `fmt` / `swagger` / `swagger-host` / `admin-hash` / `db-reset` / `db-shell` / `logs` / `clean`(一覧は `make help`)。
 
-#### Docker を使わずホストで直接ビルド/テストする場合
+#### Swagger 生成物: clone 後に1度だけ生成が必要
 
-`cmd/server` が swag 生成物(`docs/docs.go`。`.gitignore` 済みで追跡されない)をブランクインポートするため、**ホストで `./...` を対象にする前に Swagger を生成する**必要があります。未生成のまま `go build ./...` すると `package catchup-feed/docs is not in std` で失敗します。Docker 経由の `make` ターゲットと CI は各ジョブで `swag init` を自動実行するので、この手順は不要です。
+`cmd/server` が swag 生成物(`docs/docs.go`。`.gitignore` 済みで追跡されない)をブランクインポートするため、未生成のまま `./...` をビルド/テストすると `package catchup-feed/docs is not in std` で失敗します。**clone 直後に1度、およびハンドラのアノテーションを変えたときに**生成してください。
 
 ```bash
-make swagger-host   # = go tool swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
-go build ./... && go test -race ./...
+make swagger        # Docker 経由(dev コンテナ内で生成)
+make swagger-host   # Docker を使わない場合(= go tool swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal)
 ```
 
-`go tool swag` は go.mod の `tool` ディレクティブで固定した swag(CI と同じ v1.16.6)を使います。なお `./cmd/radio` 単体のビルドは `docs` に依存しないため生成なしで通ります(後述の Mac の radio ビルド手順は影響を受けません)。
+`make test` / `make lint` / `make ci` は生成を含みません。dev コンテナは `compose.yml` の `- .:/app` でホストのツリーをそのままマウントするため、ホストの `docs/` に生成物が無ければコンテナ内でも同じエラーで失敗します。逆に `make swagger` の生成物はマウント経由でホストの `docs/` に残るので、一度実行すれば以後の `make test` / `make lint` とホストの `go build ./...` / `go test -race ./...` はそのまま通ります。CI は Test / Lint / Build の3ジョブが各自 `swag init` を実行するため、この手順に依存しません。
+
+`go tool swag` は go.mod の `tool` ディレクティブで固定した swag(CI と同じ v1.16.6。`--version` は upstream のバージョン定数が未更新のため `v1.16.4` と表示されますが、実体は `go list -m github.com/swaggo/swag` のとおり v1.16.6 です)を使います。なお `./cmd/radio` 単体のビルドは `docs` に依存しないため生成なしで通ります(後述の Mac の radio ビルド手順は影響を受けません)。
 
 ### server + worker(ローカル / Pi)
 

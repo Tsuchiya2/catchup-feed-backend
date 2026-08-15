@@ -13,7 +13,7 @@ Go 1.25.6 単一モジュール(module name: `catchup-feed`)。バージョン�
 
 - ルーターは net/http 標準(外部ルーターなし)、DB は pgx/v5、テストは table-driven + testify。`go test -race ./...` と `go vet ./...` が完了条件。Makefile のターゲットを使う(`make test` / `lint` / `swagger` / `admin-hash` 等)
 - API 契約は swag の Swagger 生成が正(C-19)。ハンドラのアノテーションを変えたら `make swagger` を回し、frontend 側の `npm run generate:api` 用に swagger.json を引き渡す
-- ホストで `./...` をビルド/テストする前に `make swagger-host`(= `go tool swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal`)を実行する — `cmd/server` が swag 生成物の `docs` をブランクインポートし、`docs/docs.go` は gitignore 済みなので未生成だと `package catchup-feed/docs is not in std` で落ちる。Docker 経由の make ターゲットと CI は自動生成するので不要。`./cmd/radio` 単体は `docs` 非依存で生成なしでも通る
+- clone 後は `./...` をビルド/テストする前に Swagger を1度生成する(Docker 経由なら `make swagger`、Docker なしなら `make swagger-host` = `go tool swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal`)— `cmd/server` が swag 生成物の `docs` をブランクインポートし、`docs/docs.go` は gitignore 済みなので未生成だと `package catchup-feed/docs is not in std` で落ちる。`make test` / `lint` / `ci` は生成を含まず、dev コンテナは `- .:/app` でホストのツリーをマウントするためコンテナ内でも同じエラーになる(生成物はマウント経由でホストの `docs/` に残るので1度で済む)。CI は Test / Lint / Build / Security Scan / Dependency Vulnerability Scan の各ジョブが自前で生成する。`./cmd/radio` 単体は `docs` 非依存で生成なしでも通る
 - ハンドラのルート登録は各パッケージの `register.go` に `Register(mux, service, ...)` を実装し、`cmd/server` はそれを呼ぶだけ。設計判断はコメントに決定ログ番号(D-xx / C-xx / §x.x)を残す
 - `internal/learning/` は Phase 3 学習コア: SRS 遷移純関数(§6.1)・JST 放送日ヘルパ(§12-10)・クイズパラメータ config(D-18)。radio と server が共有するため、radio/server/handler/repository へ依存させない
 - 番組の言い回し(番組名の読み・コーナー名・定型句・固定文)は `internal/script/format.go` にのみ置く(D-37)。`prompts/*.tmpl` と `internal/script/*.go` への文言の直書きは `TestSpokenWordingLivesOnlyInFormatGo` が落とす
