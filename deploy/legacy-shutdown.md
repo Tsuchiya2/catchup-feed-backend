@@ -6,7 +6,7 @@
 
 方針(§9): 旧 DB から持ち越すのは sources 定義のみ。それ以外のデータ(記事・要約・通知履歴)は捨てる。旧リポジトリはアーカイブして残す(**この最後の1点は対象が存在せず不要だった。5章**)。
 
-前提の確認(いずれも当時の状態): 旧スタックは Pi 上の旧リポジトリの compose(コンテナ名 `catchup-postgres` / `catchup-server` / `catchup-worker`、ポート 8080/5432/9091)で稼働していた。後継スタック(コンテナ名 `catchup-feed-postgres` / `catchup-feed-server` / `catchup-feed-worker`、8090/8081/5433)とは完全に分離されているため、以下の手順は後継に影響しない。**旧 `catchup-*` と新 `catchup-feed-*` はハイフンの後が違うだけで紛らわしい**ので、停止コマンドを打つ前に必ずコンテナ名を確認する(落とすのは `catchup-*` の方)。
+前提の確認(いずれも当時の状態): 旧スタックは Pi 上の旧リポジトリの compose(コンテナ名 `catchup-postgres` / `catchup-server` / `catchup-worker` に加え、**監視系の `catchup-prometheus` / `catchup-grafana`** の計5本。ポート 8080/5432/9091)で稼働していた。後継スタック(コンテナ名 `catchup-feed-postgres` / `catchup-feed-server` / `catchup-feed-worker`、8090/8081/5433)とは完全に分離されているため、以下の手順は後継に影響しない。**旧 `catchup-*` と新 `catchup-feed-*` はハイフンの後が違うだけで紛らわしい**ので、停止コマンドを打つ前に必ずコンテナ名を確認する(落とすのは `catchup-*` の方)。
 
 ---
 
@@ -58,7 +58,10 @@ docker compose -p <初代のプロジェクト名> down   # ラベルベース�
 ```bash
 # どちらの資産かをラベルで確認してから
 docker inspect --format '{{.Name}} {{index .Config.Labels "com.docker.compose.project"}}' catchup-server
-docker stop catchup-postgres catchup-server catchup-worker   # 初代のコンテナ名(pulse は catchup-feed-*)
+
+# 初代のコンテナ名(pulse は catchup-feed-*)。アプリ3本だけでなく監視系2本も動いていたので、
+# 打つ対象は docker ps -a の一覧から拾って漏らさないこと
+docker stop catchup-postgres catchup-server catchup-worker catchup-prometheus catchup-grafana
 ```
 
 旧スタック用の crontab エントリ(backup.sh / health-check.sh / disk-usage-check.sh / docker-cleanup.sh 等、`scripts/README.md` の推奨スケジュールで入れたもの)を無効化する:
@@ -128,9 +131,9 @@ docker exec catchup-feed-server printenv CORS_ALLOWED_ORIGINS
 
 ## 5. 旧リポジトリのアーカイブ → **対象なし(2026-08-15 確認)**
 
-当初の想定(§9-4)は「GitHub で旧リポジトリを Archive し、設計学習の参照元として残す」だったが、**Archive すべき別リポジトリは存在しない**。初代 catchup-feed の実装は**本リポジトリそのもの**で、pulse へは新規リポジトリを起こさず作り替えた(PR #72「pulse Phase 1」、2026-07-05 マージ。約3.8万行の削除を含む)。したがって初代のコードは**本リポジトリの git 履歴として残っており**、本リポジトリは現行なので Archive できない。
+当初の想定(§9-4)は「GitHub で旧リポジトリを Archive し、設計学習の参照元として残す」だったが、**Archive すべき別リポジトリは存在しない**。初代 catchup-feed の実装は**本リポジトリそのもの**で、pulse へは新規リポジトリを起こさず作り替えた(PR #72「pulse Phase 1」、2026-07-05 マージ。253 ファイル・約9万行の削除を含む。`git diff --shortstat 54a818f^1 54a818f` で確認できる)。したがって初代のコードは**本リポジトリの git 履歴として残っており**、本リポジトリは現行なので Archive できない。
 
-同名で始まる別リポジトリ(`catchup-feed-prototype` / `catchup-feed-web`)はいずれも **private で公開リスクが無く**、pulse の運用にも関与しないため放置してよい。
+同名で始まる別リポジトリはいずれも **private で公開リスクが無く**、pulse の運用にも関与しないため放置してよい。
 
 **この章に実施すべきユーザー作業は無い。** Pi 上のチェックアウトの扱いは6章。
 
@@ -168,7 +171,7 @@ docker image prune -a                             # 使用中(pulse)のイメー
 
 ## 7. 完了の記録
 
-親セッションに報告し、`docs/progress.md` と setup-and-roadmap.md の U-15 を完了にしてもらう。以降の定常運用は setup-and-roadmap.md「定常運用」の表(月次バックアップ確認・四半期リストア試験)に従う。
+親セッションに報告し、進捗ログとロードマップの U-15 を完了にしてもらう。以降の定常運用はロードマップ「定常運用」の表(月次バックアップ確認・四半期リストア試験)に従う。いずれも親ディレクトリ側で管理しており、**本リポジトリには含まれない**。
 
 ## 8. 初代の残骸チェックリスト(2026-08-15 の棚卸し)
 
@@ -179,7 +182,7 @@ docker image prune -a                             # 使用中(pulse)のイメー
 - `/etc/systemd/system/catchup-feed.service` — 削除 + `daemon-reload` + `reset-failed`(3章)。systemd から catchup 系が消え、`systemctl --failed` に残るのは OS 由来のものだけになった
 - `/etc/logrotate.d/catchup-cron` / `/etc/logrotate.d/catchup-email` — 削除。対象のログはもう生成されない。pulse で必要なのは `pulse-health-check` のみ(pi.md 9章)
 - `/home/<pi-user>/backups/` の初代 DB ダンプ8本とログ類 — 削除(13MB → 4KB)。2章の最終スナップショットは Mac 側に退避済みで、Pi 側に保持する理由がない
-- **初代の docker 資産(コンテナ・イメージ・ボリューム)とチェックアウト** — いずれも撤去済み(6章)。2026-08-15 に `docker ps -a` / `docker compose ls -a` / `docker volume ls` / `docker image ls` で確認し、残っているのは pulse の3コンテナとその資産だけだった
+- **初代の docker 資産(コンテナ・イメージ・ボリューム)とチェックアウト** — いずれも撤去済み(6章)。2026-08-15 に `docker ps -a` / `docker compose ls -a` / `docker volume ls` / `docker image ls` で確認し、残っているのは pulse の3コンテナとその資産だけだった。**このとき `docker compose ls -a` の答えは `catchup-feed` 1件のみ**で、これは pulse。3章の「答えが `catchup-feed` しか無ければ打つな」が現実に即していることの実測でもある
 - **旧リポジトリの Archive(5章)** — 対象なし。初代の実装は本リポジトリの git 履歴そのものなので Archive すべき別リポジトリが存在しない(2026-08-15 確認)
 - あわせて `docker builder prune` で build cache 4.1GB のうち 3.3GB を回収(初代とは無関係だが同時に実施。**ディスク使用率 43% → 32%**。pi.md 11章)
 
