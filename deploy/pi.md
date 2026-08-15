@@ -149,11 +149,20 @@ sudo systemctl enable --now pulse.service
 systemctl status pulse.service   # active (exited) なら正常
 ```
 
-注意: 旧システムの `catchup-feed.service` とは**別 unit**。旧 unit は毎起動失敗していたため D-28 (3) で `systemctl disable` 済み(ファイルは §9 の停止手順まで残す)。それ以外の旧側には触らない。
+注意: 旧システムの `catchup-feed.service` とは**別 unit**。旧 unit は毎起動失敗していたため D-28 (3) で `systemctl disable` し、2026-08-15 にファイルごと削除 + `reset-failed` 済み(legacy-shutdown.md 3章・8章)。それ以外の旧側には触らない。
 
 ## 5. Cloudflare Tunnel — ルート追加【ユーザー作業】(U-9)
 
 catchup-feed が公開するのは `radio.catchup-feed.com` → `127.0.0.1:8090`(公開リスナー)だけ。設定例と「公開してよいルート」の一覧は `deploy/cloudflared/config.example.yml` に記載。
+
+> 注: **現用の Tunnel は remote managed**(Cloudflare ダッシュボードの Public Hostname が正)。
+> Pi の `/etc/cloudflared/config.yml` にも ingress が書かれているが**実効設定ではない**ため、
+> ホスト名の追加・削除はダッシュボード側で行う。`config.example.yml` は config ファイル運用の
+> 場合の例であり、これだけを見ると「ローカルファイルが正」と誤解する。さらに現在のローカル
+> ingress は陳腐化しており、`radio.catchup-feed.com` のエントリが無く初代由来の
+> `grafana` / `prometheus` が残っている。**この状態で config ファイル運用に戻すとフィード配信が
+> 404 に落ちる**。戻す必要が出たときは、先にダッシュボードの Public Hostname 一覧を
+> ローカル ingress へ写し取ること。
 
 1. DNS: 既存トンネルに向ける
    ```bash
@@ -163,7 +172,7 @@ catchup-feed が公開するのは `radio.catchup-feed.com` → `127.0.0.1:8090`
 2. Ingress: config ファイル運用なら `/etc/cloudflared/config.yml` の ingress に
    `hostname: radio.catchup-feed.com → service: http://localhost:8090` を追記し、
    `sudo systemctl restart cloudflared`。ダッシュボード管理のトンネルなら Public Hostname 追加のみで完了。
-3. 旧システムのルートは §9 の停止まで**そのまま残す**。
+3. 旧システム向けのルートは 2026-07-11 に削除済み(停止自体は 2026-07-06。未削除で残っている `catchup.catchup-feed.com` の扱いは legacy-shutdown.md 4章)。`pulse.catchup-feed.com`(ダッシュボード)は現用なので残す。
 4. **レートリミットの前提(Tunnel 経由の公開では必須)**: `deploy/.env` に
    `RATE_LIMIT_TRUST_PROXY=true` と `RATE_LIMIT_TRUSTED_PROXIES=127.0.0.1/32`
    が入っていること(env.pi.example の既定値。2章で写していれば設定済み)。
@@ -328,8 +337,28 @@ systemctl status pulse.service   # active (exited) なら正常
 
 切替後の動作確認は 7 章と同じ(health・公開フィード・私的フィード・worker ログ)。
 
+## 11. 運用 Tips
+
+- **build cache の掃除**: `build` を繰り返すと Docker の build cache が数 GB 単位で溜まる。
+  稼働中のコンテナと現用イメージには影響しないので、ディスクが逼迫したら回収してよい。
+
+  ```bash
+  docker system df       # Build Cache 行の RECLAIMABLE を確認
+  docker builder prune   # 確認プロンプトあり(全キャッシュを消すなら -a)
+  ```
+
+  2026-08-15 の棚卸しでは build cache 4.1GB のうち 3.3GB を回収し、**ディスク使用率が 43% → 32%**
+  になった。次回ビルドはキャッシュ消失分だけ遅くなるが、Pi ネイティブ arm64 ビルドでも実用範囲。
+- 使われていないイメージは `docker image prune -a`(使用中のイメージは消えない)。ただし
+  **直前のビルドのイメージ(ロールバック用)と golang ビルドベースも消える**ため、
+  `docker builder prune` と併用すると次回は完全なフルビルドになる。ロールバック先を残したい
+  ときはタグ無しイメージだけを落とす `docker image prune`(`-a` なし)に留める。
+- 初代 catchup-feed の残骸(systemd unit・logrotate・旧バックアップ・Cloudflare の旧ホスト名)は
+  `legacy-shutdown.md` 8章のチェックリストで一巡する。
+
 ## トラブル時の見方(監視スタックは無い。これで足りる)
 
 - コンテナ状態: `docker compose -f compose.yml -f deploy/compose.pi.yml --env-file deploy/.env ps` / `docker logs catchup-feed-server` / `docker logs catchup-feed-worker`
 - 要約フォールバックの発生: `summaries.provider` を見る(`docker exec -it catchup-feed-postgres psql -U catchup-feed -c "select provider, count(*) from summaries group by 1"`)
 - 朝エピソードが無い日: 正常系の欠番(Mac 不在)か、radio の失敗通知(notify_error のメール、D-29)かをまず確認
+- `systemctl --failed` に出る `fwupd.service` / `fwupd-refresh.service` / `logrotate.service` は **OS 由来で pulse とは無関係**(pulse 側の unit は `pulse.service` だけ)。`logrotate.service` は `/var/log/unattended-upgrades/*.log` を読めず Permission denied で落ちる Ubuntu 側の既知問題。これらのせいで `systemctl is-system-running` は恒常的に `degraded` を返すので、**`degraded` 単体を障害の根拠にしない**(必ず `systemctl --failed` の unit 名まで見る)。ここに `catchup-feed.service` など初代の unit が出ていたら legacy-shutdown.md 3章の `reset-failed` を打つ

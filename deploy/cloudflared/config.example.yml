@@ -6,6 +6,12 @@
 # radio.catchup-feed.com のエントリを追記する。tunnel / credentials-file は
 # 既存の値をそのまま使うこと(このファイルは丸ごと置き換え用ではない)。
 #
+# ただし現用の Tunnel は remote managed で、実効設定は Cloudflare ダッシュボードの
+# Public Hostname 側にある。**このファイルは config ファイル運用の場合の例**であり、
+# 現状のホスト名の追加・削除はダッシュボードで行う(pi.md 5章の注を必ず読むこと。
+# Pi 上のローカル ingress は陳腐化しており、そのまま config ファイル運用へ戻すと
+# フィード配信が 404 に落ちる)。
+#
 # 公開してよいルートの確認(§5.1 / C-5):
 #   radio.catchup-feed.com → pulse server の「公開リスナー」(127.0.0.1:8090)。
 #   このリスナーが提供するのは
