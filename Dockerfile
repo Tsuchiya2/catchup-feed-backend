@@ -41,9 +41,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # ────────────────────────────────────────────────────────────
 FROM deps AS dev
 
-# 開発ツールの追加インストール
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go install github.com/swaggo/swag/cmd/swag@latest
+# swag はイメージに焼き込まない。dev コンテナでの生成は Makefile の
+# `make swagger`(= go run github.com/swaggo/swag/cmd/swag)がマウントした
+# ツリーの go.mod 経由で解決するため、ここで固定バージョンを二重管理しない
+# (swag のバージョンは go.mod の tool ディレクティブが唯一の正、C-19)。
 
 # ソースコードのコピー（開発時にマウント可能）
 WORKDIR /app
@@ -60,10 +61,18 @@ FROM deps AS build
 COPY . .
 
 # Swagger ドキュメント生成
+# 生成物 docs/docs.go は cmd/server がブランクインポートするため、この
+# ステップは本番バイナリの一部を作っている(= 本番ビルド経路)。ツールの
+# バージョンは go.mod の tool ディレクティブ(swag v1.16.6)一箇所で固定し、
+# `go install ...@latest` は使わない: CI(固定)と本番(浮動)で別バージョンが
+# 走り得るうえ、上流の非互換な生成物が出た日にコード変更ゼロで Pi の
+# 再ビルドが落ちる。副次効果として、このステップの取得物が go.mod / go.sum で
+# 検証されたグラフだけになる(@latest の go install は go.sum の外側からの
+# 取得)。mod キャッシュが温まっているビルダー(Pi のローカルビルド)では
+# ネットワーク取得自体がゼロになる。C-19。
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go install github.com/swaggo/swag/cmd/swag@latest && \
-    $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
+    go tool swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
 # ビルド情報の埋め込み（ARG）
 ARG VERSION=dev
