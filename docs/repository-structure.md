@@ -306,7 +306,13 @@ Pi 実機側の残骸(systemd unit・logrotate・旧 cron・旧バックアッ�
 
 ## 9. コード規模
 
-2026-08-13 時点の実測に、D-44(2026-08-15)で削除した `internal/config`(本体 108 行 / テスト 448 行・1 ファイル)の差分を反映した値です。テストを除く行数です。
+2026-08-15 時点の実測です。**計測範囲は `internal/` + `pkg/` + `cmd/` 配下の `*.go`** で、「行数」列はテスト(`*_test.go`)を除いた値、最下行の「テスト」だけが `*_test.go` を数えた値です。再現コマンド:
+
+```bash
+find internal pkg cmd -name '*.go' ! -name '*_test.go' -exec cat {} + | wc -l   # 本体合計
+find internal pkg cmd -name '*_test.go' | wc -l                                 # テストファイル数
+find internal pkg cmd -name '*_test.go' -exec cat {} + | wc -l                   # テスト行数
+```
 
 | 区分 | パッケージ | 行数 |
 |---|---|---|
@@ -325,7 +331,7 @@ Pi 実機側の残骸(systemd unit・logrotate・旧 cron・旧バックアッ�
 | 共通 | `internal/pkg` `common` `service` `utils` | 1,324 |
 | 公開 | `pkg/` | 770 |
 | エントリポイント | `cmd/` | 1,387 |
-| **本体合計** | | **25,905** |
-| テスト | 161 ファイル | 47,835 |
+| **本体合計** | | **25,913** |
+| テスト | 161 ファイル | 47,930 |
 
 interface 定義は 47 本、テスト内のモック・スタブは 65 個です。
