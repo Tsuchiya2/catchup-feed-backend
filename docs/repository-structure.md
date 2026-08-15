@@ -79,7 +79,7 @@ catchup-feed-backend/
 | `.air.toml` | ホットリロード設定(開発コンテナ) |
 | `go.mod` / `go.sum` | 依存定義。直接依存は 14 パッケージのみ |
 
-主要な Make ターゲット: `setup` / `dev-up` / `dev-down` / `dev-shell` / `build` / `test` / `test-unit` / `test-coverage` / `lint` / `lint-fix` / `fmt` / `swagger` / `admin-hash` / `db-reset` / `db-shell` / `logs` / `ci` / `clean`(一覧は `make help`)。
+主要な Make ターゲット: `setup` / `dev-up` / `dev-down` / `dev-shell` / `build` / `test` / `test-unit` / `test-coverage` / `lint` / `lint-fix` / `fmt` / `swagger` / `swagger-host` / `admin-hash` / `db-reset` / `db-shell` / `logs` / `ci` / `clean`(一覧は `make help`)。`swagger-host` だけが Docker を使わずホストの Go で Swagger を生成する退避経路です(Docker 停止時用)。
 
 ---
 
@@ -296,7 +296,7 @@ DB を必要とするテストは `internal/infra/db/*_integration_test.go` に�
 |---|---|---|
 | `architecture.md` | 層構成・依存ルール・データフロー・セキュリティ・技術選定 | 手書き |
 | `repository-structure.md` | 本ドキュメント | 手書き |
-| `swagger.json` `swagger.yaml` `docs.go` | API 仕様 | `make swagger` の生成物 |
+| `swagger.json` `swagger.yaml` `docs.go` | API 仕様 | `make swagger`(Docker)/ `make swagger-host`(ホスト)の生成物。gitignore 済みだが `cmd/server` が `docs.go` をブランクインポートするため、clone 後に1度生成しないと `./...` のビルドが通らない |
 
 初代 catchup-feed(EDAF 体制期)の `development-guidelines.md` / `functional-design.md` /
 `product-requirements.md` / `glossary.md` は 2026-08-13 に削除しました。gRPC・サーキット
@@ -311,8 +311,12 @@ DB を必要とするテストは `internal/infra/db/*_integration_test.go` に�
 
 | ファイル | 内容 |
 |---|---|
-| `ci.yml` | 5 ジョブ。**Test**(pgvector サービスコンテナ → `go mod verify` → Swagger 生成 → `go test -race` → Codecov)/ **Lint**(Swagger 生成 → golangci-lint v2.12.2)/ **Build**(server / worker のビルドとバイナリサイズ表示)/ **Security Scan**(gosec → SARIF)/ **Dependency Vulnerability Scan**(govulncheck → SARIF) |
+| `ci.yml` | 6 ジョブ。**Test**(pgvector サービスコンテナ → `go mod verify` → Swagger 生成 → `go test -race` → Codecov)/ **Lint**(Swagger 生成 → golangci-lint v2.12.2)/ **Shell Script Lint**(shellcheck v0.11.0 で `deploy/scripts/*.sh` を `-x` 付き検査)/ **Build**(server / worker のビルドとバイナリサイズ表示)/ **Security Scan**(Swagger 生成 → 型検査(`go build ./...`)→ gosec → SARIF)/ **Dependency Vulnerability Scan**(Swagger 生成 → govulncheck。終了コード 0/3 は緑、それ以外はスキャン不成立として赤 → SARIF)。Swagger 生成は Go を使う全ジョブに必要(未生成だと `cmd/server` が型検査を通らず、gosec は SSA 解析を、govulncheck は解析自体をスキップする) |
 | `docker.yml` | QEMU + buildx によるマルチアーキイメージのビルド(Pi の arm64 向け) |
+
+**セキュリティ系2ジョブの赤/緑の契約は 2026-08-15 に変わりました**。以前は gosec の `-no-fail` と各ステップの `continue-on-error` により**何が起きても緑**でしたが、現在は「**検出では緑、スキャンが不成立なら赤**」です。指摘・脆弱性の検出で個人開発の CI を止めない方針は変えず、gosec が SSA 解析を黙って飛ばす条件(`go build ./...` が通らない)と、govulncheck が解析自体に失敗した場合(終了コード 0 / 3 以外)だけを落とします。**緑を「スキャンが走って問題なし」と読んでよいのはこの契約があるため**で、これが無かった間は「動いていないのに緑」を実際に見逃していました。
+
+ただし **SARIF アップロードの失敗は今も緑**です(両ジョブの Upload SARIF ステップには `continue-on-error: true` を残しています)。Code scanning が有効でない環境でも CI を止めないためで、赤くするのは**解析が成立しなかったとき**だけ、という切り分けです。
 
 ---
 

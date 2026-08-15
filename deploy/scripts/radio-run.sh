@@ -143,6 +143,9 @@ voicevox_up() {
     curl -sf --max-time 3 "$VOICEVOX_URL/version" >/dev/null 2>&1
 }
 
+# 直後の `trap cleanup EXIT` から呼ばれる。shellcheck は trap 経由の呼び出しを
+# 追えず「未使用関数」と誤判定するため、この関数に限り抑制する。
+# shellcheck disable=SC2329
 cleanup() {
     if [ -n "$ENGINE_PID" ]; then
         log "stopping VOICEVOX Engine (pid $ENGINE_PID)"

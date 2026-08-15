@@ -57,6 +57,9 @@ fi
 # TRANSCRIBE_BRIDGE_UNTIL は trap 発火時に評価されるので、後で読み込む
 # ~/pulse/.env の値も反映される。手動実行で不要なら Ctrl-C(worker →
 # ブリッジの順に切れる)。
+# 下の `trap bridge_to_radio EXIT` から呼ばれる。shellcheck は trap 経由の
+# 呼び出しを追えず「未使用関数」と誤判定するため、この関数に限り抑制する。
+# shellcheck disable=SC2329
 bridge_to_radio() {
     local bridge_until bridge_epoch now_epoch
     bridge_until="${TRANSCRIBE_BRIDGE_UNTIL:-04:32}"

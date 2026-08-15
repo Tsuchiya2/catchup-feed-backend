@@ -2,10 +2,10 @@
 # catchup-feed - Makefile for Docker Development
 # ============================================================
 # All development tasks run inside Docker containers
-# No local Go installation required!
+# No local Go installation required! (except swagger-host)
 # ============================================================
 
-.PHONY: help dev-up dev-down dev-shell test lint fmt swagger admin-hash build clean logs
+.PHONY: help dev-up dev-down dev-shell test lint fmt swagger swagger-host admin-hash build clean logs
 
 # Default target
 .DEFAULT_GOAL := help
@@ -101,6 +101,17 @@ fmt: ## Format code with gofmt inside Docker
 swagger: ## Generate Swagger docs (docs/) inside Docker
 	@echo "📝 Generating Swagger docs in Docker..."
 	$(COMPOSE_DEV) --profile dev run --rm --no-deps dev sh -c "go run github.com/swaggo/swag/cmd/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal"
+	@echo "✅ Swagger docs generated"
+
+# swagger との使い分け: swagger は Docker の dev コンテナ内で生成する通常経路。
+# swagger-host は Docker を使わずホストの Go で生成する退避経路で、Docker が
+# 落ちている環境でホストの `go build ./...` / `go test ./...` を叩く前に必要
+# (cmd/server が swag 生成物の docs をブランクインポートし、docs/docs.go は
+# .gitignore 済みのため未生成だとビルドが失敗する)。go tool は go.mod の
+# tool ディレクティブで固定した swag を使うので CI と同じバージョンになる。
+swagger-host: ## Generate Swagger docs on the host without Docker (needed before host-side go build ./...)
+	@echo "📝 Generating Swagger docs on the host..."
+	go tool swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 	@echo "✅ Swagger docs generated"
 
 admin-hash: ## Generate bcrypt hash for ADMIN_PASSWORD_HASH (reads password from stdin)
