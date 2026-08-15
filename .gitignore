@@ -12,9 +12,10 @@ data/episodes/*
 data/books/*
 !data/books/.gitkeep
 
-# Environment-specific configs
+# Environment-specific configs(初代の遺物。D-44 で config/ ごと削除したが、
+# 開発機のローカルには development/staging/production.env が残っている。
+# この行がそれらを無視する唯一のルールなので、公開事故を防ぐため残す)
 config/environments/*.env
-!config/environments/README.md
 
 # Build outputs
 /api
