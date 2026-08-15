@@ -72,10 +72,11 @@ fi
 # DATABASE_URL のホスト(tailnet MagicDNS)に届かなければ tailscale up で
 # 自己修復を試みる。復旧しなくても radio へ進む(失敗すれば従来どおり
 # 非ゼロ終了 → SMTP 直送。§8: radio 自体のリトライはしない)
-# 対応するのは URL 形式のみ。keyword DSN(host=... port=...)の場合は抽出
-# できず、デフォルトホスト・ポートへのフォールバックになる
-TAILNET_HOST="ubuntu.tailf91c78.ts.net"
-TAILNET_PORT="5433"
+# 接続先は DATABASE_URL からのみ導出する(実ホスト名をこの資材に持たない)。
+# 対応するのは URL 形式のみ。未設定や keyword DSN(host=... port=...)では
+# 抽出できないので、その日はプリフライトを WARN 付きでスキップする
+TAILNET_HOST=""
+TAILNET_PORT=""
 _hp="$(printf '%s' "${DATABASE_URL:-}" | sed -nE 's#^[^:/]+://([^@/]*@)?([^/?]+).*$#\2#p')"
 if [ -n "$_hp" ]; then
     TAILNET_HOST="${_hp%%:*}"
@@ -94,7 +95,14 @@ tailnet_reachable() {
     nc -z -G 3 "$TAILNET_HOST" "$TAILNET_PORT" >/dev/null 2>&1
 }
 
-if tailnet_reachable; then
+if [ -z "$TAILNET_HOST" ]; then
+    # 導出できない日はプリフライト(自己修復)だけを諦めて radio へ進む。
+    # ここで exit すると下の「非ゼロ終了 → SMTP 直送」ハンドラまで到達せず
+    # 通知が無音になる(2026-08-07 障害と同じ失敗モード)ため、落とさない。
+    # tailnet が実際に切れていれば radio が非ゼロ終了して直送アラートが飛び、
+    # Mac 朝チェック(morning-check.sh)も独立に私的フィード断を検知する
+    log "WARN: tailnet preflight: DATABASE_URL からホストを導出できない(未設定か keyword DSN)。プリフライトをスキップして radio へ進む"
+elif tailnet_reachable; then
     log "tailnet preflight: $TAILNET_HOST reachable"
 else
     log "tailnet preflight: unreachable, attempting tailscale up"

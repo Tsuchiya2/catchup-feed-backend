@@ -102,13 +102,14 @@ radio が非ゼロ終了した朝は、DB(jobs テーブル)経由の通知に�
 アラートメールが飛ぶ(2026-08-07 障害: tailnet 断で notify_error を積めず7日間沈黙、
 の恒久対策)。SMTP 未設定・送信失敗でも radio の exit code は変わらない。
 
-`~/pulse/.env` を編集(**値はファイルに直接記入。チャット等に貼らない**)。特に注意する3キー:
+`~/pulse/.env` を編集(**値はファイルに直接記入。チャット等に貼らない**)。特に注意する4キー:
 
 | キー | 意味 |
 |---|---|
-| `DATABASE_URL` | Pi の PostgreSQL を **tailnet 越し**に指す(`<pi の MagicDNS 名>:5433`、DB 名 `catchup-feed`)。パスワードは Pi 側 `deploy/.env` の `POSTGRES_PASSWORD` と同じ値 |
+| `DATABASE_URL` | Pi の PostgreSQL を **tailnet 越し**に指す(`<pi の MagicDNS 名>:5433`、DB 名 `catchup-feed`)。パスワードは Pi 側 `deploy/.env` の `POSTGRES_PASSWORD` と同じ値。**URL 形式で書く**(radio-run.sh の tailnet プリフライトがここからホスト名を導出する。keyword DSN でも radio は動くが自動再接続が無効になる)。パスワードに `@` 等が入る場合はパーセントエンコードする |
 | `RADIO_RSYNC_DEST` | `user@<pi の MagicDNS 名>:/home/<pi-user>/catchup-feed/episodes`。**Pi のホスト側パス**(pi.md 1章の `EPISODES_DIR` と同じ) |
 | `RADIO_EPISODES_DIR` | `/data/episodes` 固定。DB に記録される **Pi のコンテナ内パス**(compose のマウントが対応を固定)。上と混同しない |
+| `PULSE_PRIVATE_FEED_CHECK_URL` | 朝チェック(10b 章)の私的フィード確認先: `http://<pi の MagicDNS 名>:8081/private/feed.xml`。**既定値は無い**ので、プレースホルダのまま放置すると毎朝「tailnet 監視が無効」のアラートが飛ぶ |
 
 rsync は Tailscale ホスト名経由のみ。公開経路(radio.catchup-feed.com)にファイル転送は通さない。
 
@@ -197,9 +198,11 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.pulse.backup.plist
 バックアップの後(05:45)に Mac から2系統を外形チェックし、**異常時のみ**メールで知らせる(`deploy/scripts/morning-check.sh`):
 
 1. **公開フィード**(Cloudflare Tunnel 経由、既定 `https://radio.catchup-feed.com/`)— 200/401 を正常とみなす(401 はトークン無しアクセスへの正規応答。スクリプトにフィードトークンを埋め込まないための設計)。「Pi は生きているが配信だけ死んでいる」故障モード(2026-07-22 停電障害の 502)を最大1日遅れで検知する。
-2. **私的フィード**(tailnet 経由 :8081、既定 `http://ubuntu.tailf91c78.ts.net:8081/private/feed.xml`、env `PULSE_PRIVATE_FEED_CHECK_URL`)— 200 のみ正常。tailnet 経路の断を検知する(2026-08-07 障害: Pi のノードキー 180 日失効で Mac→Pi 全断。公開面は生きていたため旧チェックでは7日間気づけなかった、の恒久対策)。
+2. **私的フィード**(tailnet 経由 :8081)— 200 のみ正常。tailnet 経路の断を検知する(2026-08-07 障害: Pi のノードキー 180 日失効で Mac→Pi 全断。公開面は生きていたため旧チェックでは7日間気づけなかった、の恒久対策)。チェック先は env `PULSE_PRIVATE_FEED_CHECK_URL` で**必ず指定する**(実ホスト名を資材に持たないため既定値は無い)。**未設定のまま、あるいは `CHANGEME` を含むプレースホルダのまま走ると「tailnet 監視が無効」としてアラートが飛ぶ** — 黙ってスキップすると上記の7日間沈黙が再現するため。
 
 2系統は独立に判定し(公開 OK でも私的 NG ならアラート)、メール件名で公開/私的どちらの断かを区別する。
+
+前提として `~/pulse/.env` の `PULSE_PRIVATE_FEED_CHECK_URL` を**実際の Pi の MagicDNS 名に書き換えておく**(6章の表を参照。`cp` 直後はプレースホルダのままなので、エディタで該当行を編集する。ホスト名は `DATABASE_URL` / `RADIO_RSYNC_DEST` と同じ)。
 
 ```bash
 # 配置(6章の bin/ と同じ流儀。alert-mail.sh は 6章で配置済みならそのままでよい)
