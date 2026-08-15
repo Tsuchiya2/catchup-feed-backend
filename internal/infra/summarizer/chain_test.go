@@ -1,10 +1,13 @@
 package summarizer_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -350,8 +353,14 @@ func TestNewChainFromEnv_Composition(t *testing.T) {
 			t.Setenv("GEMINI_API_KEY", tt.geminiKey)
 			t.Setenv("GROQ_API_KEY", tt.groqKey)
 			t.Setenv("OLLAMA_ENABLED", tt.ollamaEnabled)
+			// D-41 で Pi の .env に実際に residual していた旧既定値を入れる。
+			// 既定値と異なる値であることが重要 — 下の assert が「起動ログは
+			// 定数ではなくホストの実効設定を出す」ことを検証できる(開発機の
+			// ambient GROQ_MODEL の遮断も兼ねる)。
+			t.Setenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-			chain, err := summarizer.NewChainFromEnv(nil)
+			var logs bytes.Buffer
+			chain, err := summarizer.NewChainFromEnv(slog.New(slog.NewJSONHandler(&logs, nil)))
 
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
@@ -360,6 +369,23 @@ func TestNewChainFromEnv_Composition(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantOrder, chain.ProviderNames())
+
+			// D-41: 実効 Groq モデルの確認手段は起動ログ
+			// "summarizer provider configured" の model フィールド、と PR #111 が
+			// 運用手順に書いた。このログの存在理由(chain.go)は「ホストの
+			// GROQ_MODEL が古い既定値のまま残る env ドリフトを起動ログだけで検知
+			// する」ことなので、msg 名・フィールド名・並び順に加えて **ホストの
+			// 実効値が出ること** を1本の連結部分文字列で固定する。上で GROQ_MODEL
+			// を既定と異なる値に倒しているため、実効値ではなく defaultGroqModel を
+			// 出すようになった編集(= ログが「ドリフト無し」と嘘をつく。PR #111 の
+			// 障害の再演)もここで落ちる。既定値そのものの固定は
+			// TestLoadGroqConfig の責務。
+			if slices.Contains(tt.wantOrder, summarizer.ProviderGroq) {
+				assert.Contains(t, logs.String(),
+					`"msg":"summarizer provider configured","provider":"groq","model":"llama-3.3-70b-versatile"`)
+			} else {
+				assert.NotContains(t, logs.String(), "summarizer provider configured")
+			}
 		})
 	}
 }

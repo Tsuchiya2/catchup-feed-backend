@@ -215,10 +215,18 @@ go build -o radio ./cmd/radio
 
 | 変数 | 説明 |
 |---|---|
-| `GEMINI_API_KEY` / `GEMINI_MODEL` | 第1段(無料枠)。キー未設定なら連鎖から除外 |
-| `GROQ_API_KEY` / `GROQ_MODEL` | 第2段(無料枠)。キー未設定なら連鎖から除外 |
-| `OLLAMA_ENABLED` / `OLLAMA_HOST` / `OLLAMA_MODEL` | 最終段(ローカルフォールバック) |
-| `SUMMARIZER_TIMEOUT` / `SUMMARIZER_CHAR_LIMIT` | 要約タイムアウト・入力文字数上限 |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | 第1段(無料枠)。キー未設定なら連鎖から除外。モデルは既定 `gemini-2.5-flash` |
+| `GROQ_API_KEY` / `GROQ_MODEL` | 第2段(無料枠)。キー未設定なら連鎖から除外。モデルは既定 `openai/gpt-oss-120b`(D-41) |
+| `OLLAMA_ENABLED` / `OLLAMA_HOST` / `OLLAMA_MODEL` | 最終段(ローカルフォールバック)。`OLLAMA_ENABLED` は未設定=有効で、無効化できるのは ParseBool が false と解釈する値(`false` / `FALSE` / `0` / `f` 等)のみ。解釈できない値は警告のうえ有効へ倒す(fail-open)。ホストは既定 `http://localhost:11434` — **コンテナ内では worker 自身を指す**ので、Docker Desktop(Mac)からホストの Ollama に届かせるには `http://host.docker.internal:11434`。モデルは既定 `qwen2.5:7b` |
+| `SUMMARIZER_TIMEOUT` / `SUMMARIZER_CHAR_LIMIT` | 要約タイムアウト(既定 `60s`。不正値は警告して既定へ戻す)・要約の文字数上限(既定 `900`、許容 100〜5000。範囲外・不正値は警告して既定へ戻す) |
+
+> **記事本文の切り詰め基準は環境変数ではありません**(出力側の上限は上表の `SUMMARIZER_CHAR_LIMIT`)。
+> 記事本文はプロンプト化の前に `maxInputChars = 10000`(`internal/infra/summarizer/provider.go`)で
+> 切り詰められます。これは**文字数ではなく byte 数**で、切断位置は UTF-8 のルーン境界まで戻されます
+> (日本語本文なら概ね 3,300 文字強)。この 10,000 byte は本文に対する基準にすぎず、切り詰め通知と
+> プロンプト前置文が足されるぶん、**プロバイダに渡るプロンプト全体は 10,000 byte を超えます**。
+> 長すぎる記事の要約が尻切れに見えるときはここを疑う。台本生成に使う `Generate` は切り詰めを
+> 行いません(プロンプト長は呼び出し側の責任 — D-3)。
 
 ### worker(クロール・ジョブ)
 
