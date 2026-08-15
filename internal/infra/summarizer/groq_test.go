@@ -25,6 +25,22 @@ func groqSuccessBody(text string) string {
 	return string(body)
 }
 
+// groqReasoningBody builds a response in the shape returned by reasoning models
+// such as the default openai/gpt-oss-120b: the thought process is isolated in
+// message.reasoning, a field the provider does not decode.
+func groqReasoningBody(content, reasoning string) string {
+	body, _ := json.Marshal(map[string]any{
+		"choices": []map[string]any{
+			{"message": map[string]any{
+				"role":      "assistant",
+				"content":   content,
+				"reasoning": reasoning,
+			}},
+		},
+	})
+	return string(body)
+}
+
 func newGroq(t *testing.T, baseURL string, opts summarizer.Options) *summarizer.Groq {
 	t.Helper()
 	return summarizer.NewGroq(summarizer.GroqConfig{
@@ -59,6 +75,59 @@ func TestGroq_Summarize_Success(t *testing.T) {
 	assert.Contains(t, string(gotBody), `"model":"openai/gpt-oss-120b"`)
 	assert.Contains(t, string(gotBody), "500文字以内で要約")
 	assert.Contains(t, string(gotBody), "public article body")
+}
+
+// TestGroq_Summarize_ReasoningField pins the premise D-41 chose the default
+// model on: the response decoder ignores unknown fields, so message.reasoning is
+// discarded and only message.content becomes the summary. A model that moves the
+// answer into reasoning (leaving content empty) must fail loudly instead of
+// returning the thought process as a summary.
+func TestGroq_Summarize_ReasoningField(t *testing.T) {
+	const reasoning = "We need a Japanese summary. First, identify the key claim... <think>"
+
+	tests := []struct {
+		name        string
+		content     string
+		wantSummary string
+		wantErrSub  string
+	}{
+		{
+			name:        "reasoning is dropped and content is the summary",
+			content:     "Groq からの日本語要約。",
+			wantSummary: "Groq からの日本語要約。",
+		},
+		{
+			name:       "answer moved into reasoning is not salvaged",
+			content:    "",
+			wantErrSub: "empty response",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(groqReasoningBody(tt.content, reasoning)))
+			}))
+			defer srv.Close()
+
+			g := newGroq(t, srv.URL, summarizer.Options{CharacterLimit: 900, Timeout: 5 * time.Second})
+
+			summary, err := g.Summarize(context.Background(), "public article body")
+
+			if tt.wantErrSub != "" {
+				require.Error(t, err)
+				assert.Empty(t, summary)
+				assert.Contains(t, err.Error(), tt.wantErrSub)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantSummary, summary)
+			assert.NotContains(t, summary, reasoning)
+			assert.NotContains(t, summary, "<think>")
+		})
+	}
 }
 
 func TestGroq_Summarize_Errors(t *testing.T) {
@@ -151,7 +220,7 @@ func TestLoadGroqConfig(t *testing.T) {
 		wantModel string
 	}{
 		{"defaults", "key", "", "openai/gpt-oss-120b"},
-		{"model override", "key", "openai/gpt-oss-20b", "openai/gpt-oss-20b"},
+		{"model override", "key", "llama-3.1-8b-instant", "llama-3.1-8b-instant"},
 		{"empty key preserved", "", "", "openai/gpt-oss-120b"},
 	}
 

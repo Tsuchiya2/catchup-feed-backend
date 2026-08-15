@@ -132,8 +132,11 @@ func NewChainFromEnv(logger *slog.Logger) (*Chain, error) {
 	}
 	chain.logger = logger
 
+	// groq_model はホストの GROQ_MODEL が古い既定値のまま残る env ドリフトを
+	// 起動ログだけで検知するために出す(D-41 のモデル差し替えで実際に踏んだ)。
 	logger.Info("summarizer fallback chain configured",
 		slog.String("order", strings.Join(chain.ProviderNames(), " -> ")),
+		slog.String("groq_model", groqCfg.Model),
 		slog.Int("character_limit", opts.CharacterLimit),
 		slog.Duration("timeout", opts.Timeout))
 
