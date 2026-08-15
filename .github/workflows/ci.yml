@@ -179,6 +179,9 @@ jobs:
   # "package main has type errors, skipping SSA analysis" で解析対象から
   # 抜け落ち、-no-fail のため緑のまま気付けない。生成物はワークスペース経由で
   # コンテナアクションからも見えるので、事前に生成しておく。
+  # 再発防止: gosec はコンテナアクションで stdout を後段のステップから
+  # 検査できないため、「SSA 解析がスキップされる条件」そのものを前段で潰す
+  # (全パッケージが型検査を通ることを確認して落とす)。
   # ──────────────────────────────────────────────────────────
   security:
     name: Security Scan
@@ -203,6 +206,12 @@ jobs:
           go install github.com/swaggo/swag/cmd/swag@v1.16.6
           $(go env GOPATH)/bin/swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
 
+      # 型検査を通らないパッケージがあると gosec は -no-fail のまま黙って
+      # SSA 解析を飛ばす。ここで落としておけば「解析されなかったのに緑」に
+      # ならない(2026-08-15: swag 未生成で cmd/server が抜けていた)。
+      - name: Verify packages type-check (gosec の SSA 解析の前提)
+        run: go build ./...
+
       - name: Run Gosec Security Scanner
         uses: securego/gosec@master
         with:
@@ -216,11 +225,15 @@ jobs:
 
   # ──────────────────────────────────────────────────────────
   # 依存関係の脆弱性スキャン
-  # govulncheck は ./... をビルドできないと解析そのものを行わない。swag 生成物
+  # govulncheck は ./... をロードできないと解析そのものを行わない。swag 生成物
   # が無いと cmd/server の docs ブランクインポートで exit 1 になり、
   # continue-on-error に飲まれて「緑だがスキャンはゼロ件も走っていない」
   # 状態になる(SARIF も空で upload が JSON エラーになる)。他ジョブと同じ
-  # Swagger 生成を前置してこれを防ぐ。
+  # Swagger 生成を前置し、さらに終了コードで両者を区別する:
+  #   0 = 脆弱性なし / 3 = 脆弱性あり → 緑のまま(検出で個人開発の CI を
+  #   止めない)。それ以外(1 = ロード失敗など)= スキャンが成立していない
+  #   → 落とす。continue-on-error 任せだとこの区別ができず、実際に
+  #   2026-08-15 まで「動いていないのに緑」を見逃した。
   # ──────────────────────────────────────────────────────────
   vulnerability-scan:
     name: Dependency Vulnerability Scan
@@ -247,13 +260,19 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
+      # `cmd; c=$?` は使えない: run: の既定シェルは `bash -e` なので、
+      # 非ゼロ終了の時点で $? を拾う前にステップが落ちる。`|| c=$?` で受ける。
       - name: Run govulncheck
-        run: govulncheck -format text ./...
-        continue-on-error: true  # 脆弱性検出時も終了コード3で失敗しないように
+        run: |
+          c=0
+          govulncheck -format text ./... || c=$?
+          [ "$c" -eq 0 ] || [ "$c" -eq 3 ] || exit 1
 
       - name: Run govulncheck (SARIF output)
-        run: govulncheck -format sarif ./... > govulncheck-results.sarif
-        continue-on-error: true
+        run: |
+          c=0
+          govulncheck -format sarif ./... > govulncheck-results.sarif || c=$?
+          [ "$c" -eq 0 ] || [ "$c" -eq 3 ] || exit 1
 
       - name: Upload govulncheck SARIF
         uses: github/codeql-action/upload-sarif@v4
