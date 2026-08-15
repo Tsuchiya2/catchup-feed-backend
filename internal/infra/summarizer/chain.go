@@ -113,6 +113,11 @@ func NewChainFromEnv(logger *slog.Logger) (*Chain, error) {
 	groqCfg := LoadGroqConfig(opts)
 	if groqCfg.APIKey != "" {
 		providers = append(providers, NewGroq(groqCfg))
+		// ホストの GROQ_MODEL が古い既定値のまま残る env ドリフトを起動ログだけで
+		// 検知するために出す(D-41 のモデル差し替えで実際に踏んだ)。
+		logger.Info("summarizer provider configured",
+			slog.String("provider", ProviderGroq),
+			slog.String("model", groqCfg.Model))
 	} else {
 		logger.Info("summarizer provider excluded: GROQ_API_KEY not set",
 			slog.String("provider", ProviderGroq))
@@ -132,11 +137,8 @@ func NewChainFromEnv(logger *slog.Logger) (*Chain, error) {
 	}
 	chain.logger = logger
 
-	// groq_model はホストの GROQ_MODEL が古い既定値のまま残る env ドリフトを
-	// 起動ログだけで検知するために出す(D-41 のモデル差し替えで実際に踏んだ)。
 	logger.Info("summarizer fallback chain configured",
 		slog.String("order", strings.Join(chain.ProviderNames(), " -> ")),
-		slog.String("groq_model", groqCfg.Model),
 		slog.Int("character_limit", opts.CharacterLimit),
 		slog.Duration("timeout", opts.Timeout))
 

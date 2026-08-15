@@ -13,8 +13,8 @@ const (
 	ProviderGroq = "groq"
 
 	// defaultGroqModel is a free-tier model on Groq; override with GROQ_MODEL.
-	// D-41: 旧既定 llama-3.3-70b-versatile が 2026-08-16 に decommission される
-	// ための差し替え。このモデルは推論を message.reasoning に隔離し content は
+	// D-41: 旧既定 llama-3.3-70b-versatile の 2026-08-16 廃止(Groq 側の
+	// decommission)に伴う差し替え。推論は message.reasoning に隔離され content は
 	// 要約本文のみで返るため、groqRequest / groqResponse は無変更でよい。
 	defaultGroqModel = "openai/gpt-oss-120b"
 
