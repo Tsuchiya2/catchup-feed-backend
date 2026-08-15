@@ -1,12 +1,12 @@
 # 旧 catchup-feed 停止手順(設計書 §9 の具体化)
 
-**ステータス(2026-08-15 現在)**: 旧 catchup-feed の停止は **2026-07-06 に完了済み**。1〜3・5〜7章は**実施済みの履歴**であり、そのまま再実行するものではない(特に6章は実行対象が存在しない — 章冒頭の警告を必ず読むこと)。**残る未実施は4章の `catchup.catchup-feed.com` 削除だけ**【ユーザー作業】。停止後の棚卸しで見つかった残骸の対応状況は8章のチェックリストが正。
+**ステータス(2026-08-15 現在)**: 旧 catchup-feed の停止は **2026-07-06 に完了済み**。1〜3・6〜7章は**実施済みの履歴**であり、そのまま再実行するものではない(特に6章は実行対象が存在しない — 章冒頭の警告を必ず読むこと)。**5章は「対象なし」で完了**(Archive すべき別リポジトリが存在しない。理由は5章)。**残る未実施は4章の `catchup.catchup-feed.com` 削除だけ**【ユーザー作業】。停止後の棚卸しで見つかった残骸の対応状況は8章のチェックリストが正。
 
 実施条件(着手時の判断基準。2026-07-06 に達成済み): **pulse Phase 1 の完了条件達成** — 本人+友人1名がポッドキャストアプリで1週間購読できたこと(U-14 → U-15)。
 
-方針(§9): 旧 DB から持ち越すのは sources 定義のみ。それ以外のデータ(記事・要約・通知履歴)は捨てる。旧リポジトリはアーカイブして残す。
+方針(§9): 旧 DB から持ち越すのは sources 定義のみ。それ以外のデータ(記事・要約・通知履歴)は捨てる。旧リポジトリはアーカイブして残す(**この最後の1点は対象が存在せず不要だった。5章**)。
 
-前提の確認: 旧スタックは Pi 上の旧リポジトリの compose(コンテナ名 `catchup-postgres` / `catchup-server` / `catchup-worker`、ポート 8080/5432/9091)で稼働している。後継スタック(コンテナ名 `catchup-feed-postgres` / `catchup-feed-server` / `catchup-feed-worker`、8090/8081/5433)とは完全に分離されているため、以下の手順は後継に影響しない。**旧 `catchup-*` と新 `catchup-feed-*` はハイフンの後が違うだけで紛らわしい**ので、停止コマンドを打つ前に必ずコンテナ名を確認する(落とすのは `catchup-*` の方)。
+前提の確認(いずれも当時の状態): 旧スタックは Pi 上の旧リポジトリの compose(コンテナ名 `catchup-postgres` / `catchup-server` / `catchup-worker`、ポート 8080/5432/9091)で稼働していた。後継スタック(コンテナ名 `catchup-feed-postgres` / `catchup-feed-server` / `catchup-feed-worker`、8090/8081/5433)とは完全に分離されているため、以下の手順は後継に影響しない。**旧 `catchup-*` と新 `catchup-feed-*` はハイフンの後が違うだけで紛らわしい**ので、停止コマンドを打つ前に必ずコンテナ名を確認する(落とすのは `catchup-*` の方)。
 
 ---
 
@@ -45,12 +45,20 @@ ssh <pi-user>@<pi の MagicDNS 名> \
 初代のチェックアウトは `/home/<pi-user>/catchup-feed` に置かれていた。これは**現在の pulse の親ディレクトリと同じパス**(8章「地雷」)なので、`cd` してから素の `docker compose down` を打つ形は使わない — カレントディレクトリの compose ファイルを拾って pulse を落とし得る。**プロジェクト名を明示**して落とす:
 
 ```bash
-# Pi 上。まず落とす対象の実体を確認する
-docker compose ls   # プロジェクト名。pulse は catchup-feed(現用。これは落とさない)
-docker ps           # コンテナ名でも確認(初代 catchup-* / pulse catchup-feed-*)
+# Pi 上。まず落とす対象の実体を確認する(-a を付けないと停止中のものが出ない)
+docker compose ls -a   # プロジェクト名。pulse は catchup-feed(現用。これは落とさない)
+docker ps -a           # コンテナ名でも確認(初代 catchup-* / pulse catchup-feed-*)
 
-cd ~                # compose ファイルの無いディレクトリから(カレントの compose を拾わせない)
+cd ~                   # compose ファイルの無いディレクトリから(カレントの compose を拾わせない)
 docker compose -p <初代のプロジェクト名> down   # ラベルベースで停止。ボリュームはまだ消さない(-v を付けない)
+```
+
+**`-p` で区別できないケースがある**。compose のプロジェクト名は明示 `name:` が無ければ**ディレクトリ名**が既定になり、初代のチェックアウトは `~/catchup-feed` にあった。つまり**初代のプロジェクト名も `catchup-feed` だった可能性が高く、それは現行 pulse の `compose.yml` の `name: catchup-feed` と同一**。`docker compose ls -a` の答えが `catchup-feed` しか無ければ**それは pulse なので `-p catchup-feed down` を打たない**。この場合はコンテナ名を直接指定して落とす:
+
+```bash
+# どちらの資産かをラベルで確認してから
+docker inspect --format '{{.Name}} {{index .Config.Labels "com.docker.compose.project"}}' catchup-server
+docker stop catchup-postgres catchup-server catchup-worker   # 初代のコンテナ名(pulse は catchup-feed-*)
 ```
 
 旧スタック用の crontab エントリ(backup.sh / health-check.sh / disk-usage-check.sh / docker-cleanup.sh 等、`scripts/README.md` の推奨スケジュールで入れたもの)を無効化する:
@@ -112,15 +120,19 @@ docker exec catchup-feed-server printenv FEED_PUBLIC_BASE_URL
 docker exec catchup-feed-server printenv CORS_ALLOWED_ORIGINS
 ```
 
-3つとも `catchup.` を含まなければ参照元は無い。**この確認は 2026-08-15 に実施済み**で、1 は `connect-src 'self' https://radio.catchup-feed.com`、2 は `https://radio.catchup-feed.com` だった(= `radio.` 使用で確定)。
+3つとも `catchup.` を含まなければ参照元は無い。**2026-08-15 に実施したのは 1 と 2 まで**で、1 は `connect-src 'self' https://radio.catchup-feed.com`、2 は `https://radio.catchup-feed.com` だった(= `radio.` 使用で確定)。**3 は本書に後から足した軸で未実施なので、削除の直前に打つこと。**
 
 注: 2 は `compose.yml` に `${FEED_PUBLIC_BASE_URL:-https://radio.catchup-feed.com}` の既定があるため、**この出力は「`.env` で明示設定されている」ことの証明にはならない**(実効値であることは変わらないので判定の結論は同じ)。3 は compose 側が `:?`(未設定なら起動失敗)なので `.env` の実値がそのまま出る。
 
 残っているのは **Cloudflare ダッシュボードでの Public Hostname 削除(上の手順 1)と DNS レコード削除(手順 3)だけ**【ユーザー作業】。remote managed なので `/etc/cloudflared/config.yml` の編集と cloudflared の再起動(手順 2)は不要。削除後に手順 4 の検証を行う。
 
-## 5. 旧リポジトリのアーカイブ【ユーザー作業】
+## 5. 旧リポジトリのアーカイブ → **対象なし(2026-08-15 確認)**
 
-GitHub で旧リポジトリを Archive(Settings → Archive this repository)。設計学習の参照元として残置(§9-4)。Pi 上のチェックアウトは 6章の掃除まで残してよい。
+当初の想定(§9-4)は「GitHub で旧リポジトリを Archive し、設計学習の参照元として残す」だったが、**Archive すべき別リポジトリは存在しない**。初代 catchup-feed の実装は**本リポジトリそのもの**で、pulse へは新規リポジトリを起こさず作り替えた(PR #72「pulse Phase 1」、2026-07-05 マージ。約3.8万行の削除を含む)。したがって初代のコードは**本リポジトリの git 履歴として残っており**、本リポジトリは現行なので Archive できない。
+
+同名で始まる別リポジトリ(`catchup-feed-prototype` / `catchup-feed-web`)はいずれも **private で公開リスクが無く**、pulse の運用にも関与しないため放置してよい。
+
+**この章に実施すべきユーザー作業は無い。** Pi 上のチェックアウトの扱いは6章。
 
 ## 6. 後片付け(1〜2週間の安定稼働を見てから)
 
@@ -138,8 +150,8 @@ GitHub で旧リポジトリを Archive(Settings → Archive this repository)。
 万一もう一度この掃除が必要になったら、コマンドを打つ前に対象の実体を確認する(8章「地雷」の手順):
 
 ```bash
-docker compose ls   # 落とす対象のプロジェクト名。pulse は catchup-feed(現用。これは落とさない)
-docker ps           # コンテナ名でも確認(初代 catchup-* / pulse catchup-feed-*)
+docker compose ls -a   # 落とす対象のプロジェクト名(-a で停止中も出す)。pulse は catchup-feed(落とさない)
+docker ps -a           # コンテナ名でも確認(初代 catchup-* / pulse catchup-feed-*)
 ```
 
 確認したうえで、**プロジェクト名を明示して**落とす(`cd` + 素の `docker compose` はカレントディレクトリの compose ファイルを拾うため、pulse のディレクトリにいると pulse の DB ボリュームごと消える):
@@ -149,6 +161,8 @@ cd ~                                              # compose ファイルの無�
 docker compose -p <初代のプロジェクト名> down -v   # 旧 DB 実体ごと削除
 docker image prune -a                             # 使用中(pulse)のイメージは消えない
 ```
+
+3章と同じく、**`docker compose ls -a` に `catchup-feed` しか出てこない場合それは pulse** なので `-p catchup-feed down -v` を打たない(pulse の DB ボリュームが消える)。初代だけを消すならコンテナ名・ボリューム名を直接指定し、`docker volume ls` の結果を目視してから落とす。
 
 `docker compose down -v` の前に 2章の最終スナップショットが取れていることを必ず確認。旧リポジトリのチェックアウトを消すときは、`rm -rf` の引数が pulse の親ディレクトリでないことを**打つ前に目視する**。
 
@@ -165,6 +179,8 @@ docker image prune -a                             # 使用中(pulse)のイメー
 - `/etc/systemd/system/catchup-feed.service` — 削除 + `daemon-reload` + `reset-failed`(3章)。systemd から catchup 系が消え、`systemctl --failed` に残るのは OS 由来のものだけになった
 - `/etc/logrotate.d/catchup-cron` / `/etc/logrotate.d/catchup-email` — 削除。対象のログはもう生成されない。pulse で必要なのは `pulse-health-check` のみ(pi.md 9章)
 - `/home/<pi-user>/backups/` の初代 DB ダンプ8本とログ類 — 削除(13MB → 4KB)。2章の最終スナップショットは Mac 側に退避済みで、Pi 側に保持する理由がない
+- **初代の docker 資産(コンテナ・イメージ・ボリューム)とチェックアウト** — いずれも撤去済み(6章)。2026-08-15 に `docker ps -a` / `docker compose ls -a` / `docker volume ls` / `docker image ls` で確認し、残っているのは pulse の3コンテナとその資産だけだった
+- **旧リポジトリの Archive(5章)** — 対象なし。初代の実装は本リポジトリの git 履歴そのものなので Archive すべき別リポジトリが存在しない(2026-08-15 確認)
 - あわせて `docker builder prune` で build cache 4.1GB のうち 3.3GB を回収(初代とは無関係だが同時に実施。**ディスク使用率 43% → 32%**。pi.md 11章)
 
 作業後の確認: `pulse.service` の `ActiveEnterTimestamp` が変わっていない(= pulse を再起動していない)、3コンテナ healthy、公開リスナーの無効トークン応答が 404。
@@ -180,4 +196,4 @@ docker image prune -a                             # 使用中(pulse)のイメー
 
 旧 unit の `WorkingDirectory` は `/home/<pi-user>/catchup-feed` で、これは **pulse の親ディレクトリと同一**(pulse は `~/catchup-feed/catchup-feed-backend` にチェックアウトしている)。さらに pulse の compose プロジェクト名は `compose.yml` の `name: catchup-feed` で、旧 unit 名とも一致する。この状態で `~/catchup-feed` 直下に compose ファイルが置かれると、旧 unit の `ExecStop`(`docker compose down`)が**稼働中の pulse を落とし得た**。unit を削除したので解消済み。
 
-問題は個別のファイルではなく、**unit 名・ディレクトリ名・compose プロジェクト名・コンテナ名がすべて `catchup-feed` 系で重なっている構造そのもの**である(初代 `catchup-*` と pulse `catchup-feed-*` はハイフンの後が違うだけ — 冒頭の「前提の確認」も同じ話)。名前だけでは取り違えを防げないので、**停止・削除系のコマンドは打つ前に `systemctl cat <unit>` / `docker compose ls` / `docker ps` で実体を確認する**。
+問題は個別のファイルではなく、**unit 名・ディレクトリ名・compose プロジェクト名・コンテナ名がすべて `catchup-feed` 系で重なっている構造そのもの**である(初代 `catchup-*` と pulse `catchup-feed-*` はハイフンの後が違うだけ — 冒頭の「前提の確認」も同じ話)。名前だけでは取り違えを防げないので、**停止・削除系のコマンドは打つ前に `systemctl cat <unit>` / `docker compose ls -a` / `docker ps -a` / `docker inspect` のラベルで実体を確認する**。プロジェクト名は既定でディレクトリ名になるため、**`-p` を付けても初代と pulse を区別できない場合がある**(3章参照)。
