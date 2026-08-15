@@ -1,6 +1,8 @@
 # 旧 catchup-feed 停止手順(設計書 §9 の具体化)
 
-**ステータス(2026-08-15 現在)**: 旧 catchup-feed の停止は **2026-07-06 に完了済み**。**本書の全章が完了し、未実施の手順はゼロになった** — 1〜4・6〜7章は**実施済みの履歴**であり、そのまま再実行するものではない(特に6章は実行対象が存在しない — 章冒頭の警告を必ず読むこと)。**5章は「対象なし」で完了**(Archive すべき別リポジトリが存在しない。理由は5章)。最後まで残っていた4章の `catchup.catchup-feed.com` 削除も **2026-08-15 に完了**。停止後の棚卸しで見つかった残骸の対応状況は8章のチェックリストが正で、**そこには残る確認項目(初代由来の `grafana` / `prometheus` の DNS CNAME 等)がまだある**。
+**ステータス(2026-08-15 現在)**: 旧 catchup-feed の停止は **2026-07-06 に完了済み**。**1〜7章の手順はすべて完了し、未実施の手順はゼロ** — 1〜4・6〜7章は**実施済みの履歴**であり、そのまま再実行するものではない(章冒頭の注記を必ず読むこと。特に3章と6章は実行対象が存在しない)。**5章は「対象なし」で完了**(Archive すべき別リポジトリが存在しない。理由は5章)。最後まで残っていた4章の `catchup.catchup-feed.com` 削除も **2026-08-15 に完了**。
+
+**手順とは別に、停止後の棚卸しで見つかった残骸の対応状況は8章のチェックリストが正**。そちらには**未対応が3件**残っている(ローカル ingress の陳腐化 / `~/crontab.bak-20260726` / `cloudflared-update.timer`。いずれも現状で実害は出ていない後片付け)。
 
 実施条件(着手時の判断基準。2026-07-06 に達成済み): **pulse Phase 1 の完了条件達成** — 本人+友人1名がポッドキャストアプリで1週間購読できたこと(U-14 → U-15)。
 
@@ -10,7 +12,10 @@
 
 ---
 
-## 1. sources 移植の確認(移植自体は済んでいる)
+## 1. sources 移植の確認(移植自体は済んでいる)→ **実施済み(2026-07-06)**
+
+> **この章に実行対象はもう無い。** 比較元の初代 DB(`catchup-postgres`)が存在しないため、
+> 以下の diff は再現できない。以下は履歴。
 
 sources 定義の移植先は `internal/infra/db/seeds/sources.sql` で、pulse server の起動時に自動投入済み(冪等)。ここでは**取りこぼしがないかの確認だけ**行う。
 
@@ -29,7 +34,10 @@ diff /tmp/old-sources.txt /tmp/new-sources.txt
 - 差分のうち「旧にだけあるもの」で今後も購読したいソースは、**pulse ダッシュボードから追加**する(seeds を直接編集して再起動でもよいが、運用の本線はダッシュボード)。
 - 既知の意図的な差分: Webflow / NextJS / Remix のスクレイパー依存ソースは落としてある(全行 inactive だったため。seeds/sources.sql 冒頭コメント参照)。
 
-## 2. 旧 DB の最終スナップショット(保険。ゼロ円)
+## 2. 旧 DB の最終スナップショット(保険。ゼロ円)→ **実施済み(2026-07-06)**
+
+> **この章に実行対象はもう無い。** dump 元の `catchup-postgres` は存在しない。
+> 取得済みのスナップショットは Mac 側(`~/pulse/backups/`)にあり、90 日で破棄してよい。以下は履歴。
 
 データは持ち越さない方針だが、消す前に一度だけ dump を Mac のバックアップ置き場に退避しておく(後から「あの記事の要約を見たい」となったときの保険。90 日残して消してよい):
 
@@ -40,7 +48,12 @@ ssh <pi-user>@<pi の MagicDNS 名> \
   | gzip > ~/pulse/backups/legacy-catchup-final-$(date +%Y%m%d).sql.gz
 ```
 
-## 3. 旧コンテナの停止
+## 3. 旧コンテナの停止 → **完了(コンテナ停止 2026-07-06 / cron 2026-07-26 / systemd 2026-08-15)**
+
+> **この章に実行対象はもう無い。** 初代のコンテナ・cron エントリ・systemd unit はいずれも残っていない
+> (8章で実測確認)。**ここに並ぶ `docker stop catchup-*` や
+> `sudo rm /etc/systemd/system/catchup-feed.service` を今そのまま打たないこと** — 対象は存在せず、
+> 名前だけが pulse の現用資産と重なっている(8章「地雷」)。以下は履歴。
 
 初代のチェックアウトは `/home/<pi-user>/catchup-feed` に置かれていた。これは**現在の pulse の親ディレクトリと同じパス**(8章「地雷」)なので、`cd` してから素の `docker compose down` を打つ形は使わない — カレントディレクトリの compose ファイルを拾って pulse を落とし得る。**プロジェクト名を明示**して落とす:
 
@@ -99,9 +112,18 @@ systemctl is-system-running   # degraded なら --failed の unit 名まで見�
 
 ## 4. Cloudflare Tunnel の旧ルート削除 → **完了(2026-08-15)**
 
-> **この章に実行対象はもう無い。** 初代システム向けのルートは 2026-07-11 に、最後に残っていた
-> 旧ダッシュボードの `catchup.catchup-feed.com` は **2026-08-15 にユーザーが Cloudflare
-> コンソールで削除**した。以下は当時の手順と、削除前に行った参照元確認の記録。
+> **この章に実行対象はもう無い。** ただし実際の経緯は、本章が想定していた「旧ルートだけを消す」形には
+> ならなかった。時系列は次のとおり:
+>
+> - **2026-07-06** — 初代スタック停止。Cloudflare 側のホスト名はそのまま残った
+> - **2026-07-11** — 旧ダッシュボード向けの `catchup.catchup-feed.com` が**初代ポート 8080 を向いたまま**で
+>   管理 API が 502 になっていたため、Public Hostname を pulse の 8090 へ**向け直した**(削除ではない)。
+>   **この日に削除されたルートは1本もない。** 以後 08-15 まで、pulse の公開リスナーは `radio.` と
+>   `catchup.` の**2つの入口で露出**していた
+> - **2026-08-15** — ユーザーが Cloudflare コンソールで `catchup.` の Public Hostname と DNS レコードを削除。
+>   あわせて初代由来の `grafana` / `prometheus` も DNS にレコードが無いことを実測確認(8章)
+>
+> 以下は当時の手順と、削除前に行った参照元確認の記録。
 
 1. `/etc/cloudflared/config.yml`(またはダッシュボードの Public Hostname)から**旧システム向けのルートだけ**を削除。`radio.catchup-feed.com`(pulse)と `pulse.catchup-feed.com`(ダッシュボード)は残す。
 2. `sudo systemctl restart cloudflared`
@@ -110,15 +132,17 @@ systemctl is-system-running   # degraded なら --failed の unit 名まで見�
 
 ### `catchup.catchup-feed.com` の残置(2026-08-15 判明)→ **同日削除済み**
 
-2026-07-06 の旧システム停止では旧ダッシュボード向けの `catchup.catchup-feed.com` だけが Cloudflare 側に残っていた。現用の Tunnel は remote managed(ダッシュボードの Public Hostname が正。pi.md 5章)で、Pi 上のファイルを見ても気づけないため見落とした。`AUTH_COOKIE_DOMAIN=.catchup-feed.com` はワイルドカードなので、**使っていないホスト名にも管理ダッシュボードの認証クッキーが送信される**状態だった。
+2026-07-06 の旧システム停止では旧ダッシュボード向けの `catchup.catchup-feed.com` が Cloudflare 側に残った。さらに 2026-07-11 の 502 復旧でこの Public Hostname を **pulse の 8090 へ向け直した**ため、08-15 までの間 **`catchup.` は pulse の公開リスナーに繋がった2つ目の公開入口**になっていた。「使っていないホスト名が残っていた」のではなく、**誰も参照していないのに生きた入口として露出していた**のが実態である。現用の Tunnel は remote managed(ダッシュボードの Public Hostname が正。pi.md 5章)で、Pi 上のファイルを見ても気づけないため見落とした。`AUTH_COOKIE_DOMAIN=.catchup-feed.com` はワイルドカードなので、**この入口にも管理ダッシュボードの認証クッキーが送信される**状態だった。
 
-**2026-08-15 にユーザーが Cloudflare コンソールで Public Hostname と DNS レコードを削除し、同日の外形確認(手順 4)で次を実測した**:
+**2026-08-15 にユーザーが Cloudflare コンソールで Public Hostname と DNS レコードを削除した**。同日の外形確認で測ったのは次の3点(手順 4 のうち「旧 URL が解決不能」と「`radio.` の Tunnel ルートが無傷」まで):
 
 | ホスト名 | 応答 | 判定 |
 |---|---|---|
-| `catchup.catchup-feed.com` | 解決不能(接続不可) | 削除完了 |
-| `radio.catchup-feed.com` | 401 | 正常(トークン無しアクセスへの正規応答) |
-| `pulse.catchup-feed.com` | 200 | 正常(ダッシュボードは無影響) |
+| `catchup.catchup-feed.com` | 解決不能(DNS レコードなし) | 削除完了 |
+| `radio.catchup-feed.com`(`/`) | 401 | Tunnel ルートは無傷。401 は**ルート(`/`)がデフォルトの JWT 保護ハンドラに落ちた応答**で、「認証付きで公開されている」の意味ではない(pi.md 7章の注と同じ) |
+| `pulse.catchup-feed.com` | 200 | ダッシュボードは無影響 |
+
+**手順 4 の `radio.catchup-feed.com/feeds/<token>/feed.xml` → 200 は測っていない**(フィードトークンを手元に出さないため)。この軸は毎朝 05:45 の morning-check(mac.md 10b 章)が公開フィードの外形を叩いているので、**翌朝以降アラートが出なければ裏が取れる**。
 
 以下は削除前に行った「本当に誰も参照していないか」の確認手順。**同種の判断(あるホスト名を消してよいか)が再び必要になったときの型として残す**。Vercel コンソールにログインしなくても、**外形のレスポンスヘッダと Pi の env の突き合わせだけで判定できる**:
 
@@ -189,14 +213,15 @@ docker image prune -a                             # 使用中(pulse)のイメー
 
 旧システムは 2026-07-06 に停止したが、その後の棚卸しで**コンテナ・cron・Cloudflare ルート以外の残骸**が見つかった。同種の停止作業をするとき、および「なぜか `degraded` / ディスクが減らない」ときはここを一巡する。
 
-### 対応済み(2026-08-15)
+### 対応済み・不在を確認済み(2026-08-15)
 
 - `/etc/systemd/system/catchup-feed.service` — 削除 + `daemon-reload` + `reset-failed`(3章)。systemd から catchup 系が消え、`systemctl --failed` に残るのは OS 由来のものだけになった
 - `/etc/logrotate.d/catchup-cron` / `/etc/logrotate.d/catchup-email` — 削除。対象のログはもう生成されない。pulse で必要なのは `pulse-health-check` のみ(pi.md 9章)
 - `/home/<pi-user>/backups/` の初代 DB ダンプ8本とログ類 — 削除(13MB → 4KB)。2章の最終スナップショットは Mac 側に退避済みで、Pi 側に保持する理由がない
 - **初代の docker 資産(コンテナ・イメージ・ボリューム)とチェックアウト** — いずれも撤去済み(6章)。2026-08-15 に `docker ps -a` / `docker compose ls -a` / `docker volume ls` / `docker image ls` で確認し、残っているのは pulse の3コンテナとその資産だけだった。**このとき `docker compose ls -a` の答えは `catchup-feed` 1件のみ**で、これは pulse。3章の「答えが `catchup-feed` しか無ければ打つな」が現実に即していることの実測でもある
 - **旧リポジトリの Archive(5章)** — 対象なし。初代の実装は本リポジトリの git 履歴そのものなので Archive すべき別リポジトリが存在しない(2026-08-15 確認)
-- **Cloudflare の `catchup.catchup-feed.com`** — 2026-08-15 にユーザーがコンソールで Public Hostname と DNS レコードを削除(4章)。外形で `catchup.` が解決不能・`radio.` が 401・`pulse.` が 200 であることを同日確認済み。これで **`catchup-feed.com` 配下で現用のホスト名は `radio.`(フィード配信)と `pulse.`(ダッシュボード)の2つだけ**になった
+- **Cloudflare の `catchup.catchup-feed.com`** — 2026-08-15 にユーザーがコンソールで Public Hostname と DNS レコードを削除(4章)。外形で `catchup.` が解決不能・`radio.` が 401・`pulse.` が 200 であることを同日確認済み
+- **初代由来の `grafana` / `prometheus` の DNS CNAME** — 2026-08-15 に `dig +short grafana.catchup-feed.com` / `dig +short prometheus.catchup-feed.com` を実行し、**どちらもレコードが存在しない**ことを確認(同時に測った `catchup.` もレコードなし、`radio.` / `pulse.` はあり)。初代の ingress から外された際に DNS 側も片付いていたとみられる。`AUTH_COOKIE_DOMAIN` がワイルドカードである以上、これらの名前が再び生えれば同じく認証クッキーが飛ぶ点だけ覚えておく(**Pi のローカル `config.yml` には名前が残っている** — 下の「未対応」)
 - **リポジトリ直下の初代由来ファイル 26 本(D-44)** — `scripts/`(health-check.sh / backup-db.sh 等)・初代期の tests / config / `internal/config` を削除(PR #116、2026-08-15)。Pi の現行運用が使っていたのは `deploy/scripts/` 側だけで、直下の `scripts/` は**流用元にすらしない**もの(残っていると誤って配置される事故要因だった)
 - あわせて `docker builder prune` で build cache 4.1GB のうち 3.3GB を回収(初代とは無関係だが同時に実施。**ディスク使用率 43% → 32%**。pi.md 11章)
 
@@ -204,7 +229,6 @@ docker image prune -a                             # 使用中(pulse)のイメー
 
 ### 未対応
 
-- **初代由来の `grafana` / `prometheus` の DNS CNAME【ユーザー作業】** — 残っていないか一巡する(Pi のローカル ingress に名前が残っているもの)。`AUTH_COOKIE_DOMAIN` がワイルドカードである以上、これらのホスト名にも管理ダッシュボードの認証クッキーが飛ぶ。`catchup.` の削除(4章)のときには確認していない
 - `/etc/cloudflared/config.yml` のローカル ingress が陳腐化 — 現用 Tunnel は remote managed なので実害は出ていないが、`radio.catchup-feed.com` のエントリが無く初代由来の `grafana` / `prometheus` が残っている。**config ファイル運用に戻すとフィード配信が 404 に落ちる**(pi.md 5章の注を参照)
 - `~/crontab.bak-20260726` — 旧 cron のバックアップ。中身を確認して不要なら削除
 - `cloudflared-update.timer` — disabled のまま残置。cloudflared 自体は現用なので unit ごと消さない。実害なし

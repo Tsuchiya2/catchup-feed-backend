@@ -3,8 +3,9 @@
 対象: Raspberry Pi 5(常時稼働)。server + worker + PostgreSQL 18 + mp3 アーカイブを載せる(設計書 §3)。
 
 **ステータス(2026-08-15 現在)**: 本書はもともと初代 catchup-feed スタックとの**共存**を前提に書かれていたが、
-初代の停止は **2026-07-06 に完了**し、docker 資産・systemd unit・Cloudflare の旧ホスト名も撤去済み
-(legacy-shutdown.md)。Pi で動いているのは pulse だけである。**一回限りの移行手順である 3.5章と10章**は
+初代の停止は **2026-07-06 に完了**し、docker 資産・systemd unit・Cloudflare の旧ホスト名
+(`catchup` / `grafana` / `prometheus`。DNS レコードごと)も撤去済み(legacy-shutdown.md。同書8章の
+チェックリストには実害の無い後片付けが3件だけ残っている)。Pi で動いているのは pulse だけである。**一回限りの移行手順である 3.5章と10章**は
 いずれも実行対象が無い履歴なので、新規セットアップでは読み飛ばしてよい(章冒頭の注記を読むこと)。
 **名前の重なりへの注意喚起は現役** — compose
 プロジェクト名・ディレクトリ名・unit 名・コンテナ名がすべて `catchup-feed` 系で重なるため、
@@ -58,7 +59,7 @@ chmod 600 deploy/.env
 | `SMTP_ENABLED` / `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` | メール通知(本人向け D-29。友人向けメールは D-32 で廃止)。Gmail なら `SMTP_HOST=smtp.gmail.com`・`SMTP_PORT=587`・`SMTP_USERNAME=<Gmail アドレス>`・`SMTP_PASSWORD=<アプリパスワード>`(U-11: 2 段階認証を有効にして [Google アカウント > セキュリティ > アプリパスワード] で発行)。`SMTP_FROM` は未設定なら `SMTP_USERNAME`。使う段階で `SMTP_ENABLED=true`。現用は旧システムの Gmail アカウント(Pi の `~/.msmtprc` と同一資格情報)を流用(D-30-1)。無効化されたら U-11 の手順で再発行 |
 | `NOTIFY_ERROR_EMAIL_TO` | 本人向け通知(notify_error の障害通知+新着エピソード通知)の宛先アドレス(D-29)。`SMTP_ENABLED=true` が前提。空なら本人向け通知は送られない |
 
-DB は**専用の PostgreSQL サーバー**を持つ(`catchup-feed-postgres` コンテナ、database 名 `catchup-feed`、ホスト側ポート 5433)。初代 catchup-feed の DB(`catchup-postgres`、ハイフンの後が違うだけの別コンテナ)とはサーバーごと分離してあり、**初代側は 2026-08-15 に撤去済みで Pi 上に実体は無い**。**したがって現在この Pi にある `catchup*` はすべて pulse の現用資産**である — 古い手順書やメモに残る `catchup-postgres` 等の名前を見て「初代の残骸だろう」と `catchup-feed-postgres` を落とさないこと(legacy-shutdown.md 8章「地雷」)。初代 DB からデータは移行していない — sources 定義は `internal/infra/db/seeds/sources.sql` が server の**初回起動時(sources テーブルが0行のとき)のみ**自動投入される。2回目以降の起動では再投入されない(ダッシュボードで削除したソースが再起動で復活しないようにするため)。
+DB は**専用の PostgreSQL サーバー**を持つ(`catchup-feed-postgres` コンテナ、database 名 `catchup-feed`、ホスト側ポート 5433)。初代 catchup-feed の DB(`catchup-postgres`、ハイフンの後が違うだけの別コンテナ)とはサーバーごと分離してあり、**初代側は既に撤去済みで Pi 上に実体は無い**(2026-08-15 の棚卸しで `docker ps -a` / `docker volume ls` により**不在を実測確認**した。撤去そのものの時期は記録に無い)。**したがって現在この Pi にある `catchup*` はすべて pulse の現用資産**である — 古い手順書やメモに残る `catchup-postgres` 等の名前を見て「初代の残骸だろう」と `catchup-feed-postgres` を落とさないこと(legacy-shutdown.md 8章「地雷」)。初代 DB からデータは移行していない — sources 定義は `internal/infra/db/seeds/sources.sql` が server の**初回起動時(sources テーブルが0行のとき)のみ**自動投入される。2回目以降の起動では再投入されない(ダッシュボードで削除したソースが再起動で復活しないようにするため)。
 
 ## 3. ビルドと起動
 
@@ -105,8 +106,8 @@ Pi を、現行の `name: catchup-feed`(コンテナ `catchup-feed-*`、ボリ�
 ボリューム再利用が起きうる、という想定である。
 
 **この確認を今日打つと必ず「衝突あり」と判定される** — `docker compose ls -a` に出てくる `catchup-feed`
-も `catchup-feed_*` ボリュームも**現行 pulse 自身**だからである(初代は 2026-07-06 に停止し、docker 資産は
-2026-08-15 に撤去済み。legacy-shutdown.md 8章で実測確認)。ここで「衝突あり」と読んで撤去手順
+も `catchup-feed_*` ボリュームも**現行 pulse 自身**だからである(初代は 2026-07-06 に停止し、docker 資産も
+撤去済み。2026-08-15 に不在を実測確認した — legacy-shutdown.md 8章)。ここで「衝突あり」と読んで撤去手順
 (legacy-shutdown.md 6章)へ進むと、pulse の DB ボリュームを消すことになる。
 
 ```bash
@@ -189,7 +190,8 @@ catchup-feed が公開するのは `radio.catchup-feed.com` → `127.0.0.1:8090`
 2. Ingress: config ファイル運用なら `/etc/cloudflared/config.yml` の ingress に
    `hostname: radio.catchup-feed.com → service: http://localhost:8090` を追記し、
    `sudo systemctl restart cloudflared`。ダッシュボード管理のトンネルなら Public Hostname 追加のみで完了。
-3. 初代システム向けのルートは 2026-07-11 に、初代ダッシュボードの `catchup.catchup-feed.com` は **2026-08-15 に削除済み**(legacy-shutdown.md 4章)。**`catchup-feed.com` 配下で現用のホスト名は `radio.catchup-feed.com`(フィード配信)と `pulse.catchup-feed.com`(ダッシュボード)の2つだけ**で、これ以外が Public Hostname や DNS に残っていたら初代の残骸なので消してよい(`AUTH_COOKIE_DOMAIN=.catchup-feed.com` はワイルドカードなので、使っていないホスト名にも認証クッキーが飛ぶ)。
+3. 初代ダッシュボード向けの `catchup.catchup-feed.com` は、初代ポート 8080 を向いたままで管理 API が 502 になっていたため **2026-07-11 に pulse の 8090 へ向け直され**(削除ではない)、**2026-08-15 に Public Hostname と DNS ごと削除**された(legacy-shutdown.md 4章)。**この Tunnel を通るのは `radio.catchup-feed.com` だけ**で、ダッシュボード(`pulse.catchup-feed.com`)は Vercel 配信なので Public Hostname 一覧には出ない。
+   Zero Trust の Public Hostname 一覧に**初代由来の既知の名前(`catchup` / `grafana` / `prometheus`)**が出てきたら整理してよいが、**消す前に必ず legacy-shutdown.md 4章の参照元確認(CSP / `FEED_PUBLIC_BASE_URL` / `CORS_ALLOWED_ORIGINS`)を通すこと** — `catchup.` は「初代の名前なのに中身は pulse を指していた」実例で、**名前だけでは判断できない**。**DNS ゾーン側は掃除の対象にしない**(Vercel 用の apex・検証レコードなど現用のレコードがある)。`AUTH_COOKIE_DOMAIN=.catchup-feed.com` はワイルドカードなので、不要なホスト名を残すとそこにも認証クッキーが飛ぶ。
 4. **レートリミットの前提(Tunnel 経由の公開では必須)**: `deploy/.env` に
    `RATE_LIMIT_TRUST_PROXY=true` と `RATE_LIMIT_TRUSTED_PROXIES=127.0.0.1/32`
    が入っていること(env.pi.example の既定値。2章で写していれば設定済み)。

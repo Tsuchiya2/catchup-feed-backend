@@ -23,10 +23,11 @@
 # 命名についての注意(混同厳禁):
 #   このスタックのコンテナ名は catchup-feed-*(catchup-feed-postgres / -server / -worker)。
 #   かつて同一ホストに同居していた【初代】システムのコンテナは catchup-*(ハイフンの
-#   後が違うだけの別物)で、2026-07-06 に停止・2026-08-15 に撤去済み(deploy/legacy-shutdown.md)。
+#   後が違うだけの別物)で、2026-07-06 に停止し、その後撤去済み(撤去時期は記録に無く、
+#   2026-08-15 に不在を実測確認。deploy/legacy-shutdown.md)。
 #   初代の実体はもう無いが、compose プロジェクト名・ディレクトリ名・systemd unit 名まで
 #   catchup-feed 系で重なるため、停止・削除系のコマンドは打つ前に実体を確認する
-#   (legacy-shutdown.md 8章「地雷」)。今この Pi にある catchup* はすべて pulse の現用資産。
+#   (legacy-shutdown.md 8章「地雷」。Pi 側の現状は deploy/pi.md 2章)。
 #
 # ポート公開の設計(公開面の最小化):
 #   - 公開リスナー(:8080)→ 127.0.0.1:${API_PORT} のみ。外へは Cloudflare Tunnel 経由

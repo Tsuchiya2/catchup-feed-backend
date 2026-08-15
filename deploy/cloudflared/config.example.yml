@@ -34,14 +34,13 @@ ingress:
   - hostname: radio.catchup-feed.com
     service: http://localhost:8090   # compose.pi.yml の API_PORT に合わせる
 
-  # --- 既存ルート(ダッシュボード等)はそのまま残す ---
-  # - hostname: pulse.catchup-feed.com
-  #   service: http://localhost:3000
-  #
-  # 初代 catchup-feed 向けのルートは 2026-07-11 に、初代ダッシュボードの
-  # catchup.catchup-feed.com は 2026-08-15 に削除済み(legacy-shutdown.md 4章)。
-  # catchup-feed.com 配下で現用のホスト名は radio. と pulse. の2つだけなので、
-  # 初代向けの行を書き足す必要はない。
+  # --- 初代由来のルートはもう無い ---
+  # 旧ダッシュボード向けの catchup.catchup-feed.com は、初代ポート 8080 を向いたままで
+  # 管理 API が 502 になっていたため 2026-07-11 に pulse の 8090 へ向け直され(削除ではない)、
+  # 2026-08-15 に Public Hostname と DNS ごと削除された(legacy-shutdown.md 4章)。
+  # したがって **この Tunnel を通るのは radio.catchup-feed.com だけ**。
+  # ダッシュボード(pulse.catchup-feed.com)は Vercel 配信で Tunnel を通らないため、
+  # ここに ingress を書かない。
 
   # 最後のフォールバックは必須
   - service: http_status:404
