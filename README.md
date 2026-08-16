@@ -8,6 +8,14 @@
 
 ---
 
+## 出力されるもの
+
+このリポジトリの成果物は API ではなく**毎朝の音声番組**です。`cmd/radio` が 04:30 JST に生成した mp3 を `cmd/server` が RSS で配信し、購読中のポッドキャストアプリに届きます(下は AntennaPod での受信・再生。ショーノートに並ぶリンクは、その日番組で紹介した記事です)。
+
+<img src="docs/images/episode-in-podcast-app.gif" alt="ポッドキャストアプリで catchup-feed のエピソードを再生している画面。ショーノートに当日紹介した記事のリンクが並んでいる" height="480">
+
+---
+
 ## 設計原則
 
 catchup-feed は**単一ユーザー**が**ゼロ円**で運用する自宅ホスティングを前提に「右サイズ」で作られています。初代 catchup-feed が抱えていた gRPC・サーキットブレーカー・Prometheus・Grafana・OpenTelemetry・マイクロサービス分割・OpenAI/Claude 依存はすべて**削除済み**です。
