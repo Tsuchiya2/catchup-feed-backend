@@ -1,10 +1,30 @@
 # catchup-feed — backend
 
+![Catchup Feed。RSS・YouTube・ポッドキャスト・Web の情報が AI に集約され、音声としてさまざまなプラットフォームへ届くイメージ](docs/images/banner.webp)
+
 > 毎朝10〜15分の音声ラジオ番組をポッドキャストアプリに配信し、「理解の定着」を最適化する個人向け学習システムのバックエンド。
 
 現行の `catchup-feed` は、RSS を要約して REST API / Discord に流す news aggregator だった**初代 catchup-feed** を作り直した後継です。初代は「配信された記事数」を最適化していましたが、Discord・Slack に流れる要約をすべて読むことは負荷が大きいものでした。そこで本システムが最適化するのは **理解の定着** です。可処分時間が細切れで手も目も塞がっている時間帯(移動中・家事中)に消化できるよう、応答形態を **音声** に変えました。RSS を要約し、毎朝ラジオ番組(mp3)を生成し、ポッドキャストアプリ経由で本人と友人に届け、フィードバックを得ます。
 
 このリポジトリは catchup-feed の Go バックエンドです。フロントエンド(ダッシュボード)は [catchup-feed-frontend](https://github.com/Tsuchiya2/catchup-feed-frontend)、文字起こし・書籍 RAG は [catchup-feed-ai](https://github.com/Tsuchiya2/catchup-feed-ai) にあります。
+
+---
+
+## システム全体像
+
+![Catchup Feed の処理フロー。RSS・YouTube・ポッドキャスト・Web の各ソースから自動収集し、AI が日本語化・要約・台本生成を行い、VOICEVOX で音声化して各プラットフォームへ届ける](docs/images/system-overview.webp)
+
+このリポジトリが担うのは図の全域(収集 → 要約 → 台本 → 音声合成 → 配信)です。YouTube / ポッドキャストの文字起こしと書籍 PDF の取り込みだけ [catchup-feed-ai](https://github.com/Tsuchiya2/catchup-feed-ai)、管理 UI が [catchup-feed-frontend](https://github.com/Tsuchiya2/catchup-feed-frontend) に分かれます。
+
+成果物が **mp3 + RSS** という標準フォーマットなので、再生先はポッドキャストアプリに限りません(ファイルを渡せば Slack・Discord・ブラウザでもそのまま再生できます)。一方で**システムが自分から push する経路は管理者宛メールの1本だけ**に絞ってあり(D-29)、友人への配信はポッドキャスト購読のみです(D-32)。配信先を増やさないことと、成果物が配信先を選ばないことは両立します。
+
+---
+
+## 出力されるもの
+
+このリポジトリの成果物は API ではなく**音声番組**です。`cmd/radio` が 04:30 JST に起動して mp3 を生成できた日は、`cmd/server` がそれを RSS で配信し、購読中のポッドキャストアプリに届きます(下は AntennaPod での受信・再生。ショーノートに並ぶリンクは、その日番組で紹介した記事です)。新しい要約済み記事も期日到来の復習項目もアクティブな書籍も無い日は、番組を作らずスキップします(D-1)。
+
+<img src="docs/images/episode-in-podcast-app.gif" alt="ポッドキャストアプリで catchup-feed のエピソードを再生している画面。ショーノートに当日紹介した記事のリンクが並んでいる" height="480">
 
 ---
 
