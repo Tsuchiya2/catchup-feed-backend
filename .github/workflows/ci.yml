@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.25.6'
+  GO_VERSION: '1.27.0'
 
 # Swagger 生成について(下の5ジョブが同じ "Generate Swagger docs" を持つ)
 # 生成物 docs/docs.go は cmd/server がブランクインポートし、Dockerfile の
@@ -112,7 +112,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.2
+          version: v2.13.1
           args: --timeout=5m
 
   # ──────────────────────────────────────────────────────────
@@ -234,15 +234,35 @@ jobs:
         run: go build ./...
 
       # CI で実行する外部ツールは一律でバージョンを固定する(shellcheck
-      # v0.11.0 / golangci-lint v2.12.2 はここのリテラルで、swag は go.mod の
+      # v0.11.0 / golangci-lint v2.13.1 はここのリテラルで、swag は go.mod の
       # tool ディレクティブで固定する — いずれも1箇所)。@master は
       # レビューを経ずに上流の変更でスキャナ本体が入れ替わりうるため使わない。
-      # 更新方法: https://github.com/securego/gosec/releases の新しいタグへ
-      # 上げ、このジョブが緑になることを確認する意図的な変更として単独で行う
-      # (タグ側の action.yml がコンテナイメージを digest で固定しているので、
-      # 同じタグなら常に同じスキャナバイナリが走る)。
+      #
+      # ここだけタグではなくコミット SHA を参照している(C-23)。gosec の
+      # v2.28.0 タグは action.yml が**ひとつ前の 2.27.1 イメージ**を digest 固定
+      # しており、`uses: securego/gosec@v2.28.0` は 2.27.1 のスキャナを走らせる。
+      # 2.28.0 イメージを指すよう action.yml が直ったのはタグ作成後の
+      # 2eb4727(2026-08-10)で、それを含むタグはまだ切られていない。
+      # 更新方法: https://github.com/securego/gosec/releases に新しいタグが出たら
+      # そのタグの action.yml が指すイメージの digest を確認したうえでタグ参照へ
+      # 戻し、このジョブが緑になることを確認する意図的な変更として単独で行う。
+      # コミット SHA 参照でもイメージは digest 固定なので、同じスキャナバイナリが
+      # 走る再現性はタグ参照と変わらない。
+      #
+      # GOTOOLCHAIN=auto も必須(C-23)。gosec はコンテナアクションで、2.28.0
+      # イメージ同梱の Go は 1.26.5 かつ GOTOOLCHAIN=local のため、go.mod の
+      # `go 1.27.0` を読めず全パッケージが
+      # `go.mod requires go >= 1.27.0 (running go 1.26.5; GOTOOLCHAIN=local)` で
+      # ロードに失敗する。-no-fail のため終了コードは 0、SARIF も空で上がるので
+      # 「Files: 0 / Issues: 0 のまま緑」になる(2026-08-15 の swag 未生成と同じ
+      # 失敗の仕方)。auto にすればコンテナ内で go1.27.0 を取得して 204 ファイルを
+      # 走査する。前段の `go build ./...` はランナー側の Go(setup-go)で走るため
+      # この失敗を検知できない。イメージ同梱の Go が 1.27 以上になったら外してよい。
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@v2.28.0
+        # securego/gosec 2eb4727 = action.yml が gosec 2.28.0 イメージを digest 固定
+        uses: securego/gosec@2eb4727ebc7504944ddbcdd2f7157db492026c3f
+        env:
+          GOTOOLCHAIN: auto
         with:
           args: '-no-fail -fmt sarif -out results.sarif ./...'
 

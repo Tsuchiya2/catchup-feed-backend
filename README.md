@@ -41,7 +41,7 @@ catchup-feed は**単一ユーザー**が**ゼロ円**で運用する自宅ホ�
 
 ## アーキテクチャ
 
-Go 1.25.6 の単一モジュールで、**3つのバイナリ**を持ちます。内部 HTTP/RPC はなく、`server` / `worker` / `radio` はすべて **PostgreSQL 経由**(`jobs` テーブル+状態テーブル)で連携します。
+Go 1.27.0 の単一モジュールで、**3つのバイナリ**を持ちます。内部 HTTP/RPC はなく、`server` / `worker` / `radio` はすべて **PostgreSQL 経由**(`jobs` テーブル+状態テーブル)で連携します。
 
 | バイナリ | 配置 | 役割 |
 |---|---|---|
@@ -133,7 +133,7 @@ infra/adapter/persistence/postgres ─────┘ 実装を cmd/ で注入
 
 ## 技術スタック
 
-- **言語 / ランタイム**: Go 1.25.6(単一モジュール、標準ライブラリの `net/http` ルーター — 外部ルーター依存なし)。バージョンは `.go-version` / `go.mod` / `Dockerfile` / CI の `GO_VERSION` で統一。
+- **言語 / ランタイム**: Go 1.27.0(単一モジュール、標準ライブラリの `net/http` ルーター — 外部ルーター依存なし)。バージョンは `.go-version` / `go.mod` / `Dockerfile` / CI の `GO_VERSION` で統一(散文の記述も追随。加えて radio を動かす Mac の Go 本体も上げる — D-45、`deploy/mac.md` §5)。
 - **データベース**: PostgreSQL(ドライバは pgx/v5)。マイグレーションは `cmd/server` 起動時に冪等 SQL を自動適用。
 - **認証**: 管理 API は JWT(golang-jwt/v5)+ 単一管理者(環境変数 + bcrypt ハッシュ)。フィード配信は URL 埋め込みの不透明トークン(`crypto/rand` 32byte → base64url、DB には SHA-256 ハッシュのみ保存)。
 - **クローラー**: gofeed(RSS/Atom パース)+ go-readability(本文抽出)。リダイレクトごとに SSRF ガード。
@@ -152,7 +152,7 @@ infra/adapter/persistence/postgres ─────┘ 実装を cmd/ で注入
 ### 前提
 
 - Docker / Docker Compose(Pi 上での server + worker + PostgreSQL 実行)
-- radio バッチ用に Mac 側で: Go 1.25.6、[VOICEVOX Engine](https://voicevox.hiroshiba.jp/)、[Ollama](https://ollama.com/)、ffmpeg、rsync
+- radio バッチ用に Mac 側で: Go 1.27.0、[VOICEVOX Engine](https://voicevox.hiroshiba.jp/)、[Ollama](https://ollama.com/)、ffmpeg、rsync
 
 ### 開発環境
 
