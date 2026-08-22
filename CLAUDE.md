@@ -20,6 +20,7 @@ Go 1.27.0 単一モジュール(module name: `catchup-feed`)。バージョン�
 - `internal/tts/assets/`(ジングル)と `internal/feed/assets/`(アートワーク)は go:embed。差し替えは「ファイル置換 + 再ビルド」で、Mac の radio は `git pull` だけでは反映されない
 - 新しい env を足したら `.env.example`・`deploy/env.pi.example` / `env.mac.example` と `compose.yml` / `deploy/compose.pi.yml` の environment(明示 allowlist)も同時に更新する — 配線漏れで本番ログイン不能を起こした前例あり
 - ディレクトリとパッケージの責務は [docs/repository-structure.md](docs/repository-structure.md)、層の設計思想は [docs/architecture.md](docs/architecture.md)。初代 EDAF 期の docs(development-guidelines / functional-design / product-requirements / glossary)は 2026-08-13 に削除済み — 復元が必要なら git 履歴を参照
+- **dependabot の gomod PR は `github.com/swaggo/swag` を `// indirect` に降格させることがある**(#122 で実際に起きた)。swag は生成物 `docs/docs.go` が import する直接依存だが、dependabot は gitignore された生成物の無いツリーで tidy するため誤判定する。マージ時は direct のままか確認する — 放置すると Swagger 生成済みの正規状態で `go mod tidy` を回した全員に差分が出続ける
 - コミットメッセージ・PR に Co-Authored-By 行を付けない
 
 ## 環境変数
