@@ -1,6 +1,6 @@
 module catchup-feed
 
-go 1.25.6
+go 1.27.0
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2

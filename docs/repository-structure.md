@@ -1,6 +1,6 @@
 # リポジトリ構成
 
-**対象**: catchup-feed-backend(Go 1.25.6 単一モジュール、module name: `catchup-feed`)
+**対象**: catchup-feed-backend(Go 1.27.0 単一モジュール、module name: `catchup-feed`)
 **最終更新**: 2026-08-15
 
 ディレクトリとパッケージの責務を記述します。層の設計思想・依存ルール・技術選定の理由は [architecture.md](architecture.md) を参照してください。
@@ -283,8 +283,10 @@ Pi 実機側の残骸(systemd unit・logrotate・旧 cron・旧バックアッ�
 
 | ファイル | 内容 |
 |---|---|
-| `ci.yml` | 6 ジョブ。**Test**(pgvector サービスコンテナ → `go mod verify` → Swagger 生成 → `go test -race` → Codecov)/ **Lint**(Swagger 生成 → golangci-lint v2.12.2)/ **Shell Script Lint**(shellcheck v0.11.0 で `deploy/scripts/*.sh` を `-x` 付き検査)/ **Build**(server / worker のビルドとバイナリサイズ表示)/ **Security Scan**(Swagger 生成 → 型検査(`go build ./...`)→ gosec → SARIF)/ **Dependency Vulnerability Scan**(Swagger 生成 → govulncheck。終了コード 0/3 は緑、それ以外はスキャン不成立として赤 → SARIF)。Swagger 生成は Go を使う全ジョブに必要(未生成だと `cmd/server` が型検査を通らず、gosec は SSA 解析を、govulncheck は解析自体をスキップする) |
+| `ci.yml` | 6 ジョブ。**Test**(pgvector サービスコンテナ → `go mod verify` → Swagger 生成 → `go test -race` → Codecov)/ **Lint**(Swagger 生成 → golangci-lint v2.13.1)/ **Shell Script Lint**(shellcheck v0.11.0 で `deploy/scripts/*.sh` を `-x` 付き検査)/ **Build**(server / worker のビルドとバイナリサイズ表示)/ **Security Scan**(Swagger 生成 → 型検査(`go build ./...`)→ gosec → SARIF)/ **Dependency Vulnerability Scan**(Swagger 生成 → govulncheck。終了コード 0/3 は緑、それ以外はスキャン不成立として赤 → SARIF)。Swagger 生成は Go を使う全ジョブに必要(未生成だと `cmd/server` が型検査を通らず、gosec は SSA 解析を、govulncheck は解析自体をスキップする) |
 | `docker.yml` | QEMU + buildx によるマルチアーキイメージのビルド(Pi の arm64 向け) |
+
+gosec のステップには `GOTOOLCHAIN: auto` を渡しています。gosec はコンテナアクションで、v2.28.0 が digest 固定しているイメージ同梱の Go は 1.26.3 かつ `GOTOOLCHAIN=local` のため、そのままでは go.mod の `go 1.27.0` を読めず全パッケージのロードに失敗し、`-no-fail` と相まって「Files: 0 / Issues: 0 のまま緑」になります(2026-08-22 の Go 1.27 化で顕在化)。前段の型検査(`go build ./...`)はランナー側の Go で走るためこの失敗を検知できません。
 
 **セキュリティ系2ジョブの赤/緑の契約は 2026-08-15 に変わりました**。以前は gosec の `-no-fail` と各ステップの `continue-on-error` により**何が起きても緑**でしたが、現在は「**検出では緑、スキャンが不成立なら赤**」です。指摘・脆弱性の検出で個人開発の CI を止めない方針は変えず、gosec が SSA 解析を黙って飛ばす条件(`go build ./...` が通らない)と、govulncheck が解析自体に失敗した場合(終了コード 0 / 3 以外)だけを落とします。**緑を「スキャンが走って問題なし」と読んでよいのはこの契約があるため**で、これが無かった間は「動いていないのに緑」を実際に見逃していました。
 

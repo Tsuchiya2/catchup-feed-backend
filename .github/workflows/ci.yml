@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.25.6'
+  GO_VERSION: '1.27.0'
 
 # Swagger 生成について(下の5ジョブが同じ "Generate Swagger docs" を持つ)
 # 生成物 docs/docs.go は cmd/server がブランクインポートし、Dockerfile の
@@ -112,7 +112,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.2
+          version: v2.13.1
           args: --timeout=5m
 
   # ──────────────────────────────────────────────────────────
@@ -234,15 +234,27 @@ jobs:
         run: go build ./...
 
       # CI で実行する外部ツールは一律でバージョンを固定する(shellcheck
-      # v0.11.0 / golangci-lint v2.12.2 はここのリテラルで、swag は go.mod の
+      # v0.11.0 / golangci-lint v2.13.1 はここのリテラルで、swag は go.mod の
       # tool ディレクティブで固定する — いずれも1箇所)。@master は
       # レビューを経ずに上流の変更でスキャナ本体が入れ替わりうるため使わない。
       # 更新方法: https://github.com/securego/gosec/releases の新しいタグへ
       # 上げ、このジョブが緑になることを確認する意図的な変更として単独で行う
       # (タグ側の action.yml がコンテナイメージを digest で固定しているので、
       # 同じタグなら常に同じスキャナバイナリが走る)。
+      # GOTOOLCHAIN=auto は必須。gosec はコンテナアクションで、v2.28.0 が digest
+      # 固定しているイメージ同梱の Go は 1.26.3 かつ GOTOOLCHAIN=local のため、
+      # go.mod の `go 1.27.0` を読めず全パッケージが
+      # `go.mod requires go >= 1.27.0 (running go 1.26.3; GOTOOLCHAIN=local)` で
+      # ロードに失敗する。-no-fail のため終了コードは 0、SARIF も空で上がるので
+      # 「Files: 0 / Issues: 0 のまま緑」になる(2026-08-15 の swag 未生成と同じ
+      # 失敗の仕方)。auto にすればコンテナ内で go1.27.0 を取得して 204 ファイルを
+      # 走査する。前段の `go build ./...` はランナー側の Go(setup-go)で走るため
+      # この失敗を検知できない。gosec 側のイメージが Go 1.27 に追いついたら
+      # (v2.28.0 時点の最新リリースはまだ)この env は外してよい。
       - name: Run Gosec Security Scanner
         uses: securego/gosec@v2.28.0
+        env:
+          GOTOOLCHAIN: auto
         with:
           args: '-no-fail -fmt sarif -out results.sarif ./...'
 

@@ -1,6 +1,6 @@
 # アーキテクチャ
 
-**対象**: catchup-feed-backend(Go 1.25.6 単一モジュール)
+**対象**: catchup-feed-backend(Go 1.27.0 単一モジュール)
 **最終更新**: 2026-08-13
 
 このドキュメントは**現行実装**のアーキテクチャを記述します。Phase 別の要件・決定ログ(D-xx / C-xx)は親リポジトリの `docs/` が正で、記述が食い違う場合は設計書を優先してください。ディレクトリとファイル単位の責務は [repository-structure.md](repository-structure.md) にあります。

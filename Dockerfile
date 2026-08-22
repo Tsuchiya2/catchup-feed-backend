@@ -12,7 +12,7 @@
 # ────────────────────────────────────────────────────────────
 # Stage 1: 依存関係ダウンロード
 # ────────────────────────────────────────────────────────────
-FROM golang:1.25.6-alpine AS deps
+FROM golang:1.27.0-alpine AS deps
 
 # ビルドツールのインストール
 RUN apk add --no-cache \
@@ -24,12 +24,19 @@ RUN apk add --no-cache \
 WORKDIR /app
 
 # golangci-lint のインストール
+# バージョンは CI(.github/workflows/ci.yml の lint ジョブ)と揃える。
+# 上げるときの制約: golangci-lint は「自分をビルドした Go の言語バージョン」より
+# 新しい go ディレクティブを持つモジュールを解析できず、
+# `the Go language version (go1.26) used to build golangci-lint is lower than the
+# targeted Go version (1.27.0)` で*設定読み込みの時点で*落ちる。
+# つまり Go を上げるときは golangci-lint も「その Go でビルドされたリリース」まで
+# 同時に上げる必要がある(Go 1.27.0 ↔ golangci-lint v2.13.1 = go1.27.0 ビルド)。
 # install.sh はインストールするバージョンのタグ付きスクリプトを使う。
 # master のスクリプトは arm64 資産のチェックサム照合が壊れており
-# (.sbom.json の行を誤マッチして verify に失敗する)、v2.12.2 の
+# (.sbom.json の行を誤マッチして verify に失敗する)、v2.13.1 の
 # タグ付きスクリプトなら正しく検証できる。
-RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.12.2/install.sh | \
-    sh -s -- -b /usr/local/bin v2.12.2
+RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.13.1/install.sh | \
+    sh -s -- -b /usr/local/bin v2.13.1
 
 # 依存関係のダウンロード（キャッシュ最適化）
 COPY go.mod go.sum ./
