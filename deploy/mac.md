@@ -89,7 +89,7 @@ go build -o ~/pulse/bin/radio ./cmd/radio
 
 **Go を上げた PR を取り込んだときは、この Mac の Go も先に上げる**(D-45)。radio のビルドはこのマシンの Go で行われるため、古いままだと
 
-```
+```text
 go: go.mod requires go >= 1.27.0 (running go 1.26.x; GOTOOLCHAIN=local)
 ```
 
