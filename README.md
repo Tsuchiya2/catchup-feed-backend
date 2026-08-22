@@ -133,7 +133,7 @@ infra/adapter/persistence/postgres ─────┘ 実装を cmd/ で注入
 
 ## 技術スタック
 
-- **言語 / ランタイム**: Go 1.27.0(単一モジュール、標準ライブラリの `net/http` ルーター — 外部ルーター依存なし)。バージョンは `.go-version` / `go.mod` / `Dockerfile` / CI の `GO_VERSION` で統一。
+- **言語 / ランタイム**: Go 1.27.0(単一モジュール、標準ライブラリの `net/http` ルーター — 外部ルーター依存なし)。バージョンは `.go-version` / `go.mod` / `Dockerfile` / CI の `GO_VERSION` で統一(散文の記述も追随。加えて radio を動かす Mac の Go 本体も上げる — D-45、`deploy/mac.md` §5)。
 - **データベース**: PostgreSQL(ドライバは pgx/v5)。マイグレーションは `cmd/server` 起動時に冪等 SQL を自動適用。
 - **認証**: 管理 API は JWT(golang-jwt/v5)+ 単一管理者(環境変数 + bcrypt ハッシュ)。フィード配信は URL 埋め込みの不透明トークン(`crypto/rand` 32byte → base64url、DB には SHA-256 ハッシュのみ保存)。
 - **クローラー**: gofeed(RSS/Atom パース)+ go-readability(本文抽出)。リダイレクトごとに SSRF ガード。
