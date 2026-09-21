@@ -260,7 +260,7 @@ jobs:
       # この失敗を検知できない。イメージ同梱の Go が 1.27 以上になったら外してよい。
       - name: Run Gosec Security Scanner
         # securego/gosec 2eb4727 = action.yml が gosec 2.28.0 イメージを digest 固定
-        uses: securego/gosec@598d6146b91b2370c6f11f7d3cb256119d8cbfc4
+        uses: securego/gosec@681347199262bc33b9b5119ae2b448dec5718240
         env:
           GOTOOLCHAIN: auto
         with:
