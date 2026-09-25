@@ -242,6 +242,68 @@ func TestGroq_FinishReasonLengthWithEmptyContent(t *testing.T) {
 	assert.Equal(t, float64(0), record["output_length"])
 }
 
+// TestGemini_MaxTokensWithoutParts pins the shape where the output ceiling
+// drops the candidate's parts entirely: the error is unchanged (origin/main
+// returns the same "no candidates" error), but the reason is now visible.
+// This is why gemini.go checks len(parts) AFTER warning, in a separate if —
+// folding it back into the candidates check would silence this case.
+func TestGemini_MaxTokensWithoutParts(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"candidates": []map[string]any{{
+			"content":      map[string]any{"role": "model"},
+			"finishReason": "MAX_TOKENS",
+			"index":        0,
+		}},
+	})
+	require.NoError(t, err)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	logs := captureWarnings(t)
+	g := summarizer.NewGemini(summarizer.GeminiConfig{
+		APIKey: "k", BaseURL: srv.URL,
+		Options: summarizer.Options{CharacterLimit: 500, Timeout: 5 * time.Second},
+	})
+
+	out, err := g.Generate(context.Background(), "prompt")
+
+	assert.Empty(t, out)
+	require.Error(t, err)
+	assert.Equal(t, "gemini: api returned no candidates", err.Error())
+
+	record := findWarning(t, logs, "llm response did not finish normally, output may be truncated")
+	assert.Equal(t, "gemini", record["provider"])
+	assert.Equal(t, "MAX_TOKENS", record["finish_reason"])
+	assert.Equal(t, float64(0), record["output_length"])
+	// 空の末尾は属性ごと省く(output_length=0 と重複するだけ)。
+	assert.NotContains(t, record, "output_tail")
+}
+
+// TestGemini_EmptyCandidatesStaysSilent guards the index: with no candidate
+// at all there is no finish reason to report, so no WARN may be emitted.
+func TestGemini_EmptyCandidatesStaysSilent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[]}`))
+	}))
+	defer srv.Close()
+
+	logs := captureWarnings(t)
+	g := summarizer.NewGemini(summarizer.GeminiConfig{
+		APIKey: "k", BaseURL: srv.URL,
+		Options: summarizer.Options{CharacterLimit: 500, Timeout: 5 * time.Second},
+	})
+
+	_, err := g.Generate(context.Background(), "prompt")
+
+	require.Error(t, err)
+	assert.NotContains(t, logs.String(), "did not finish normally")
+}
+
 // findWarning returns the first captured record whose msg matches.
 func findWarning(t *testing.T, logs *bytes.Buffer, msg string) map[string]any {
 	t.Helper()

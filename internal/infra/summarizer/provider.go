@@ -226,7 +226,14 @@ func postJSON(ctx context.Context, client *http.Client, provider, url string, he
 // The tail is what makes the log actionable: it shows whether the text
 // really stops mid-sentence. Kept short on purpose — the Ollama stage also
 // handles private material (書籍・ジャーナル、C-12)、so the log line must
-// stay a fingerprint, not a copy of the output. Logs never leave the host.
+// stay a fingerprint, not a copy of the output.
+//
+// ログは基本的にホスト内に残るが、ホスト外へ出る経路が1つある: D-46 (3) の
+// 失敗時アラートメール(deploy/scripts/radio-run.sh)は radio が非ゼロ終了した
+// 日に stderr の末尾20行を自分宛 SMTP で直送し、radio の slog は stderr に
+// 出る(cmd/radio/main.go)。つまり障害日にはこの40文字がメールに載りうる。
+// 自分宛・異常終了時のみ・40文字という条件で許容しているのであって、
+// 「ホスト外に出ない」からではない — **伸ばすならこの前提から検討すること**。
 const finishTailRunes = 40
 
 // normalFinishReasons maps a provider to the value that means "the model
@@ -250,11 +257,17 @@ func warnIfIncompleteFinish(provider, finishReason, out string) {
 	if normal, ok := normalFinishReasons[provider]; ok && strings.EqualFold(finishReason, normal) {
 		return
 	}
-	slog.Warn("llm response did not finish normally, output may be truncated",
+	attrs := []any{
 		slog.String("provider", provider),
 		slog.String("finish_reason", finishReason),
 		slog.Int("output_length", utiltext.CountRunes(out)),
-		slog.String("output_tail", tailRunes(out, finishTailRunes)))
+	}
+	// 空の末尾は output_length=0 と情報が重複するだけなので属性ごと省く
+	// (Gemini が MAX_TOKENS で parts ごと落とすケース)。
+	if tail := tailRunes(out, finishTailRunes); tail != "" {
+		attrs = append(attrs, slog.String("output_tail", tail))
+	}
+	slog.Warn("llm response did not finish normally, output may be truncated", attrs...)
 }
 
 // tailRunes returns the last n Unicode characters of s (the whole string
