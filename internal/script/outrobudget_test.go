@@ -40,7 +40,8 @@ const outroPromptTokenBudget = groqFreeTierTPM / 2
 // 1トークン、ASCII は概ね4文字1トークン。
 //
 // **実測との突き合わせ**: この式で D-46 以前の形(8記事 × 要約900文字)を
-// 見積もると 8,586 トークンで、同じ日に Groq が実際に返した
+// 見積もると 8,582 トークン(TestOutroPromptWithoutNarrowingExceedsTPM の
+// ログで確認できる)で、同じ日に Groq が実際に返した
 // `Requested 8873` と 3.3% の差に収まる。トークナイザを持ち込まずに
 // (ゼロ円・右サイズ: 新規依存なし)判断するにはこの精度で十分である。
 func estimateTokens(prompt string) int {
@@ -77,13 +78,14 @@ func budgetArticles(t *testing.T, n, summaryChars int) []repository.RadioArticle
 
 func renderBudgetOutro(t *testing.T, articles []repository.RadioArticle, quizCount int, limits OutroQuizLimits) string {
 	t.Helper()
-	scope := quizPromptScope(articles, quizCount, limits)
+	// 候補は当日の全記事(D-46 (1) 改訂: 記事は絞らない)。
+	quiz, _, _ := quizPrompt(articles, quizCount, limits)
 	prompt, err := renderPrompt("outro.tmpl", outroData{
 		Date:         spokenDate(time.Date(2026, 9, 25, 4, 30, 0, 0, time.UTC)),
 		Corners:      cornerNames(articles),
 		ArticleCount: len(articles),
 		SignOff:      closingSignOff,
-		Quiz:         quizPrompt(scope, quizCount, limits),
+		Quiz:         quiz,
 	})
 	require.NoError(t, err)
 	return prompt
@@ -103,13 +105,22 @@ func TestOutroPromptFitsGroqFreeTierTPM(t *testing.T) {
 			articles: 8, quizCount: 1, limits: DefaultOutroQuizLimits(),
 		},
 		{
-			name:     "8記事日で M を上げた日(N は M まで広がる)",
-			articles: 8, quizCount: 4, limits: DefaultOutroQuizLimits(),
+			// M(QUIZ_ITEMS_PER_DAY)はプロンプトの大きさに影響しない —
+			// 候補は常に当日の全記事で、M は「何件選ぶか」の指示だけ。
+			// 当初実装では M が候補件数の下限になっていて上限を突破できた
+			// (レビュー B-3)。ここはその経路が消えたことの固定でもある。
+			name:     "M を記事数まで上げた日(候補件数は M に引っ張られない)",
+			articles: 8, quizCount: 8, limits: DefaultOutroQuizLimits(),
 		},
 		{
-			// RADIO_MAX_ARTICLES を上げてもアウトロのサイズは N で決まる。
-			// 「記事数を増やしたら欠番」という 2026-09-25 の構造を断つ。
-			name:     "記事数を倍にしてもアウトロは N 件で有界",
+			// レビュー B-3 が 413 再発を外挿したケース。記事数と M の両方を
+			// 16 にしても、要約の文字数予算(quizPromptListBudgetChars)が
+			// 効いて天井の内側に収まること。
+			name:     "記事16件 × M=16(B-3 の外挿ケース)",
+			articles: 16, quizCount: 16, limits: DefaultOutroQuizLimits(),
+		},
+		{
+			name:     "記事数を倍にした日(M は既定)",
 			articles: 16, quizCount: 1, limits: DefaultOutroQuizLimits(),
 		},
 		{
@@ -137,8 +148,21 @@ func TestOutroPromptFitsGroqFreeTierTPM(t *testing.T) {
 // 前提(D-41 の TPM 8,000)ごと再確認する。
 func TestOutroPromptWithoutNarrowingExceedsTPM(t *testing.T) {
 	articles := budgetArticles(t, 8, 900)
-	preD46 := OutroQuizLimits{MaxArticles: len(articles), SummaryChars: 900}
-	prompt := renderBudgetOutro(t, articles, 1, preD46)
+
+	// 旧実装の形は quizPrompt では組めない(要約の文字数予算が必ず効く)ので、
+	// 相乗りセクションのデータを直接組んで当時のプロンプトを再現する。
+	entries := make([]quizPromptArticle, len(articles))
+	for i, a := range articles {
+		entries[i] = quizPromptArticle{Number: i + 1, Title: a.Title, Summary: a.Summary}
+	}
+	prompt, err := renderPrompt("outro.tmpl", outroData{
+		Date:         spokenDate(time.Date(2026, 9, 25, 4, 30, 0, 0, time.UTC)),
+		Corners:      cornerNames(articles),
+		ArticleCount: len(articles),
+		SignOff:      closingSignOff,
+		Quiz:         &quizPromptData{Count: 1, Marker: quizSectionMarker, Articles: entries},
+	})
+	require.NoError(t, err)
 
 	got := estimateTokens(prompt)
 	t.Logf("pre-D-46 shape: runes=%d est_tokens=%d (Groq 実測 Requested 8873)",
@@ -147,5 +171,6 @@ func TestOutroPromptWithoutNarrowingExceedsTPM(t *testing.T) {
 		"縮小前の形は TPM を超えるはず(2026-09-25 実測 8873)")
 
 	narrowed := estimateTokens(renderBudgetOutro(t, articles, 1, DefaultOutroQuizLimits()))
-	assert.Less(t, narrowed*2, got, "縮小で半分以下になっていること")
+	assert.Less(t, narrowed*3, got, "縮小で3分の1以下になっていること")
+	t.Logf("narrowed (既定150文字): est_tokens=%d", narrowed)
 }

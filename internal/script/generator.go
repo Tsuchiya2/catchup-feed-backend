@@ -116,26 +116,30 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 		})
 	}
 
-	// D-46 (1): クイズ相乗りセクションに渡すのは放送順の上位N件だけで、
-	// 要約も文字数で切り詰める。全記事を丸ごと埋め込むと8記事日の
-	// アウトロが Groq 無料枠の TPM 8,000 を1リクエストで超え(413、
-	// 待っても通らない)、Ollama 段しか残らない — 2026-09-25 欠番の構造。
-	// scope はパーサにもそのまま渡す: 記事番号はこの scope 上の1始まりで、
-	// 提示していない記事の番号を返す逸脱はここで弾かれる (§5.1)。
-	scope := quizPromptScope(articles, quizCount, g.quizLimits)
-	if quizCount > 0 && len(scope) < len(articles) {
-		g.logger.InfoContext(ctx, "outro quiz section narrowed to the top articles (D-46)",
+	// D-46 (1): クイズ相乗りセクションは当日の**全記事**を候補に出したまま、
+	// 各要約を文字数で切り詰める。要約を丸ごと埋め込むと8記事日のアウトロが
+	// Groq 無料枠の TPM 8,000 を1リクエストで超え(413、待っても通らない)、
+	// Ollama 段しか残らない — 2026-09-25 欠番の構造。
+	//
+	// 記事の件数は絞らない: plan.Plan() は featured をカテゴリのスラッグ辞書順
+	// に並べ替えるため、先頭N件に絞ると後ろのコーナーが構造的に一度も
+	// 出題されない(当初実装のレビュー指摘、D-46 (1) 改訂)。
+	quiz, summaryChars, clamped := quizPrompt(articles, quizCount, g.quizLimits)
+	if clamped {
+		// RADIO_MAX_ARTICLES を大きく上げた日の安全弁が効いた。通常運転では
+		// 出ない WARN なので、出たら記事数か要約長の設定を見直す合図。
+		g.logger.WarnContext(ctx, "outro quiz summaries shortened to fit the prompt budget (D-46 (1))",
 			slog.Int("articles", len(articles)),
-			slog.Int("quiz_candidates", len(scope)),
-			slog.Int("summary_chars", g.quizLimits.SummaryChars))
+			slog.Int("configured_summary_chars", g.quizLimits.SummaryChars),
+			slog.Int("effective_summary_chars", summaryChars))
 	}
 	outroScript, drafts, err := g.generateOutro(ctx, outroData{
 		Date:         dateStr,
 		Corners:      cornerList,
 		ArticleCount: len(articles),
 		SignOff:      closingSignOff,
-		Quiz:         quizPrompt(scope, quizCount, g.quizLimits),
-	}, scope, quizCount)
+		Quiz:         quiz,
+	}, articles, quizCount)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -169,8 +173,9 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 // quiz-less to begin with) is it a script generation failure:
 // without a closing script there is no episode to ship, so the day is
 // skipped (§8) rather than broadcasting a truncated show.
-// scope is the narrowed candidate list the prompt presented (D-46 (1)); 記事番号
-// はこの並びの1始まりなので、パーサへ渡すのも同じ scope でなければならない。
+// scope is the candidate list the prompt presented (D-46 (1): 当日の全記事);
+// 記事番号はこの並びの1始まりなので、パーサへ渡すのも同じスライスでなければ
+// ならない。
 func (g *Generator) generateOutro(ctx context.Context, data outroData, scope []repository.RadioArticle, quizCount int) (string, []QuizDraft, error) {
 	prompt, err := renderPrompt("outro.tmpl", data)
 	if err != nil {

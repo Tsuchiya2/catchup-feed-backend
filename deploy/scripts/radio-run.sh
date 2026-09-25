@@ -141,25 +141,7 @@ fi
 
 VOICEVOX_URL="${VOICEVOX_URL:-http://127.0.0.1:50021}"
 ENGINE_PID=""
-
-# この実行の radio stderr を貯める一時ファイル(D-46 (3))。失敗メールが引用する
-# tail の出典をこれにする。
-#
-# 従来は launchd のリダイレクト先 ~/pulse/logs/radio.err.log を tail していたが、
-# launchd 以外から(手で)叩いた回では stderr がそのファイルに書かれないため、
-# ヘッダ(exit code・時刻)と本文は当該実行のものなのに **tail だけが前回の
-# launchd 実行の古いログ**になっていた(2026-09-25 09:58 の手動実行で実測)。
-# 障害調査で最初に読む箇所が実行と食い違うと誤診を誘発する。
-#
-# ログ収集の仕組みは作らない(原則1 右サイズ): mktemp 1本に複製して読み、
-# 終了時に消すだけ。永続ログは従来どおり launchd のリダイレクトが持つ。
 RUN_ERR_LOG=""
-if ! RUN_ERR_LOG="$(mktemp "${TMPDIR:-/tmp}/radio-run-err.XXXXXX")"; then
-    # mktemp が失敗しても radio は回す(欠番よりはマシ)。メールは従来どおり
-    # launchd のログを引用する経路に落ちる
-    RUN_ERR_LOG=""
-    log "WARN: 一時ファイルを作れない — 失敗メールの tail は launchd のログ由来になる"
-fi
 
 voicevox_up() {
     curl -sf --max-time 3 "$VOICEVOX_URL/version" >/dev/null 2>&1
@@ -178,6 +160,27 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+# この実行の radio stderr を貯める一時ファイル(D-46 (3))。失敗メールが引用する
+# tail の出典をこれにする。
+#
+# 従来は launchd のリダイレクト先 ~/pulse/logs/radio.err.log を tail していたが、
+# launchd 以外から(手で)叩いた回では stderr がそのファイルに書かれないため、
+# ヘッダ(exit code・時刻)と本文は当該実行のものなのに **tail だけが前回の
+# launchd 実行の古いログ**になっていた(2026-09-25 09:58 の手動実行で実測)。
+# 障害調査で最初に読む箇所が実行と食い違うと誤診を誘発する。
+#
+# ログ収集の仕組みは作らない(原則1 右サイズ): mktemp 1本に複製して読み、
+# 終了時に消すだけ。永続ログは従来どおり launchd のリダイレクトが持つ。
+#
+# **作るのは trap cleanup EXIT の後**。先に作ると、その間に落ちた回の一時
+# ファイルが /tmp に残る。
+if ! RUN_ERR_LOG="$(mktemp "${TMPDIR:-/tmp}/radio-run-err.XXXXXX")"; then
+    # mktemp が失敗しても radio は回す(欠番よりはマシ)。メールは従来どおり
+    # launchd のログを引用する経路に落ちる
+    RUN_ERR_LOG=""
+    log "WARN: 一時ファイルを作れない — 失敗メールの tail は launchd のログ由来になる"
+fi
 
 if ! voicevox_up; then
     if [ -n "${VOICEVOX_ENGINE_DIR:-}" ] && [ -x "$VOICEVOX_ENGINE_DIR/run" ]; then
@@ -216,12 +219,22 @@ OLLAMA_WARM_URL="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 OLLAMA_WARM_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
 # keep_alive は Ollama 既定の 5 分では足りない — アウトロが Ollama まで落ちる
 # のはニュース段を回し終えた十数分後になり得る。RADIO_TIMEOUT(既定1時間)の
-# 内側で足りる 40 分を渡す
+# 内側で足りる 40 分を渡す。
+#
+# ウォーム自体の待ちは 120 秒で打ち切る(--max-time)。ここは radio 起動前 =
+# RADIO_TIMEOUT の外で、待ち続けると放送開始そのものを遅らせる。ウォーム失敗は
+# 許容前提(WARN を残して進む)なので、長く粘る価値がない。
+#
+# ウォームするのは OLLAMA_MODEL(要約・台本連鎖)だけ。書籍コーナーの
+# BOOK_REVIEW_OLLAMA_MODEL(既定 gemma4:12b、7.6GB)は常にコールドロードを
+# RADIO_OLLAMA_TIMEOUT の予算内で被る — 2モデルを同時に常駐させるとメモリを
+# 食い合って追い出しが起き、どちらも温まらない可能性があるため意図的に1本に
+# 絞っている(book_review の失敗は書籍コーナーだけのスキップ、§7.3)
 OLLAMA_WARM_KEEP_ALIVE="${OLLAMA_WARM_KEEP_ALIVE:-40m}"
 
 if ! curl -sf --max-time 5 "$OLLAMA_WARM_URL/api/version" >/dev/null 2>&1; then
     log "WARN: Ollama not responding at $OLLAMA_WARM_URL — ウォームをスキップして radio へ進む(mac.md 2章)"
-elif curl -sf --max-time 300 -X POST "$OLLAMA_WARM_URL/api/generate" \
+elif curl -sf --max-time 120 -X POST "$OLLAMA_WARM_URL/api/generate" \
         -H 'Content-Type: application/json' \
         --data-binary "{\"model\":\"$OLLAMA_WARM_MODEL\",\"prompt\":\"\",\"keep_alive\":\"$OLLAMA_WARM_KEEP_ALIVE\"}" \
         >/dev/null 2>&1; then
