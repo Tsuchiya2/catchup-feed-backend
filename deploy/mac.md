@@ -38,6 +38,34 @@ ollama pull qwen2.5:7b            # コードの既定モデル(OLLAMA_MODEL で
 curl -s http://127.0.0.1:11434/api/tags   # 応答があれば OK
 ```
 
+**このモデルは毎朝 radio-run.sh が事前ウォームする**(D-46 (2))。Ollama は要約・台本の
+フォールバック連鎖の最終段で、クラウド2段(Gemini 無料枠の 429 / Groq 無料枠の TPM 上限)が
+同時に落ちた日はここだけが番組を出せる。モデルがメモリに載っていないと最初の呼び出しが
+ロード時間を丸ごと被り、実際に 2026-09-25 はそれで台本1本が 60 秒でタイムアウトして
+欠番した。radio-run.sh は radio を起こす前に空プロンプトで `/api/generate` を叩き、
+`keep_alive`(既定 40 分、`OLLAMA_WARM_KEEP_ALIVE` で変更可)の間モデルを常駐させる。
+
+- ウォーム対象は **`~/pulse/.env` の `OLLAMA_MODEL`**(未設定ならコード既定の `qwen2.5:7b`)。
+  `OLLAMA_MODEL` を変えたら **`ollama pull` も忘れずに**行う — 未 pull だとウォームが WARN で
+  失敗し、その日 Ollama 段まで落ちたら欠番になる
+- Ollama が落ちている日・未 pull の日はウォームを WARN でスキップして radio へ進む
+  (§8: 欠番よりはマシ。radio 自体のリトライはしない)。ログは `~/pulse/logs/` の radio ログに
+  `Ollama warmed:` / `WARN: Ollama warm-up failed` として残る
+- radio 側のタイムアウトは **`RADIO_OLLAMA_TIMEOUT`(既定 240 秒)**。要約連鎖の
+  `SUMMARIZER_TIMEOUT`(既定 60 秒)とは独立で、worker と違って radio には「次回クロールへ
+  持ち越し」が無いため長めに取ってある(6章の .env で変更可)
+- **ウォームするのは `OLLAMA_MODEL` の1本だけ**。書籍コーナーの
+  `BOOK_REVIEW_OLLAMA_MODEL`(既定 `gemma4:12b`、7.6GB)は毎回コールドロードを
+  `RADIO_OLLAMA_TIMEOUT` の予算の中で被る。2モデルを同時に常駐させるとメモリを食い合って
+  追い出しが起き、どちらも温まらない可能性があるため意図的に絞っている(book_review の
+  失敗は書籍コーナーだけのスキップで、公開版・私的版のニュースには影響しない)
+- **`RADIO_OLLAMA_TIMEOUT` を上げるときは `RADIO_TIMEOUT`(既定 1 時間)も一緒に見直す**。
+  クラウド2段が同時に落ちた日の LLM 呼び出しは 12〜13 回あり(intro + ニュース8本 +
+  アウトロ + D-26 の再試行 + book_review)、240 秒 × 12 回 = 48 分に VOICEVOX 合成・
+  ffmpeg・rsync が加わって 1 時間に収まらないことがある。全段 Ollama の日も完走させたい
+  なら `RADIO_TIMEOUT=1h30m`〜`2h` が目安(launchd は 04:30 起動、配信は朝なので長く
+  取っても実害はない)
+
 ## 3. Ollama を Pi の worker から使えるようにする(tailnet 限定公開)
 
 Pi の worker は要約フォールバックの最終段として Mac の Ollama を叩く(§8)。Ollama 自体は localhost のまま、**Tailscale の TCP フォワードで tailnet にだけ**開ける(LAN には出さない):
@@ -106,10 +134,21 @@ cp deploy/scripts/radio-run.sh deploy/scripts/backup-pulse-db.sh \
 chmod +x ~/pulse/bin/radio-run.sh ~/pulse/bin/backup-pulse-db.sh ~/pulse/bin/alert-mail.sh
 ```
 
+radio-run.sh は radio を起こす前に、(a) tailnet プリフライト、(b) VOICEVOX Engine の起動待ち、
+(c) **Ollama モデルの事前ウォーム**(2章、D-46 (2))を行う。いずれも失敗しても radio へ進む
+自己修復の仕掛けで、検知は radio の非ゼロ終了 + SMTP 直送と朝チェック(10b 章)が担う。
+
 `alert-mail.sh` は radio-run.sh / morning-check.sh が source する SMTP 直送ヘルパー。
 radio が非ゼロ終了した朝は、DB(jobs テーブル)経由の通知に加えて Mac から直接
 アラートメールが飛ぶ(2026-08-07 障害: tailnet 断で notify_error を積めず7日間沈黙、
 の恒久対策)。SMTP 未設定・送信失敗でも radio の exit code は変わらない。
+
+**メールが引用する `tail -n 20` は「その実行の stderr」である**(D-46 (3))。radio-run.sh は
+radio の stderr を一時ファイルへ複製し、そこから tail する。以前は launchd のリダイレクト先
+`~/pulse/logs/radio.err.log` を読んでいたため、**手で `radio-run.sh` を叩いた回**では
+ヘッダ(exit code・時刻)だけが当該実行で、tail は前回の launchd 実行の古いログになっていた
+(2026-09-25 実測)。一時ファイルは実行終了時に消える。永続ログは従来どおり
+`~/pulse/logs/radio.{out,err}.log`(launchd 実行分のみ)で、メール本文にもパスが載る。
 
 `~/pulse/.env` を編集(**値はファイルに直接記入。チャット等に貼らない**)。特に注意する4キー:
 
@@ -361,6 +400,33 @@ book_review)を生成して私的フィードに載せる。公開エピソー�
 
 追加の env なしで既定値のまま動く。調整したい場合だけ env.mac.example の
 「学習ループ / 復習クイズ」「書籍レビュー」節から使うキーを `~/pulse/.env` に写す。
+
+**`QUIZ_PROMPT_SUMMARY_CHARS`(既定 150 文字)は放送継続のための上限なので、安易に
+上げない**(D-46 (1))。アウトロには復習クイズの生成指示が相乗りしており(D-19)、
+ここに渡す要約の長さ × 当日の記事数がそのままアウトロプロンプトのトークン数になる。
+要約を丸ごと渡していた旧実装では8記事日に約 8,900 トークンへ膨らみ、Groq 無料枠の
+TPM 8,000(D-41 で 12,000 から減った)を1リクエストで超えて `413 Request too large`
+で拒否された(2026-09-25 欠番)。**413 は 429 と違って待っても通らない**ため、
+プロンプトを小さく保つことが唯一の対策である。上げる前に
+`internal/script/outrobudget_test.go` のトークン見積りで確認すること。
+クイズの素材が短くなる代わりに放送が続く、という優先順位(縮退許容)。
+
+**候補に出す記事は絞らない**(当日の全記事を渡す)。放送順は `plan.Plan()` が
+カテゴリのスラッグ辞書順に並べ替えた結果なので、先頭N件に絞ると後ろのコーナーが
+構造的に一度も学習項目にならない。
+
+`RADIO_MAX_ARTICLES` を既定 8 から大きく上げた日は、候補一覧が文字数予算を超えた分
+だけ要約上限が自動で縮み、radio ログに
+`outro quiz summaries shortened to fit the prompt budget` の WARN が出る。出たら
+記事数か要約長の設定を見直す合図(通常運転では出ない)。
+
+**さらに極端な記事数では、クイズ相乗りセクション自体を省いて放送を優先する**
+(`outro quiz section omitted: ...` の WARN)。最小の要約長(40文字)でも予算に
+収まらない日 — タイトルとラベルだけで予算を食い潰す水準 — が対象で、当日の学習項目は
+生成されないが**放送は出る**(§5.2 と同じ「クイズなし」への縮退)。巨大なプロンプトを
+投げて Groq の `413` を踏み、エピソードごと落とす(= 2026-09-25 の欠番と同じ失敗
+モード)のを避けるための縮退である。この WARN が出たら `RADIO_MAX_ARTICLES` を
+戻すこと。
 **`QUIZ_LADDER_DAYS` だけは Pi 側の .env(env.pi.example の学習ループ節)と
 一致必須**(server の採点 API と radio の自動解決が同じ遷移ラダーを共有するため)。
 それ以外のキーは Mac 側だけで完結する。

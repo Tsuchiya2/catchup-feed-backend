@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,7 +53,7 @@ func radioArticles() []repository.RadioArticle {
 
 func TestGenerator_GenerateEpisode_SegmentStructure(t *testing.T) {
 	llm := &fakeLLM{}
-	gen := script.NewGenerator(llm, nil)
+	gen := script.NewGenerator(llm, nil, script.OutroQuizLimits{})
 
 	segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 	require.NoError(t, err)
@@ -87,7 +88,7 @@ func TestGenerator_GenerateEpisode_SegmentStructure(t *testing.T) {
 // the article text cannot leak into a cloud prompt by construction.
 func TestGenerator_PromptContainsSummaryOnly(t *testing.T) {
 	llm := &fakeLLM{}
-	gen := script.NewGenerator(llm, nil)
+	gen := script.NewGenerator(llm, nil, script.OutroQuizLimits{})
 
 	_, _, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 	require.NoError(t, err)
@@ -116,7 +117,7 @@ func TestGenerator_NewsLeadReplacesTransition(t *testing.T) {
 		{ID: 30, Title: "記事C", Category: "dev", SourceName: "Go Blog", Summary: "要約C"},
 	}
 	llm := &fakeLLM{}
-	gen := script.NewGenerator(llm, nil)
+	gen := script.NewGenerator(llm, nil, script.OutroQuizLimits{})
 
 	_, _, err := gen.GenerateEpisode(context.Background(), day(4), articles, 0)
 	require.NoError(t, err)
@@ -139,7 +140,7 @@ func TestGenerator_NewsLeadReplacesTransition(t *testing.T) {
 
 func TestGenerator_IntroAndOutroPrompts(t *testing.T) {
 	llm := &fakeLLM{}
-	gen := script.NewGenerator(llm, nil)
+	gen := script.NewGenerator(llm, nil, script.OutroQuizLimits{})
 
 	// 2026-07-05 は日曜日。曜日は Go 側で算出する (D-37 (5)).
 	_, _, err := gen.GenerateEpisode(context.Background(), time.Date(2026, 7, 5, 4, 30, 0, 0, time.UTC), radioArticles(), 0)
@@ -170,7 +171,7 @@ func TestGenerator_IntroAndOutroPrompts(t *testing.T) {
 // no raw category slug and no ASCII program name anywhere.
 func TestGenerator_PromptsCarryTheProgramFormat(t *testing.T) {
 	llm := &fakeLLM{}
-	gen := script.NewGenerator(llm, nil)
+	gen := script.NewGenerator(llm, nil, script.OutroQuizLimits{})
 
 	_, _, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 	require.NoError(t, err)
@@ -204,7 +205,7 @@ func TestGenerator_UnknownCategoryFallsBackToSlug(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	llm := &fakeLLM{}
-	gen := script.NewGenerator(llm, logger)
+	gen := script.NewGenerator(llm, logger, script.OutroQuizLimits{})
 
 	articles := []repository.RadioArticle{
 		{ID: 1, Title: "記事X", Category: "product", SourceName: "Src", Summary: "要約X"},
@@ -221,7 +222,7 @@ func TestGenerator_UnknownCategoryFallsBackToSlug(t *testing.T) {
 // 変更しない。実測とのズレは別課題。
 func TestGenerator_NewsPromptKeepsTheLengthSpec(t *testing.T) {
 	llm := &fakeLLM{}
-	gen := script.NewGenerator(llm, nil)
+	gen := script.NewGenerator(llm, nil, script.OutroQuizLimits{})
 
 	_, _, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 	require.NoError(t, err)
@@ -242,7 +243,7 @@ func TestGenerator_Errors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gen := script.NewGenerator(tt.llm, nil)
+			gen := script.NewGenerator(tt.llm, nil, script.OutroQuizLimits{})
 			segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantSub)
@@ -253,7 +254,7 @@ func TestGenerator_Errors(t *testing.T) {
 }
 
 func TestGenerator_NoArticles(t *testing.T) {
-	gen := script.NewGenerator(&fakeLLM{}, nil)
+	gen := script.NewGenerator(&fakeLLM{}, nil, script.OutroQuizLimits{})
 	_, _, err := gen.GenerateEpisode(context.Background(), day(4), nil, 0)
 	assert.Error(t, err)
 }
@@ -266,7 +267,7 @@ func TestGenerator_NoArticles(t *testing.T) {
 // here first.
 func TestGenerator_OutroPromptUnchangedWithoutQuiz(t *testing.T) {
 	llm := &fakeLLM{}
-	gen := script.NewGenerator(llm, nil)
+	gen := script.NewGenerator(llm, nil, script.OutroQuizLimits{})
 
 	_, _, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 0)
 	require.NoError(t, err)
@@ -301,29 +302,33 @@ const goldenQuizlessOutroPrompt = `あなたはラジオ番組「キャッチア
 - 全体で100文字程度にする。
 `
 
-// goldenOutroQuizSection is what quizCount>0 appends to the outro prompt. It
-// is byte-for-byte the pre-D-37 section: the D-37 rewrite touched the
-// broadcast half of outro.tmpl only, because D-26 (1) と §12-1 の縮退・遮断
-// ロジック(マーカー分割・stripQuizLeak・クイズなし再試行)がこの出力形式に
-// 依存している。相乗りセクションを触るときは D-26 を読み直すこと。
+// goldenOutroQuizSection is what quizCount>0 appends to the outro prompt.
+// 出力形式(マーカー・4行の項目フォーマット)は D-37 でも D-46 でも変えて
+// いない — D-26 (1) と §12-1 の縮退・遮断ロジック(マーカー分割・
+// stripQuizLeak・クイズなし再試行)がこの形式に依存している。相乗り
+// セクションを触るときは D-26 を読み直すこと。
+//
+// D-46 (1) で変えたのは**渡す材料の量**だけ: 見出しが「本日の記事一覧」から
+// 「復習候補の記事」になったのは、渡すのが当日の全記事ではなく上位N件に
+// なったため(このテストは2記事日なので絞り込みは効かず全件が出る)。
 const goldenOutroQuizSection = `
 クロージング原稿に続けて、番組の復習コーナーで使う学習項目も作ってください。
 
-本日の記事一覧:
+復習候補の記事:
 記事1: Go 1.26 リリース
 要約: Go 1.26 の要約テキスト。
 記事2: 新しい推論モデル
 要約: 推論モデルの要約テキスト。
 
 学習項目の条件:
-- 記事一覧から技術的な学びが最も大きい記事を1件選び、選んだ記事ごとにクイズを1問作る。
+- 復習候補の記事から技術的な学びが最も大きい記事を1件選び、選んだ記事ごとにクイズを1問作る。
 - クロージング原稿の本文を最後まで書いたあと、「===LEARNING_ITEMS===」という行をこの表記のまま1回だけ出力し、その後に学習項目だけを出力する。クロージング原稿の本文ではクイズや学習項目に一切触れない。
 - 学習項目は選んだ記事ごとに、次の4行をこの順で出力する。各行は改行せず1行に収める。
-記事番号: 記事一覧の番号(数字のみ)
+記事番号: 復習候補の記事の番号(数字のみ)
 概念: 学習内容の1行見出し
 問題: ラジオで読み上げるクイズ文
 答え: 答えと一言解説
-- 問題と答えは「昨日のニュースで触れた○○ですが」のように、すでに放送済みであることを前提にしたラジオ口調の日本語で書く。記事の要約に書かれている内容だけを根拠にし、事実を付け足さない。
+- 問題と答えは「昨日のニュースで触れた○○ですが」のように、すでに放送済みであることを前提にしたラジオ口調の日本語で書く。記事の要約に書かれている内容だけを根拠にし、事実を付け足さない。要約が「…」で終わっている記事は要約がそこで途切れているので、書かれている範囲だけを使う。
 - 問題と答えも音声合成でそのまま読み上げるため、URL や英数字の羅列を避ける。
 `
 
@@ -333,7 +338,7 @@ const goldenOutroQuizSection = `
 func TestGenerator_OutroQuizSectionUnchanged(t *testing.T) {
 	llm := &fakeLLM{responses: []string{"イントロ。", "ニュース1。", "ニュース2。",
 		"アウトロ本文。\n===LEARNING_ITEMS===\n記事番号: 1\n概念: c\n問題: q\n答え: a"}}
-	gen := script.NewGenerator(llm, nil)
+	gen := script.NewGenerator(llm, nil, script.OutroQuizLimits{})
 
 	_, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
 	require.NoError(t, err)
@@ -356,7 +361,7 @@ func TestGenerator_QuizPiggyback(t *testing.T) {
 			"問題: 昨日のニュースで触れた新しい推論モデルですが、小型化の鍵は何だったでしょうか。\n" +
 			"答え: 蒸留です。大きなモデルの知識を小さなモデルに移して計算資源を節約するのがポイントでした。",
 	}}
-	gen := script.NewGenerator(llm, nil)
+	gen := script.NewGenerator(llm, nil, script.OutroQuizLimits{})
 
 	segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
 	require.NoError(t, err)
@@ -436,7 +441,7 @@ func TestGenerator_QuizDegradation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			llm := &fakeLLM{responses: []string{"イントロ。", "ニュース1。", "ニュース2。", tt.outro}}
-			gen := script.NewGenerator(llm, nil)
+			gen := script.NewGenerator(llm, nil, script.OutroQuizLimits{})
 
 			segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
 			require.NoError(t, err, "quiz-side failures must not abort the episode (§5.1)")
@@ -517,7 +522,7 @@ func TestGenerator_QuizEmptyOutroQuizlessRetry(t *testing.T) {
 				responses = append(responses, tt.retryOutro)
 			}
 			llm := &fakeLLM{responses: responses}
-			gen := script.NewGenerator(llm, nil)
+			gen := script.NewGenerator(llm, nil, script.OutroQuizLimits{})
 
 			segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
 
@@ -557,7 +562,7 @@ func TestGenerator_QuizLeakBeforeValidMarker(t *testing.T) {
 	llm := &fakeLLM{responses: []string{"イントロ。", "ニュース1。", "ニュース2。",
 		"アウトロ。\n記事番号: 1\n概念: c1\n問題: q1\n答え: a1\n" +
 			"===LEARNING_ITEMS===\n記事番号: 2\n概念: c2\n問題: q2\n答え: a2"}}
-	gen := script.NewGenerator(llm, nil)
+	gen := script.NewGenerator(llm, nil, script.OutroQuizLimits{})
 
 	segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
 	require.NoError(t, err)
@@ -565,4 +570,52 @@ func TestGenerator_QuizLeakBeforeValidMarker(t *testing.T) {
 	assert.Equal(t, "アウトロ。", segments[3].Script, "leaked item lines must not reach the broadcast")
 	require.Len(t, drafts, 1, "the marker section itself still yields the item")
 	assert.Equal(t, int64(20), drafts[0].ArticleID)
+}
+
+// TestGenerator_QuizSectionOmittedWhenBudgetCannotFit covers the D-46 (1)
+// 縮退の end-to-end: 候補一覧が下限まで縮めても文字数予算に収まらない日は、
+// アウトロプロンプトから相乗りセクションが消え、当日の学習項目は生成されない。
+// **放送は止めない**(§5.2 と同じ「クイズなし」方向)。
+//
+// ここで固定したい退行は2つある。(1) 巨大なプロンプトをそのまま投げて Groq の
+// 413 を踏む(2026-09-25 欠番と同じ失敗モード)こと。(2) セクションを省いたのに
+// quizCount>0 のまま generateOutro へ渡し、存在しないマーカーを探して
+// 「section missing」の WARN と無意味な D-26 (1) 再試行を起こすこと。
+func TestGenerator_QuizSectionOmittedWhenBudgetCannotFit(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	llm := &fakeLLM{}
+	gen := script.NewGenerator(llm, logger, script.OutroQuizLimits{})
+
+	// タイトルを 300 文字にすると、1件あたり 300 + ラベル + 下限要約で
+	// 350 文字超になり、8件で文字数予算(2,800)を超える。
+	articles := make([]repository.RadioArticle, 8)
+	for i := range articles {
+		articles[i] = repository.RadioArticle{
+			ID:          int64(i + 1),
+			Title:       strings.Repeat("長", 300),
+			Category:    "dev",
+			SourceName:  "Example",
+			Summary:     strings.Repeat("要", 900),
+			PublishedAt: day(1),
+		}
+	}
+
+	segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), articles, 1)
+	require.NoError(t, err, "放送は止めない")
+	require.Len(t, segments, len(articles)+2)
+	assert.Empty(t, drafts, "当日の学習項目は生成しない")
+
+	outroPrompt := llm.prompts[len(llm.prompts)-1]
+	assert.NotContains(t, outroPrompt, "復習候補の記事",
+		"相乗りセクションはプロンプトに載らない")
+	assert.NotContains(t, outroPrompt, "===LEARNING_ITEMS===")
+
+	logs := buf.String()
+	assert.Contains(t, logs, "outro quiz section omitted",
+		"運用ミスに気づけるよう WARN を残す")
+	assert.NotContains(t, logs, "learning-item section missing",
+		"セクションを出していないのにマーカーを探してはいけない")
+	assert.NotContains(t, logs, "quizless_retry",
+		"D-26 (1) の再試行は走らない(同一プロンプトになるだけ)")
 }

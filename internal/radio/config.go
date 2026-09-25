@@ -49,6 +49,35 @@ const (
 	// the book_review is deferred to tomorrow with no cursor advance (§7.1:
 	// 18分を超える場合は book_review を翌日に回す).
 	defaultPrivateEpisodeMaxMinutes = 18
+
+	// defaultOllamaTimeout is the per-request timeout of radio's Ollama
+	// calls, deliberately its own env — NOT the summary chain's
+	// SUMMARIZER_TIMEOUT (D-46 (2)). The precedent is
+	// BOOK_REVIEW_OLLAMA_MODEL: radio's local-model settings are separate
+	// from the hourly crawl's.
+	//
+	// SUMMARIZER_TIMEOUT(既定60秒)は Pi の worker が1時間ごとに何十本も
+	// 回す要約に合わせた値で、そこでは「遅い記事は次回に持ち越す」のが
+	// 正しい縮退である。radio の Ollama 段はクラウド2段が落ちた日の
+	// 最終防衛線で、ここで諦めると当日は欠番になる — 持ち越し先がない。
+	// 2026-09-25 の欠番は台本1本が 60.002秒 で context deadline exceeded
+	// になったもの(D-46)。
+	//
+	// 既定 240秒の根拠: M3 Mac の qwen2.5:7b は D-46 (1) で縮小した
+	// 約2,500文字のプロンプトを、コールドスタート(モデルのロード込み)でも
+	// 数十秒〜2分程度で返す。4分はその倍以上の余裕をとった値。
+	//
+	// **ただし全段 Ollama の日は RADIO_TIMEOUT の側が先に効き得る**(2026-09-25
+	// レビュー指摘)。1ランの LLM 呼び出しは intro + ニュース8本 + アウトロ =
+	// 10回に、D-26 (1) のクイズなし再試行と book_review(gemma4:12b)を足して
+	// 12〜13回あり、最悪 12 × 4分 = 48分。ここに VOICEVOX 合成・ffmpeg・rsync も
+	// 同じ RADIO_TIMEOUT(既定1時間)の中で走るため、**クラウド2段が同時に
+	// 落ちた日は 1時間に収まらず、ランごと打ち切られて欠番になり得る**。
+	// この env を上げるときは RADIO_TIMEOUT も一緒に見直すこと(全段 Ollama を
+	// 本当に完走させたい運用なら 1h30m〜2h が目安。launchd 04:30 起動に対して
+	// 配信は朝なので、長く取っても実害はない)。radio-run.sh の事前ウォーム
+	// (D-46 (2))はこの合計時間を縮めるための仕掛けでもある。
+	defaultOllamaTimeout = 240 * time.Second
 )
 
 // bookReviewEstimate is the assumed book_review length (§7.1: 書籍≒2分) added
@@ -98,6 +127,12 @@ type Config struct {
 	// publishPrivateEpisode), so this costs no estimate; on a run where the
 	// jingles degraded they contribute zero and the guard simply loosens.
 	PrivateEpisodeMax time.Duration
+
+	// OllamaTimeout is the per-request timeout of radio's Ollama calls —
+	// both the script chain's last stage and the book_review generator
+	// (RADIO_OLLAMA_TIMEOUT, D-46 (2)). It deliberately overrides
+	// SUMMARIZER_TIMEOUT for this binary only: see defaultOllamaTimeout.
+	OllamaTimeout time.Duration
 }
 
 // LoadConfig reads the radio batch settings from environment variables:
@@ -115,6 +150,9 @@ type Config struct {
 //   - BOOK_REVIEW_CHUNKS: book_chunks per book_review (default 3, §7.3)
 //   - PRIVATE_EPISODE_MAX_MINUTES: private episode length cap for the
 //     book_review guard (default 18, §7.1)
+//   - RADIO_OLLAMA_TIMEOUT: radio の Ollama 呼び出しのタイムアウト、Go
+//     duration (default 240s, D-46 (2))。要約連鎖の SUMMARIZER_TIMEOUT
+//     とは独立
 func LoadConfig(logger *slog.Logger) (Config, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -130,6 +168,7 @@ func LoadConfig(logger *slog.Logger) (Config, error) {
 		BookReviewChunks: pkgconfig.GetEnvInt("BOOK_REVIEW_CHUNKS", defaultBookReviewChunks),
 		PrivateEpisodeMax: time.Duration(
 			pkgconfig.GetEnvInt("PRIVATE_EPISODE_MAX_MINUTES", defaultPrivateEpisodeMaxMinutes)) * time.Minute,
+		OllamaTimeout: pkgconfig.GetEnvDuration("RADIO_OLLAMA_TIMEOUT", defaultOllamaTimeout),
 	}
 	if cfg.Timeout <= 0 {
 		logger.Warn("RADIO_TIMEOUT must be positive, using default",
@@ -151,6 +190,12 @@ func LoadConfig(logger *slog.Logger) (Config, error) {
 			slog.Duration("value", cfg.PrivateEpisodeMax),
 			slog.Int("default_minutes", defaultPrivateEpisodeMaxMinutes))
 		cfg.PrivateEpisodeMax = defaultPrivateEpisodeMaxMinutes * time.Minute
+	}
+
+	if cfg.OllamaTimeout <= 0 {
+		logger.Warn("RADIO_OLLAMA_TIMEOUT must be positive, using default",
+			slog.Duration("value", cfg.OllamaTimeout), slog.Duration("default", defaultOllamaTimeout))
+		cfg.OllamaTimeout = defaultOllamaTimeout
 	}
 
 	tz := pkgconfig.GetEnvString("RADIO_TIMEZONE", defaultTimezone)

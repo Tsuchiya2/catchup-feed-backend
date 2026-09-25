@@ -13,7 +13,8 @@ import (
 	"regexp"
 	"strconv"
 	"time"
-	"unicode/utf8"
+
+	utiltext "catchup-feed/internal/utils/text"
 )
 
 // Provider is a single generation backend (gemini / groq / ollama).
@@ -52,17 +53,17 @@ func buildPrompt(charLimit int, text string) string {
 }
 
 // truncateInput truncates overly long article text before prompting.
-// The cut is backed off to a rune boundary so multi-byte characters
-// (Japanese article bodies) are never split into invalid UTF-8.
+// The byte budget is enforced by utils/text.TruncateBytes, which backs the
+// cut off to a rune boundary so multi-byte characters (Japanese article
+// bodies) are never split into invalid UTF-8. That helper is shared with the
+// radio outro prompt's 文字数 budget (D-46 (1), TruncateRunes) so both
+// truncation paths stay one tool.
 func truncateInput(provider, text string) string {
-	if len(text) <= maxInputChars {
+	kept, cut := utiltext.TruncateBytes(text, maxInputChars)
+	if !cut {
 		return text
 	}
-	cut := maxInputChars
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	truncated := text[:cut] + "...\n(内容が長いため切り詰めました)"
+	truncated := kept + "...\n(内容が長いため切り詰めました)"
 	slog.Warn("text truncated for summarization",
 		slog.String("provider", provider),
 		slog.Int("original_length", len(text)),

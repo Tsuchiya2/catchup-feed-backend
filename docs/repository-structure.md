@@ -47,7 +47,7 @@ catchup-feed-backend/
 │   ├── common/pagination/ #   共通: ページネーション
 │   ├── pkg/               #   共通: 検索・バリデーション・設定ロード
 │   ├── service/auth/      #   認証ポート
-│   └── utils/text/        #   文字数カウント
+│   └── utils/text/        #   文字数カウント・切り詰め(バイト/文字の両予算)
 ├── pkg/                   # 外部 import 可の公開パッケージ
 ├── deploy/                # Pi / Mac へのデプロイ資材(運用スクリプトは deploy/scripts/)
 ├── docs/                  # 設計ドキュメント + Swagger 生成物
@@ -219,7 +219,7 @@ Mac の夜間バッチ(launchd 起動)。`internal/radio.Pipeline` に必要な�
 | `pkg/validation/` | 140 | クエリパラメータのパース |
 | `pkg/search/` | 130 | 検索キーワードのエスケープと正規化 |
 | `service/auth/` | 44 | `AuthProvider` インターフェース(実装は `handler/http/auth/provider.go`) |
-| `utils/text/` | 22 | 文字数カウント(要約の文字数上限チェック用) |
+| `utils/text/` | 22 | 文字数カウント(要約の文字数上限チェック用)と切り詰め。`TruncateBytes` はプロバイダの入力上限用(summarizer)、`TruncateRunes` はアウトロプロンプトの文字数予算用(D-46 (1)) |
 
 > **注**: 設定まわりは `internal/pkg/config`(ロード結果と警告)と `pkg/config`(環境変数ヘルパ)の 2 箇所です。かつては `internal/config`(`config/security.yaml` の YAML 読み込み、108 行)もありましたが、**import 元がゼロ**で 2026-08-15 に削除しました(D-44)。
 

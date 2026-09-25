@@ -77,7 +77,10 @@ func main() {
 	}
 
 	// D-3: 台本は要約と同一の Gemini -> Groq -> Ollama 連鎖。
-	chain, err := summarizer.NewChainFromEnv(logger)
+	// D-46 (2): ただし Ollama 段のタイムアウトだけは radio 専用の予算を渡す
+	// (RADIO_OLLAMA_TIMEOUT)。worker と違って radio には「次回持ち越し」が
+	// なく、最終段で諦めると当日は欠番になる。
+	chain, err := summarizer.NewChainFromEnv(logger, summarizer.WithOllamaTimeout(cfg.OllamaTimeout))
 	if err != nil {
 		logger.Error("failed to configure LLM fallback chain",
 			slog.Any("error", err),
@@ -105,6 +108,12 @@ func main() {
 	// いれば生成失敗で当日スキップ縮退)。
 	bookOllamaCfg := summarizer.LoadOllamaConfig(summarizer.LoadOptions())
 	bookOllamaCfg.Model = pkgconfig.GetEnvString("BOOK_REVIEW_OLLAMA_MODEL", defaultBookReviewModel)
+	// D-46 (2) と同じ理由でこちらも radio の予算にそろえる: book_review は
+	// gemma4:12b(7.6GB)で qwen2.5:7b より重く、SUMMARIZER_TIMEOUT(既定60秒)
+	// では書籍コーナーが恒常的に落ちかねない。失敗しても書籍コーナーだけの
+	// スキップ(§7.3 縮退)だが、radio の Ollama 呼び出しは1つの予算で
+	// 管理する。
+	bookOllamaCfg.Options.Timeout = cfg.OllamaTimeout
 	bookReviewLLM := script.NewBookReviewGenerator(summarizer.NewOllama(bookOllamaCfg), logger)
 
 	logger.Info("radio batch starting",
@@ -117,13 +126,14 @@ func main() {
 		slog.Int("quiz_slots", learningCfg.Slots),
 		slog.Int("book_review_chunks", cfg.BookReviewChunks),
 		slog.String("book_review_model", bookOllamaCfg.Model),
+		slog.Duration("ollama_timeout", cfg.OllamaTimeout),
 		slog.Bool("dry_run", *dryRun))
 
 	pipeline := &radio.Pipeline{
 		Articles:      pgRepo.NewRadioArticleRepo(database),
 		Episodes:      pgRepo.NewEpisodeRepo(database),
 		Jobs:          pgRepo.NewJobRepo(database),
-		Script:        script.NewGenerator(chain, logger),
+		Script:        script.NewGenerator(chain, logger, script.LoadOutroQuizLimits(logger)),
 		TTS:           tts.NewVoicevox(voicevoxCfg),
 		Encoder:       tts.NewFFmpeg(),
 		Transfer:      radio.NewTransferer(cfg),

@@ -9,6 +9,7 @@ import (
 
 	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/repository"
+	utiltext "catchup-feed/internal/utils/text"
 )
 
 // LLM is the text generator behind the script. It is satisfied by
@@ -25,18 +26,23 @@ type LLM interface {
 type Generator struct {
 	llm    LLM
 	logger *slog.Logger
+	// quizLimits bounds the piggybacked quiz section of the outro prompt so
+	// one outro request stays inside the Groq free-tier TPM ceiling
+	// (D-46 (1)). The zero value means the built-in defaults.
+	quizLimits OutroQuizLimits
 }
 
-// NewGenerator creates a Generator; a nil logger falls back to slog.Default().
+// NewGenerator creates a Generator; a nil logger falls back to slog.Default()
+// and a zero-valued quizLimits to DefaultOutroQuizLimits (D-46 (1)).
 //
 // 番組名は引数に取らない: 台本に出る番組名は format.go の spokenShowName に
 // 固定されており、RADIO_SHOW_NAME(ASCII、エピソードタイトルと ID3 用)を
 // プロンプトへ流し込む経路をここで断っている (D-37 (3))。
-func NewGenerator(llm LLM, logger *slog.Logger) *Generator {
+func NewGenerator(llm LLM, logger *slog.Logger, quizLimits OutroQuizLimits) *Generator {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Generator{llm: llm, logger: logger}
+	return &Generator{llm: llm, logger: logger, quizLimits: quizLimits.withDefaults()}
 }
 
 // GenerateEpisode produces the ordered segments for one episode: intro,
@@ -110,13 +116,59 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 		})
 	}
 
+	// D-46 (1): クイズ相乗りセクションは当日の**全記事**を候補に出したまま、
+	// 各要約を文字数で切り詰める。要約を丸ごと埋め込むと8記事日のアウトロが
+	// Groq 無料枠の TPM 8,000 を1リクエストで超え(413、待っても通らない)、
+	// Ollama 段しか残らない — 2026-09-25 欠番の構造。
+	//
+	// 記事の件数は絞らない: plan.Plan() は featured をカテゴリのスラッグ辞書順
+	// に並べ替えるため、先頭N件に絞ると後ろのコーナーが構造的に一度も
+	// 出題されない(当初実装のレビュー指摘、D-46 (1) 改訂)。
+	quiz, summaryChars, outcome := quizPrompt(articles, quizCount, g.quizLimits)
+	switch outcome {
+	case quizPromptShortened:
+		// RADIO_MAX_ARTICLES を大きく上げた日の安全弁が効いた。通常運転では
+		// 出ない WARN なので、出たら記事数か要約長の設定を見直す合図。
+		g.logger.WarnContext(ctx, "outro quiz summaries shortened to fit the prompt budget (D-46 (1))",
+			slog.Int("articles", len(articles)),
+			slog.Int("configured_summary_chars", g.quizLimits.SummaryChars),
+			slog.Int("effective_summary_chars", summaryChars))
+	case quizPromptOmitted:
+		// 下限まで縮めても予算に収まらない = 記事数が極端。巨大なプロンプトを
+		// 投げて 413 でエピソードごと落とすより、当日の学習項目を諦めて放送を
+		// 出す(§5.2 と同じ「クイズなし」への縮退)。RADIO_MAX_ARTICLES の
+		// 運用ミスを気づけるように、上とは別メッセージで残す。
+		g.logger.WarnContext(ctx, "outro quiz section omitted: candidate list cannot fit the prompt budget even at the minimum summary length (D-46 (1))",
+			slog.Int("articles", len(articles)),
+			slog.Int("configured_summary_chars", g.quizLimits.SummaryChars),
+			slog.Int("min_summary_chars", minQuizPromptSummaryChars),
+			slog.Int("budget_chars", quizPromptListBudgetChars),
+			slog.String("hint", "RADIO_MAX_ARTICLES が大きすぎる可能性がある"))
+	case quizPromptDisabled, quizPromptFull:
+		// 通常運転(QUIZ_ITEMS_PER_DAY=0 の日常運転を含む)。ログは出さない。
+	}
+	// generateOutro の契約は「quizCount > 0 ⟺ プロンプトに相乗りセクションが
+	// ある」。予算で省いた日(quiz == nil)にそのまま quizCount を渡すと、存在
+	// しないマーカーを探して「section missing」の WARN を出し、本文が空なら
+	// 意味のない D-26 (1) 再試行(同一プロンプト)まで走ってしまう — 再試行は
+	// data.Quiz = nil にして再レンダリングする実装なので、省いた日には1回目と
+	// バイト単位で同一のリクエストを投げ直すだけになる。渡すのは実際に
+	// プロンプトへ載った件数にする。
+	//
+	// これにより §12-1 の第2網 stripQuizLeak も外れるが、そもそも相乗り
+	// セクションを出していないので、リスク水準は QUIZ_ITEMS_PER_DAY=0 の
+	// 日常運転と同じである(quizCount をそのまま渡す形に戻さないこと)。
+	effectiveQuizCount := quizCount
+	if quiz == nil {
+		effectiveQuizCount = 0
+	}
 	outroScript, drafts, err := g.generateOutro(ctx, outroData{
 		Date:         dateStr,
 		Corners:      cornerList,
 		ArticleCount: len(articles),
 		SignOff:      closingSignOff,
-		Quiz:         quizPrompt(articles, quizCount),
-	}, articles, quizCount)
+		Quiz:         quiz,
+	}, articles, effectiveQuizCount)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -127,21 +179,6 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 	})
 
 	return segments, drafts, nil
-}
-
-// quizPrompt builds the learning-item section data for the outro prompt.
-// count <= 0 returns nil, which renders outro.tmpl exactly as before the
-// Phase 3 extension — this nil is the backpressure/duplicate-guard switch
-// (§5.2: プロンプト側で抑止、トークンも消費しない).
-func quizPrompt(articles []repository.RadioArticle, count int) *quizPromptData {
-	if count <= 0 {
-		return nil
-	}
-	entries := make([]quizPromptArticle, len(articles))
-	for i, a := range articles {
-		entries[i] = quizPromptArticle{Number: i + 1, Title: a.Title, Summary: a.Summary}
-	}
-	return &quizPromptData{Count: count, Marker: quizSectionMarker, Articles: entries}
 }
 
 // generateOutro renders the outro prompt from data, runs the (possibly
@@ -165,11 +202,22 @@ func quizPrompt(articles []repository.RadioArticle, count int) *quizPromptData {
 // quiz-less to begin with) is it a script generation failure:
 // without a closing script there is no episode to ship, so the day is
 // skipped (§8) rather than broadcasting a truncated show.
-func (g *Generator) generateOutro(ctx context.Context, data outroData, articles []repository.RadioArticle, quizCount int) (string, []QuizDraft, error) {
+// scope is the candidate list the prompt presented (D-46 (1): 当日の全記事);
+// 記事番号はこの並びの1始まりなので、パーサへ渡すのも同じスライスでなければ
+// ならない。
+func (g *Generator) generateOutro(ctx context.Context, data outroData, scope []repository.RadioArticle, quizCount int) (string, []QuizDraft, error) {
 	prompt, err := renderPrompt("outro.tmpl", data)
 	if err != nil {
 		return "", nil, err
 	}
+	// D-46 (1): アウトロは連鎖の中で最も大きい単一プロンプトで、Groq 無料枠の
+	// TPM 8,000 を1リクエストで超えると 413 で即拒否される(待っても通らない)。
+	// 縮小が効いているかを毎朝のログで確認できるようにサイズを残す。dry-run
+	// でも同一のレンダリングを通るので、調整時の実測値もここに出る。
+	g.logger.InfoContext(ctx, "outro prompt rendered",
+		slog.Int("prompt_chars", utiltext.CountRunes(prompt)),
+		slog.Int("quiz_candidates", len(scope)),
+		slog.Int("quiz_count", quizCount))
 	raw, provider, err := g.llm.Generate(ctx, prompt)
 	if err != nil {
 		return "", nil, fmt.Errorf("script: generate outro segment: %w", err)
@@ -186,7 +234,7 @@ func (g *Generator) generateOutro(ctx context.Context, data outroData, articles 
 			g.logger.WarnContext(ctx, "learning-item section missing from outro output, skipping today's item generation (§5.1)",
 				slog.String("provider", provider))
 		default:
-			drafts = parseQuizItems(section, articles, quizCount, provider, g.logger)
+			drafts = parseQuizItems(section, scope, quizCount, provider, g.logger)
 			if len(drafts) == 0 {
 				g.logger.WarnContext(ctx, "learning-item section yielded no valid item, skipping today's item generation (§5.1)",
 					slog.String("provider", provider))
