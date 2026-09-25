@@ -280,7 +280,7 @@ go build -o radio ./cmd/radio
 | 変数 | 説明 |
 |---|---|
 | `RADIO_SHOW_NAME` | 番組名(エピソードタイトルと ID3 タグ用。**台本の読み上げ名は連動せず** `internal/script/format.go` に固定 — D-37) |
-| `RADIO_MAX_ARTICLES` | 1エピソードの最大記事数(既定 8) |
+| `RADIO_MAX_ARTICLES` | 1エピソードの最大記事数(既定 8)。**極端に上げるとアウトロの復習クイズが省かれる** — 記事数がアウトロプロンプトのトークン量に直接効くため(D-46 (1)、`QUIZ_PROMPT_SUMMARY_CHARS` の行を参照) |
 | `RADIO_EPISODES_DIR` | Mac 側の一時生成ディレクトリ(既定 `/data/episodes`) |
 | `RADIO_RSYNC_DEST` / `RADIO_RSYNC_PATH` | Pi への rsync 転送先(空ならローカル配置) |
 | `RADIO_TIMEZONE` | 放送日判定のタイムゾーン(既定 `Asia/Tokyo`) |
@@ -306,7 +306,7 @@ go build -o radio ./cmd/radio
 | `QUIZ_LADDER_DAYS` | spaced repetition の間隔ラダー |
 | `QUIZ_ITEMS_PER_DAY` / `QUIZ_SLOTS` | 1日の生成項目数・出題スロット数 |
 | `QUIZ_AUTO_RESOLVE_AFTER` / `QUIZ_BACKPRESSURE_THRESHOLD` / `QUIZ_WEEKLY_REVIEW_DOW` | 自動採点・キュー飽和・週次振り返り曜日 |
-| `QUIZ_PROMPT_SUMMARY_CHARS` | アウトロに相乗りさせるクイズ生成セクション(D-19)に渡す**1件あたりの要約文字数**(既定 150。要約そのものは `SUMMARIZER_CHAR_LIMIT` の既定 900 文字)。**Groq 無料枠の TPM 8,000 に1リクエストで収めるための上限**(D-46 (1))。候補に出す**記事は絞らない** — 当日の全記事を渡す(`plan.Plan()` は featured をカテゴリのスラッグ辞書順に並べ替えるため、先頭N件に絞ると後ろのコーナーが構造的に一度も出題されない)。上げると 8 記事日のアウトロが再び 413 で拒否され Ollama 段しか残らないので、上げる前に `internal/script/outrobudget_test.go` のトークン見積りで確認する。なお `RADIO_MAX_ARTICLES` を大きく上げた日は、候補一覧が文字数予算を超えた分だけ要約上限が自動で縮み、radio ログに `outro quiz summaries shortened to fit the prompt budget` の WARN が出る |
+| `QUIZ_PROMPT_SUMMARY_CHARS` | アウトロに相乗りさせるクイズ生成セクション(D-19)に渡す**1件あたりの要約文字数**(既定 150。要約そのものは `SUMMARIZER_CHAR_LIMIT` の既定 900 文字)。**Groq 無料枠の TPM 8,000 に1リクエストで収めるための上限**(D-46 (1))。候補に出す**記事は絞らない** — 当日の全記事を渡す(`plan.Plan()` は featured をカテゴリのスラッグ辞書順に並べ替えるため、先頭N件に絞ると後ろのコーナーが構造的に一度も出題されない)。上げると 8 記事日のアウトロが再び 413 で拒否され Ollama 段しか残らないので、上げる前に `internal/script/outrobudget_test.go` のトークン見積りで確認する。なお `RADIO_MAX_ARTICLES` を大きく上げた日は、候補一覧が文字数予算を超えた分だけ要約上限が自動で縮み、radio ログに `outro quiz summaries shortened to fit the prompt budget` の WARN が出る。**さらに極端な記事数(最小の要約長でも予算に収まらない水準)ではクイズ相乗りセクション自体を省いて放送を優先する**(`outro quiz section omitted` の WARN。当日の学習項目は生成されないが放送は出る — §5.2 と同じ「クイズなし」への縮退) |
 
 ### 通知
 

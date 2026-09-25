@@ -68,9 +68,9 @@ func TestQuizPromptTruncatesSummaries(t *testing.T) {
 	require.Equal(t, 150, limits.SummaryChars, "既定は150文字 (D-46 (1) 改訂)")
 
 	articles := promptArticles(8)
-	data, summaryChars, clamped := quizPrompt(articles, 1, limits)
+	data, summaryChars, outcome := quizPrompt(articles, 1, limits)
 	require.NotNil(t, data)
-	assert.False(t, clamped, "8記事日は予算に収まるので圧縮は効かない")
+	assert.Equal(t, quizPromptFull, outcome, "8記事日は予算に収まるので圧縮は効かない")
 	assert.Equal(t, limits.SummaryChars, summaryChars)
 
 	for _, entry := range data.Articles {
@@ -95,46 +95,121 @@ func TestQuizPromptTruncatesSummaries(t *testing.T) {
 }
 
 // TestEffectiveSummaryChars pins the safety valve (D-46 (1)): 候補一覧が
-// 予算を超える日は**記事を落とさず**要約の文字数上限を縮める。
+// 予算を超える日は**記事を落とさず**要約の文字数上限を縮め、下限まで縮めても
+// 収まらない日は fits=false(= 相乗りセクション自体を出さない)。
 func TestEffectiveSummaryChars(t *testing.T) {
 	tests := []struct {
-		name        string
-		articles    int
-		configured  int
-		wantClamped bool
-		wantAtMost  int
+		name       string
+		articles   int
+		titleRunes int
+		configured int
+		wantFits   bool
+		wantChars  int // fits のときの期待値(0 = 厳密比較しない)
 	}{
 		{name: "8記事 × 150文字は予算内(圧縮なし)",
-			articles: 8, configured: 150, wantClamped: false, wantAtMost: 150},
+			articles: 8, titleRunes: 9, configured: 150, wantFits: true, wantChars: 150},
 		{name: "16記事 × 短いタイトルはまだ予算内",
-			articles: 16, configured: 150, wantClamped: false, wantAtMost: 150},
-		{name: "記事数を極端に増やすと下限で止まる",
-			articles: 200, configured: 150, wantClamped: true, wantAtMost: 150},
-		{name: "設定値が小さい日は圧縮しない",
-			articles: 200, configured: 40, wantClamped: false, wantAtMost: 40},
+			articles: 16, titleRunes: 9, configured: 150, wantFits: true, wantChars: 150},
+		{
+			// 本番のタイトルは60文字前後。タイトルも予算を食うので、同じ
+			// 記事数でもタイトルが長い日は先に圧縮が効く。
+			name:     "16記事 × 長いタイトルは圧縮される",
+			articles: 16, titleRunes: 60, configured: 150, wantFits: true,
+		},
+		{
+			// CodeRabbit 指摘のケース。config.go は MaxArticles <= 0 しか
+			// 弾かないので RADIO_MAX_ARTICLES=200 は通る。タイトルとラベル
+			// だけで予算を食い潰すので、下限40文字でも収まらない。
+			name:     "200記事はタイトルとラベルだけで予算超過 → 出さない",
+			articles: 200, titleRunes: 9, configured: 150, wantFits: false,
+		},
+		{
+			// 下限より短い設定は勝手に上書きしない(その値を下限として扱う)
+			// が、200記事はそれでも収まらない。
+			name:     "200記事 × 極小設定でも収まらない",
+			articles: 200, titleRunes: 9, configured: 10, wantFits: false,
+		},
+		{name: "記事ゼロ", articles: 0, configured: 150, wantFits: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, clamped := effectiveSummaryChars(promptArticles(tt.articles), tt.configured)
-			assert.Equal(t, tt.wantClamped, clamped)
-			assert.LessOrEqual(t, got, tt.wantAtMost)
+			articles := promptArticles(tt.articles)
+			for i := range articles {
+				articles[i].Title = strings.Repeat("長", tt.titleRunes)
+			}
+
+			got, fits := effectiveSummaryChars(articles, tt.configured)
+			require.Equal(t, tt.wantFits, fits)
+			if !fits {
+				return
+			}
+			assert.LessOrEqual(t, got, tt.configured, "設定値を超えて長くはしない")
 			assert.GreaterOrEqual(t, got, minQuizPromptSummaryChars,
-				"素材にならない長さまでは縮めない(縮退のまま進む)")
+				"fits なら下限以上に収まっている")
+			if tt.wantChars > 0 {
+				assert.Equal(t, tt.wantChars, got)
+			} else {
+				assert.Less(t, got, tt.configured, "圧縮が効いていること")
+			}
 		})
 	}
 
-	// タイトルも予算を食う: 同じ記事数でもタイトルが長い日は先に圧縮が効く。
-	// 本番のタイトルは 60 文字前後あり、16記事日はこちらに当たる
-	// (outrobudget_test.go の 16記事ケースが実測で圧縮されている)。
-	t.Run("タイトルが長い日は同じ記事数でも圧縮が効く", func(t *testing.T) {
-		long := promptArticles(16)
-		for i := range long {
-			long[i].Title = strings.Repeat("長", 60)
-		}
-		got, clamped := effectiveSummaryChars(long, 150)
-		assert.True(t, clamped)
-		assert.Less(t, got, 150)
+	// 境界: 下限ぎりぎりで収まる記事数と、その1つ上。
+	t.Run("下限で収まる境界", func(t *testing.T) {
+		// タイトル9文字 + ラベル12文字 + 要約40文字 = 61文字/件。
+		// 予算 2800 / 61 = 45 件まで収まる。
+		perArticle := 9 + quizPromptEntryLabelChars + minQuizPromptSummaryChars
+		fit := quizPromptListBudgetChars / perArticle
+
+		got, fits := effectiveSummaryChars(promptArticles(fit), 150)
+		require.True(t, fits, "%d 件はまだ収まる", fit)
 		assert.GreaterOrEqual(t, got, minQuizPromptSummaryChars)
+
+		_, fits = effectiveSummaryChars(promptArticles(fit+1), 150)
+		assert.False(t, fits, "%d 件は下限でも収まらない", fit+1)
+	})
+}
+
+// TestQuizPromptOmittedWhenBudgetCannotFit pins the D-46 (1) 縮退: 下限まで
+// 縮めても予算に収まらない日は、巨大なプロンプトを投げて 413 でエピソードごと
+// 落とすのではなく、相乗りセクションを出さずに放送を出す(§5.2 と同じ
+// 「クイズなし」方向。2026-09-25 の欠番と同じ失敗モードの再現を防ぐ)。
+func TestQuizPromptOmittedWhenBudgetCannotFit(t *testing.T) {
+	tests := []struct {
+		name        string
+		articles    int
+		wantNil     bool
+		wantOutcome quizPromptOutcome
+	}{
+		{name: "8記事(本番既定)はそのまま出す",
+			articles: 8, wantOutcome: quizPromptFull},
+		{name: "16記事は圧縮して出す(回帰防止: nil にしてはいけない)",
+			articles: 16, wantOutcome: quizPromptShortened},
+		{name: "200記事は出さない",
+			articles: 200, wantNil: true, wantOutcome: quizPromptOmitted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			articles := promptArticles(tt.articles)
+			for i := range articles {
+				articles[i].Title = strings.Repeat("長", 60) // 本番相当の長さ
+			}
+
+			data, _, outcome := quizPrompt(articles, 1, DefaultOutroQuizLimits())
+			assert.Equal(t, tt.wantOutcome, outcome)
+			if tt.wantNil {
+				assert.Nil(t, data, "セクションごと出さない(既存の nil 経路に合流)")
+				return
+			}
+			require.NotNil(t, data)
+			assert.Len(t, data.Articles, tt.articles, "出すなら全記事")
+		})
+	}
+
+	t.Run("count<=0 は omitted ではなく disabled", func(t *testing.T) {
+		data, _, outcome := quizPrompt(promptArticles(8), 0, DefaultOutroQuizLimits())
+		assert.Nil(t, data)
+		assert.Equal(t, quizPromptDisabled, outcome)
 	})
 }
 

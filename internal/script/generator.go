@@ -124,14 +124,37 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 	// 記事の件数は絞らない: plan.Plan() は featured をカテゴリのスラッグ辞書順
 	// に並べ替えるため、先頭N件に絞ると後ろのコーナーが構造的に一度も
 	// 出題されない(当初実装のレビュー指摘、D-46 (1) 改訂)。
-	quiz, summaryChars, clamped := quizPrompt(articles, quizCount, g.quizLimits)
-	if clamped {
+	quiz, summaryChars, outcome := quizPrompt(articles, quizCount, g.quizLimits)
+	switch outcome {
+	case quizPromptShortened:
 		// RADIO_MAX_ARTICLES を大きく上げた日の安全弁が効いた。通常運転では
 		// 出ない WARN なので、出たら記事数か要約長の設定を見直す合図。
 		g.logger.WarnContext(ctx, "outro quiz summaries shortened to fit the prompt budget (D-46 (1))",
 			slog.Int("articles", len(articles)),
 			slog.Int("configured_summary_chars", g.quizLimits.SummaryChars),
 			slog.Int("effective_summary_chars", summaryChars))
+	case quizPromptOmitted:
+		// 下限まで縮めても予算に収まらない = 記事数が極端。巨大なプロンプトを
+		// 投げて 413 でエピソードごと落とすより、当日の学習項目を諦めて放送を
+		// 出す(§5.2 と同じ「クイズなし」への縮退)。RADIO_MAX_ARTICLES の
+		// 運用ミスを気づけるように、上とは別メッセージで残す。
+		g.logger.WarnContext(ctx, "outro quiz section omitted: candidate list cannot fit the prompt budget even at the minimum summary length (D-46 (1))",
+			slog.Int("articles", len(articles)),
+			slog.Int("configured_summary_chars", g.quizLimits.SummaryChars),
+			slog.Int("min_summary_chars", minQuizPromptSummaryChars),
+			slog.Int("budget_chars", quizPromptListBudgetChars),
+			slog.String("hint", "RADIO_MAX_ARTICLES が大きすぎる可能性がある"))
+	case quizPromptDisabled, quizPromptFull:
+		// 通常運転(QUIZ_ITEMS_PER_DAY=0 の日常運転を含む)。ログは出さない。
+	}
+	// generateOutro の契約は「quizCount > 0 ⟺ プロンプトに相乗りセクションが
+	// ある」。予算で省いた日(quiz == nil)にそのまま quizCount を渡すと、存在
+	// しないマーカーを探して「section missing」の WARN を出し、本文が空なら
+	// 意味のない D-26 (1) 再試行(同一プロンプト)まで走ってしまう。渡すのは
+	// 実際にプロンプトへ載った件数にする。
+	effectiveQuizCount := quizCount
+	if quiz == nil {
+		effectiveQuizCount = 0
 	}
 	outroScript, drafts, err := g.generateOutro(ctx, outroData{
 		Date:         dateStr,
@@ -139,7 +162,7 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 		ArticleCount: len(articles),
 		SignOff:      closingSignOff,
 		Quiz:         quiz,
-	}, articles, quizCount)
+	}, articles, effectiveQuizCount)
 	if err != nil {
 		return nil, nil, err
 	}

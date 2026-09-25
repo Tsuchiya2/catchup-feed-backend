@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -569,4 +570,52 @@ func TestGenerator_QuizLeakBeforeValidMarker(t *testing.T) {
 	assert.Equal(t, "アウトロ。", segments[3].Script, "leaked item lines must not reach the broadcast")
 	require.Len(t, drafts, 1, "the marker section itself still yields the item")
 	assert.Equal(t, int64(20), drafts[0].ArticleID)
+}
+
+// TestGenerator_QuizSectionOmittedWhenBudgetCannotFit covers the D-46 (1)
+// 縮退の end-to-end: 候補一覧が下限まで縮めても文字数予算に収まらない日は、
+// アウトロプロンプトから相乗りセクションが消え、当日の学習項目は生成されない。
+// **放送は止めない**(§5.2 と同じ「クイズなし」方向)。
+//
+// ここで固定したい退行は2つある。(1) 巨大なプロンプトをそのまま投げて Groq の
+// 413 を踏む(2026-09-25 欠番と同じ失敗モード)こと。(2) セクションを省いたのに
+// quizCount>0 のまま generateOutro へ渡し、存在しないマーカーを探して
+// 「section missing」の WARN と無意味な D-26 (1) 再試行を起こすこと。
+func TestGenerator_QuizSectionOmittedWhenBudgetCannotFit(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	llm := &fakeLLM{}
+	gen := script.NewGenerator(llm, logger, script.OutroQuizLimits{})
+
+	// タイトルを 300 文字にすると、1件あたり 300 + ラベル + 下限要約で
+	// 350 文字超になり、8件で文字数予算(2,800)を超える。
+	articles := make([]repository.RadioArticle, 8)
+	for i := range articles {
+		articles[i] = repository.RadioArticle{
+			ID:          int64(i + 1),
+			Title:       strings.Repeat("長", 300),
+			Category:    "dev",
+			SourceName:  "Example",
+			Summary:     strings.Repeat("要", 900),
+			PublishedAt: day(1),
+		}
+	}
+
+	segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), articles, 1)
+	require.NoError(t, err, "放送は止めない")
+	require.Len(t, segments, len(articles)+2)
+	assert.Empty(t, drafts, "当日の学習項目は生成しない")
+
+	outroPrompt := llm.prompts[len(llm.prompts)-1]
+	assert.NotContains(t, outroPrompt, "復習候補の記事",
+		"相乗りセクションはプロンプトに載らない")
+	assert.NotContains(t, outroPrompt, "===LEARNING_ITEMS===")
+
+	logs := buf.String()
+	assert.Contains(t, logs, "outro quiz section omitted",
+		"運用ミスに気づけるよう WARN を残す")
+	assert.NotContains(t, logs, "learning-item section missing",
+		"セクションを出していないのにマーカーを探してはいけない")
+	assert.NotContains(t, logs, "quizless_retry",
+		"D-26 (1) の再試行は走らない(同一プロンプトになるだけ)")
 }

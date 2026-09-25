@@ -124,6 +124,15 @@ func TestOutroPromptFitsGroqFreeTierTPM(t *testing.T) {
 			articles: 16, quizCount: 1, limits: DefaultOutroQuizLimits(),
 		},
 		{
+			// CodeRabbit 指摘のケース。RADIO_MAX_ARTICLES=200 は config.go を
+			// 通る(<= 0 しか弾かない)。下限40文字でも予算に収まらないので
+			// 相乗りセクションは出さず、クイズなしと同じサイズに落ちる。
+			// 落とさないと約18,000文字 = Groq 確定 413 で 2026-09-25 の欠番が
+			// 再現する。
+			name:     "記事200件(相乗りセクションを出さない縮退)",
+			articles: 200, quizCount: 1, limits: DefaultOutroQuizLimits(),
+		},
+		{
 			name:     "クイズなし(QUIZ_ITEMS_PER_DAY=0 / D-26 (3) の再試行プロンプト)",
 			articles: 8, quizCount: 0, limits: DefaultOutroQuizLimits(),
 		},
@@ -140,6 +149,22 @@ func TestOutroPromptFitsGroqFreeTierTPM(t *testing.T) {
 				groqFreeTierTPM)
 		})
 	}
+}
+
+// TestOutroPromptOmitsQuizSectionAtExtremeArticleCounts pins that the 200記事
+// ケースは「小さくなった」のではなく**相乗りセクションが消えた**結果である
+// ことを固定する(D-46 (1))。クイズなしプロンプトとバイト単位で一致する。
+func TestOutroPromptOmitsQuizSectionAtExtremeArticleCounts(t *testing.T) {
+	articles := budgetArticles(t, 200, 900)
+
+	withQuiz := renderBudgetOutro(t, articles, 1, DefaultOutroQuizLimits())
+	quizless := renderBudgetOutro(t, articles, 0, DefaultOutroQuizLimits())
+
+	assert.Equal(t, quizless, withQuiz,
+		"下限でも予算に収まらない日は相乗りセクションを出さない(既存の nil 経路)")
+	assert.NotContains(t, withQuiz, quizSectionMarker)
+	assert.LessOrEqual(t, estimateTokens(withQuiz), outroPromptTokenBudget)
+	t.Logf("200記事: est_tokens=%d (quizless と同一)", estimateTokens(withQuiz))
 }
 
 // TestOutroPromptWithoutNarrowingExceedsTPM pins the cause of the 2026-09-25

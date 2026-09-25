@@ -43,9 +43,16 @@ const (
 	// 足しても見積り4,000トークン(TPM 8,000 の半分)に収まる水準。
 	quizPromptListBudgetChars = 2800
 
-	// minQuizPromptSummaryChars は予算圧縮の下限。これ以下に縮めても素材に
-	// ならないので、下限に達したら WARN を出して**縮退のまま進む**(§8:
-	// 欠番よりはマシ。Groq が 413 を返しても Ollama 段が残っている)。
+	// minQuizPromptSummaryChars は予算圧縮の下限。これ以下に縮めてもクイズの
+	// 素材にならない。**下限でも予算に収まらない日は相乗りセクションを出さない**
+	// (quizPrompt が nil を返す = D-26 (3) / §5.2 と同じ既存の縮退経路)。
+	//
+	// 「縮めるだけ縮めて、収まらなくてもそのまま投げる」would not be a safety
+	// valve at all: 例えば RADIO_MAX_ARTICLES=200(config.go は <= 0 しか弾か
+	// ないので通る)だと、タイトルとラベルだけで 10,400文字あり、下限40文字の
+	// 要約を足すと 18,000文字超のプロンプトになる。Groq は確定で 413、Gemini が
+	// 枯れていれば Ollama 頼み = **2026-09-25 の欠番と同じ失敗モードの再現**。
+	// クイズ1項目を諦めて放送を出すのが D-46 の目的そのものである。
 	minQuizPromptSummaryChars = 40
 
 	// quizPromptEntryLabelChars は1件あたりのラベル・改行の概算文字数
@@ -104,12 +111,15 @@ func LoadOutroQuizLimits(logger *slog.Logger) OutroQuizLimits {
 
 // effectiveSummaryChars decides the per-article summary cap actually used for
 // this day's candidate list (D-46 (1) の安全弁)。configured を上限に、候補
-// 一覧が quizPromptListBudgetChars に収まるところまで縮める。返り値の bool は
-// 「予算で縮めた」= 設定値より短くなったことを示す(呼び出し側が WARN を出す)。
+// 一覧が quizPromptListBudgetChars に収まるところまで縮める。
+//
+// 2番目の返り値 fits が false なら、**下限まで縮めても予算に収まらない** ため
+// 相乗りセクション自体を出すべきではない(呼び出し側が nil に倒す)。
 //
 // 記事を落とす選択肢は採らない: 落とすと plan の並び(カテゴリ辞書順)により
-// 後ろのコーナーが構造的に出題対象から消える。
-func effectiveSummaryChars(scope []repository.RadioArticle, configured int) (int, bool) {
+// 後ろのコーナーが構造的に出題対象から消える。だから「全記事を短く載せる」か
+// 「1件も載せない(クイズなしに縮退)」の二択になる。
+func effectiveSummaryChars(scope []repository.RadioArticle, configured int) (chars int, fits bool) {
 	if len(scope) == 0 {
 		return configured, false
 	}
@@ -117,36 +127,62 @@ func effectiveSummaryChars(scope []repository.RadioArticle, configured int) (int
 	for _, a := range scope {
 		fixed += utiltext.CountRunes(a.Title)
 	}
-	available := quizPromptListBudgetChars - fixed
-	perArticle := available / len(scope)
-	if perArticle >= configured {
-		return configured, false
+
+	// 下限は「40文字」だが、operator が意図的にそれより短く設定した日は
+	// その値を下限として扱う(設定を勝手に上書きしない)。
+	floor := minQuizPromptSummaryChars
+	if configured < floor {
+		floor = configured
 	}
-	if perArticle < minQuizPromptSummaryChars {
-		perArticle = minQuizPromptSummaryChars
+	// 下限でも収まらない = タイトルとラベルだけで予算を食い潰している日を
+	// 含む(available が負になるケース)。
+	if fixed+floor*len(scope) > quizPromptListBudgetChars {
+		return 0, false
 	}
-	if perArticle >= configured {
-		// 設定値が下限以下の日は圧縮したことにならない。
-		return configured, false
+
+	perArticle := (quizPromptListBudgetChars - fixed) / len(scope)
+	if perArticle > configured {
+		perArticle = configured
 	}
 	return perArticle, true
 }
 
+// quizPromptOutcome tells the caller what happened to the piggybacked quiz
+// section, so it can log the right line (D-46 (1)). すべて既存の縮退方向に
+// 沿っており、放送本文には一切影響しない。
+type quizPromptOutcome int
+
+const (
+	// quizPromptDisabled: count <= 0 か記事ゼロ。相乗りセクションを出さない
+	// (QUIZ_ITEMS_PER_DAY=0 / バックプレッシャ / 同日重複 — D-26 (3)、§5.2)。
+	quizPromptDisabled quizPromptOutcome = iota
+	// quizPromptFull: 設定どおりの要約文字数で出した(通常運転)。
+	quizPromptFull
+	// quizPromptShortened: 予算に収めるため要約の文字数上限を縮めて出した。
+	quizPromptShortened
+	// quizPromptOmitted: 下限まで縮めても予算に収まらないので、セクションを
+	// 出さなかった(クイズなしへ縮退。放送は止めない — §5.2)。
+	quizPromptOmitted
+)
+
 // quizPrompt builds the learning-item section data for the outro prompt.
-// count <= 0 returns nil, which renders outro.tmpl exactly as before the
-// Phase 3 extension — this nil is the backpressure/duplicate-guard switch
-// (§5.2: プロンプト側で抑止、トークンも消費しない).
+// A nil return renders outro.tmpl exactly as before the Phase 3 extension —
+// the backpressure/duplicate-guard switch (§5.2: プロンプト側で抑止、
+// トークンも消費しない)と、予算に収まらない日の縮退が合流する。
 //
 // 候補は当日の全記事(scope = articles)で、番号は1始まりの放送順。パーサへ
 // 渡すのも同じスライスなので 記事番号 → article ID の対応はそのまま (§5.1)。
 //
-// 返り値の2番目は実際に使った要約の文字数上限、3番目は予算で縮めたかどうか。
-func quizPrompt(scope []repository.RadioArticle, count int, limits OutroQuizLimits) (*quizPromptData, int, bool) {
+// 返り値の2番目は実際に使った要約の文字数上限、3番目は何が起きたか。
+func quizPrompt(scope []repository.RadioArticle, count int, limits OutroQuizLimits) (*quizPromptData, int, quizPromptOutcome) {
 	limits = limits.withDefaults()
 	if count <= 0 || len(scope) == 0 {
-		return nil, limits.SummaryChars, false
+		return nil, limits.SummaryChars, quizPromptDisabled
 	}
-	summaryChars, clamped := effectiveSummaryChars(scope, limits.SummaryChars)
+	summaryChars, fits := effectiveSummaryChars(scope, limits.SummaryChars)
+	if !fits {
+		return nil, limits.SummaryChars, quizPromptOmitted
+	}
 	entries := make([]quizPromptArticle, len(scope))
 	for i, a := range scope {
 		summary, truncated := utiltext.TruncateRunes(a.Summary, summaryChars)
@@ -155,6 +191,10 @@ func quizPrompt(scope []repository.RadioArticle, count int, limits OutroQuizLimi
 		}
 		entries[i] = quizPromptArticle{Number: i + 1, Title: a.Title, Summary: summary}
 	}
+	outcome := quizPromptFull
+	if summaryChars < limits.SummaryChars {
+		outcome = quizPromptShortened
+	}
 	return &quizPromptData{Count: count, Marker: quizSectionMarker, Articles: entries},
-		summaryChars, clamped
+		summaryChars, outcome
 }
