@@ -54,7 +54,8 @@ catchup-feed-backend/
 ├── data/                  # ローカル実行時の mp3 / 書籍置き場(git 管理外)
 ├── compose.yml            # postgres / server / worker
 ├── Dockerfile             # マルチステージビルド
-└── Makefile               # 開発・テスト・リントのタスク
+├── Makefile               # 開発・テスト・リントのタスク
+└── swagdep.go             # swag を direct 依存として go.mod に固定(ビルドタグ swagdep。消さないこと)
 ```
 
 `internal/` の各パッケージが、Clean Architecture の 4 層に属するもの(`[Domain]` 〜 `[Infrastructure]`)と、**層ではなく用途で切ったもの**に分かれる点が本リポジトリの構成上の特徴です。後者は角括弧に**利用するバイナリ**を書いてあります。`feed` は `cmd/server`(配信ハンドラ)と `cmd/worker`(`FEED_AUDIO_DIR` 等の設定読み取り)が使う **server 側のパッケージ**で、`cmd/radio` からは参照しません。判断根拠は [architecture.md §3.4](architecture.md#34-意図的な逸脱とその理由) にあります。

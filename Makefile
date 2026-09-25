@@ -107,8 +107,9 @@ swagger: ## Generate Swagger docs (docs/) inside Docker
 # swagger-host は Docker を使わずホストの Go で生成する退避経路で、Docker が
 # 落ちている環境でホストの `go build ./...` / `go test ./...` を叩く前に必要
 # (cmd/server が swag 生成物の docs をブランクインポートし、docs/docs.go は
-# .gitignore 済みのため未生成だとビルドが失敗する)。go tool は go.mod の
-# tool ディレクティブで固定した swag を使うので CI と同じバージョンになる。
+# .gitignore 済みのため未生成だとビルドが失敗する)。go tool は go.mod が
+# 固定した swag(バージョンは require ディレクティブ、ツールのパッケージパスは
+# tool ディレクティブ)を使うので CI と同じバージョンになる。
 swagger-host: ## Generate Swagger docs on the host without Docker (needed before host-side go build ./...)
 	@echo "📝 Generating Swagger docs on the host..."
 	go tool swag init -g cmd/server/main.go --output docs --parseDependency --parseInternal
