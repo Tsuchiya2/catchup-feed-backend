@@ -117,6 +117,10 @@ type geminiResponse struct {
 		Content struct {
 			Parts []geminiPart `json:"parts"`
 		} `json:"content"`
+		// FinishReason is "STOP" on a complete answer; "MAX_TOKENS" means the
+		// output ceiling cut it off, and SAFETY / RECITATION also yield a
+		// partial candidate (実測で STOP を確認、2026-09-25)。可視化のみ。
+		FinishReason string `json:"finishReason"`
 	} `json:"candidates"`
 }
 
@@ -153,15 +157,22 @@ func (g *Gemini) generate(ctx context.Context, parts []geminiPart) (string, erro
 		return "", err
 	}
 
-	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+	if len(resp.Candidates) == 0 {
 		return "", fmt.Errorf("%s: api returned no candidates", ProviderGemini)
 	}
+	candidate := resp.Candidates[0]
 
 	var sb strings.Builder
-	for _, part := range resp.Candidates[0].Content.Parts {
+	for _, part := range candidate.Content.Parts {
 		sb.WriteString(part.Text)
 	}
 	out := strings.TrimSpace(sb.String())
+	// パート欠落エラーより先に出す: MAX_TOKENS で打ち切られた候補は parts ごと
+	// 落ちることがあり、その場合も理由はログに残したい。
+	warnIfIncompleteFinish(ProviderGemini, candidate.FinishReason, out)
+	if len(candidate.Content.Parts) == 0 {
+		return "", fmt.Errorf("%s: api returned no candidates", ProviderGemini)
+	}
 	if out == "" {
 		return "", fmt.Errorf("%s: api returned empty response", ProviderGemini)
 	}

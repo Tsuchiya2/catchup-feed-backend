@@ -97,6 +97,10 @@ type groqResponse struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		// FinishReason is "stop" on a complete answer and "length" when the
+		// model hit the output ceiling mid-sentence (実測で確認、2026-09-25)。
+		// 可視化のみに使う — 値によって挙動は変えない。
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 }
 
@@ -128,6 +132,9 @@ func (g *Groq) Generate(ctx context.Context, prompt string) (string, error) {
 		return "", fmt.Errorf("%s: api returned no choices", ProviderGroq)
 	}
 	out := strings.TrimSpace(resp.Choices[0].Message.Content)
+	// 空応答エラーより先に出す: 推論トークンだけで上限に達すると content が
+	// 空のまま finish_reason=length で返るため、そこも可視化の対象。
+	warnIfIncompleteFinish(ProviderGroq, resp.Choices[0].FinishReason, out)
 	if out == "" {
 		return "", fmt.Errorf("%s: api returned empty response", ProviderGroq)
 	}
