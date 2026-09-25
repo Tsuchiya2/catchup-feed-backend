@@ -62,7 +62,7 @@ func (p *Pipeline) prepareWeeklyReview(ctx context.Context, logger *slog.Logger,
 	if !ok {
 		return nil
 	}
-	body, ok := script.BuildWeeklyReview(material)
+	body, ok := script.BuildWeeklyReview(ctx, material, logger)
 	if !ok {
 		return nil // IsEmpty already filtered; defensive
 	}

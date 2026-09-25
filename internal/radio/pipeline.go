@@ -226,7 +226,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	// A selection failure degrades the private twin to news-only (§9) —
 	// the public side is untouched by construction.
 	dueItems := p.listDueItems(ctx, now, logger)
-	corner := script.BuildQuizCorner(dueItems)
+	corner := script.BuildQuizCorner(ctx, dueItems, logger)
 
 	baseNotes := script.BuildShowNotes(featured, overflow)
 	showNotes := script.AppendVoicevoxCredit(baseNotes, speakerName)
@@ -240,7 +240,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) error {
 	if opts.DryRun {
 		brSel := p.selectBookReview(ctx, logger, now, true)
 		reviewMat := p.previewWeeklyReview(ctx, logger, now)
-		return p.printDryRun(title, since, showNotes, segments, quizDrafts, dueItems, brSel, reviewMat)
+		return p.printDryRun(ctx, title, since, showNotes, segments, quizDrafts, dueItems, brSel, reviewMat)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "radio-episode-")
@@ -390,7 +390,7 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 		return err
 	}
 
-	corner := script.BuildQuizCorner(dueItems)
+	corner := script.BuildQuizCorner(ctx, dueItems, logger)
 	introSeg := &entity.Segment{Position: 1, Kind: entity.SegmentKindIntro,
 		Script: script.QuizOnlyIntro(now)}
 	outroSeg := &entity.Segment{Kind: entity.SegmentKindOutro,
@@ -414,7 +414,7 @@ func (p *Pipeline) runQuizOnlyDay(ctx context.Context, opts RunOptions, now, sin
 		}
 		notes = script.AppendVoicevoxCredit(notes, speakerName)
 		segments := quizOnlySegments(introSeg, corner, nil, nil, outroSeg)
-		return p.printDryRun(title, since, notes, segments, nil, dueItems, brSel, reviewMat)
+		return p.printDryRun(ctx, title, since, notes, segments, nil, dueItems, brSel, reviewMat)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "radio-episode-")
@@ -1089,7 +1089,7 @@ func flattenWavs(groups [][]string) []string {
 // item drafts and the quiz selection are printed for inspection but nothing
 // is written — no InsertItem, no AutoResolve, no RecordAsked (dry-run makes
 // no DB writes).
-func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, segments []*entity.Segment, drafts []script.QuizDraft, dueItems []learning.Item, bookReview *bookReviewSelection, weekly *learning.WeeklyReview) error {
+func (p *Pipeline) printDryRun(ctx context.Context, title string, since time.Time, showNotes string, segments []*entity.Segment, drafts []script.QuizDraft, dueItems []learning.Item, bookReview *bookReviewSelection, weekly *learning.WeeklyReview) error {
 	out := p.Out
 	if out == nil {
 		out = os.Stdout
@@ -1126,7 +1126,7 @@ func (p *Pipeline) printDryRun(title string, since time.Time, showNotes string, 
 	// §7.4 週次振り返り(dry-run: TTS なし)。素材のみ印字する。曜日でない/
 	// 素材ゼロの週は weekly==nil でここには出ない。
 	if weekly != nil {
-		if body, ok := script.BuildWeeklyReview(*weekly); ok {
+		if body, ok := script.BuildWeeklyReview(ctx, *weekly, p.Logger); ok {
 			fmt.Fprintf(&sb, "--- weekly review (dry-run: 週次振り返り、卒業 %d件, 再紹介 %q) ---\n%s\n\n",
 				weekly.GraduatedCount, weekly.Reintroduced, body)
 		}

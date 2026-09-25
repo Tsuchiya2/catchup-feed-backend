@@ -1,9 +1,12 @@
 package script
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
+	"catchup-feed/internal/domain/entity"
 	"catchup-feed/internal/learning"
 )
 
@@ -23,7 +26,7 @@ import (
 // Future work could feed the same material to a local LLM for a livelier
 // script (§7.4: 品質不満が出たら LLM 化を検討) — deliberately NOT done here;
 // the口 stays a plain template until quality demands otherwise.
-func BuildWeeklyReview(m learning.WeeklyReview) (string, bool) {
+func BuildWeeklyReview(ctx context.Context, m learning.WeeklyReview, logger *slog.Logger) (string, bool) {
 	if m.IsEmpty() {
 		return "", false
 	}
@@ -42,7 +45,10 @@ func BuildWeeklyReview(m learning.WeeklyReview) (string, bool) {
 	}
 
 	sb.WriteString(weeklyReviewClosing)
-	return sb.String(), true
+	// D-41 改訂: 固定文は format.go 由来で安全だが、concept は学習項目由来
+	// (生成元はクラウドモデル)なので、組み立て後の台本にサニタイズを掛ける。
+	// 固定文はそれぞれ独立した文なので、落ちうるのは concept を含む文だけ。
+	return sanitizeSegmentScript(ctx, logger, entity.SegmentKindReview, sb.String()), true
 }
 
 // AppendWeeklyReviewShowNotes appends the §7.5 週次振り返りセクション to the

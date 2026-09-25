@@ -619,3 +619,40 @@ func TestGenerator_QuizSectionOmittedWhenBudgetCannotFit(t *testing.T) {
 	assert.NotContains(t, logs, "quizless_retry",
 		"D-26 (1) の再試行は走らない(同一プロンプトになるだけ)")
 }
+
+// TestGenerator_SanitizesSegmentScripts pins the D-41 改訂 placement: 生成した
+// セグメント台本は GenerateEpisode が返す時点で既にサニタイズ済みである。
+// TTS も segments テーブルもこの文字列しか見ないため、音声と DB は一致する。
+//
+// アウトロについては順序も固定する: サニタイズは cutQuizSection /
+// stripQuizLeak の**後**でなければならない(マーカー検出を乱さない)。この
+// ケースは相乗りクイズが正常にパースされることを同時に確かめている。
+func TestGenerator_SanitizesSegmentScripts(t *testing.T) {
+	// 2026-09-25 の -dry-run で gpt-oss が実際に出した逸脱そのもの。
+	const hashSentence = "例として activesupport‑7.2.4.gem のハッシュは b97027b31e111 となっています。"
+	llm := &fakeLLM{responses: []string{
+		"おはようございます。" + hashSentence,
+		"CI/CD（継続的インテグレーション／デリバリー）の話題です。",
+		"SHA‑256 の話題です。",
+		"アウトロ本文。" + hashSentence +
+			"\n===LEARNING_ITEMS===\n記事番号: 1\n概念: c\n問題: q\n答え: a",
+	}}
+	gen := script.NewGenerator(llm, nil, script.OutroQuizLimits{})
+
+	segments, drafts, err := gen.GenerateEpisode(context.Background(), day(4), radioArticles(), 1)
+	require.NoError(t, err)
+	require.Len(t, segments, 4)
+
+	assert.Equal(t, "おはようございます。", segments[0].Script, "ハッシュを含む文だけが落ちる")
+	assert.Equal(t, "CI/CD、継続的インテグレーション、デリバリーの話題です。", segments[1].Script,
+		"N-4: 閉じ括弧の直後が助詞なら読点を出さない")
+	assert.Equal(t, "SHA-256 の話題です。", segments[2].Script, "U+2011 は正規化、SHA-256 は残す")
+	assert.Equal(t, "アウトロ本文。", segments[3].Script)
+
+	require.Len(t, drafts, 1, "サニタイズは相乗りクイズの分離を壊さない")
+	assert.Equal(t, "c", drafts[0].Concept)
+	for _, seg := range segments {
+		assert.NotContains(t, seg.Script, "‑", "異体ハイフンが音声に残らない")
+		assert.NotContains(t, seg.Script, "b97027b31e111", "ハッシュが音声に残らない")
+	}
+}

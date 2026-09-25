@@ -1,6 +1,8 @@
 package script
 
 import (
+	"context"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -37,7 +39,15 @@ type QuizRead struct {
 // BuildQuizCorner renders the corner for the given due items; an empty
 // selection yields an empty corner (the private episode then carries no
 // quiz segments at all).
-func BuildQuizCorner(items []learning.Item) QuizCorner {
+//
+// 項目の question / answer は生成時(= 記事の相乗りクイズ、当時のクラウド
+// モデル)の文字列がそのまま DB に入っているため、読み上げ直前にサニタイズ
+// する (D-41 改訂)。定型句 (quizReadQuestion / quizReadAnswer) を被せる**前**
+// に掛けるので、format.go の出題番号・解答の定型句は文の削除対象にならない。
+// ここで確定した
+// 文字列が TTS(QuizRead)にも segments(Segments())にも渡るため、音声と DB は
+// 一致する。ctx / logger はサニタイズのログ用 (nil logger = slog.Default())。
+func BuildQuizCorner(ctx context.Context, items []learning.Item, logger *slog.Logger) QuizCorner {
 	if len(items) == 0 {
 		return QuizCorner{}
 	}
@@ -58,8 +68,8 @@ func BuildQuizCorner(items []learning.Item) QuizCorner {
 			// therefore part of the archived segment script — segments must
 			// record exactly what went on air (§4 設計メモ: script カラムに
 			// 読み上げ全文が残る). 文言は format.go (D-37 (9)).
-			Question: quizReadQuestion(i+1, item.Question),
-			Answer:   quizReadAnswer(item.Answer),
+			Question: quizReadQuestion(i+1, sanitizeSegmentScript(ctx, logger, entity.SegmentKindQuiz, item.Question)),
+			Answer:   quizReadAnswer(sanitizeSegmentScript(ctx, logger, entity.SegmentKindQuiz, item.Answer)),
 		})
 	}
 	return corner
