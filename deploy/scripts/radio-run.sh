@@ -9,8 +9,10 @@
 #      しなくても先へ進む
 #   3. VOICEVOX Engine が起動していなければ起動し、応答を待つ
 #   4. Ollama のモデルを事前ウォーム(D-46 (2)。失敗しても先へ進む)
-#   5. radio を実行(引数はそのまま透過: -dry-run 等)
-#   6. 自分で起動した Engine だけ後始末する
+#   5. radio を実行(引数はそのまま透過: -dry-run 等)。stderr はこの実行専用の
+#      一時ファイルへも複製する(D-46 (3): アラートメールの tail をこの実行の
+#      ものにするため)
+#   6. 自分で起動した Engine と一時ファイルだけ後始末する
 #
 # リトライはしない(§8: 失敗した日はエピソード欠番で正常。通知だけを
 # 確実にする)。
@@ -140,6 +142,25 @@ fi
 VOICEVOX_URL="${VOICEVOX_URL:-http://127.0.0.1:50021}"
 ENGINE_PID=""
 
+# この実行の radio stderr を貯める一時ファイル(D-46 (3))。失敗メールが引用する
+# tail の出典をこれにする。
+#
+# 従来は launchd のリダイレクト先 ~/pulse/logs/radio.err.log を tail していたが、
+# launchd 以外から(手で)叩いた回では stderr がそのファイルに書かれないため、
+# ヘッダ(exit code・時刻)と本文は当該実行のものなのに **tail だけが前回の
+# launchd 実行の古いログ**になっていた(2026-09-25 09:58 の手動実行で実測)。
+# 障害調査で最初に読む箇所が実行と食い違うと誤診を誘発する。
+#
+# ログ収集の仕組みは作らない(原則1 右サイズ): mktemp 1本に複製して読み、
+# 終了時に消すだけ。永続ログは従来どおり launchd のリダイレクトが持つ。
+RUN_ERR_LOG=""
+if ! RUN_ERR_LOG="$(mktemp "${TMPDIR:-/tmp}/radio-run-err.XXXXXX")"; then
+    # mktemp が失敗しても radio は回す(欠番よりはマシ)。メールは従来どおり
+    # launchd のログを引用する経路に落ちる
+    RUN_ERR_LOG=""
+    log "WARN: 一時ファイルを作れない — 失敗メールの tail は launchd のログ由来になる"
+fi
+
 voicevox_up() {
     curl -sf --max-time 3 "$VOICEVOX_URL/version" >/dev/null 2>&1
 }
@@ -151,6 +172,9 @@ cleanup() {
     if [ -n "$ENGINE_PID" ]; then
         log "stopping VOICEVOX Engine (pid $ENGINE_PID)"
         kill "$ENGINE_PID" 2>/dev/null || true
+    fi
+    if [ -n "$RUN_ERR_LOG" ]; then
+        rm -f "$RUN_ERR_LOG"
     fi
 }
 trap cleanup EXIT
@@ -211,16 +235,44 @@ fi
 
 log "starting radio $*"
 rc=0
-"$RADIO_BIN" "$@" || rc=$?
+if [ -n "$RUN_ERR_LOG" ]; then
+    # stdout(dry-run の台本出力)は fd 3 で素通しし、stderr だけを tee で
+    # 二重化する。従来どおり実行中にそのまま流れる(launchd のリダイレクト先
+    # にも、手で叩いたときの端末にも)。パイプラインになるので radio の終了
+    # コードは PIPESTATUS[0] から取る — `|| rc=$?` では tee の成否を拾って
+    # しまい、非ゼロ終了の通知が無音になる
+    set +e
+    { "$RADIO_BIN" "$@" 2>&1 1>&3 | tee -a "$RUN_ERR_LOG" >&2; } 3>&1
+    rc=${PIPESTATUS[0]}
+    set -e
+else
+    "$RADIO_BIN" "$@" || rc=$?
+fi
 log "radio exited with code $rc"
 
 if [ "$rc" -ne 0 ]; then
     # DB 断などで radio が notify_error ジョブを積めなくても届くよう、
     # その場で SMTP 直送(2026-08-07 障害の恒久対策)。リトライはしない。
+    # tail の出典は「この実行の stderr」を第一候補にする(D-46 (3))。一時
+    # ファイルが作れなかった回だけ、launchd のリダイレクト先へフォールバック
+    # する — そのときは出典と最終更新時刻を明記し、**この実行のものとは限らない**
+    # ことを読み手に分かるようにする(古いログでの誤診防止)
     err_log="$PULSE_HOME/logs/radio.err.log"
-    err_tail="(no $err_log)"
-    if [ -f "$err_log" ]; then
+    err_source="この実行の stderr"
+    err_tail=""
+    if [ -n "$RUN_ERR_LOG" ] && [ -s "$RUN_ERR_LOG" ]; then
+        err_tail="$(tail -n 20 "$RUN_ERR_LOG" 2>/dev/null || true)"
+    elif [ -n "$RUN_ERR_LOG" ]; then
+        err_source="この実行の stderr(出力なし)"
+    elif [ -f "$err_log" ]; then
+        # 出典が launchd の永続ログ = 直近の launchd 実行のもので、この実行の
+        # ものとは限らない
+        err_source="$err_log(launchd のログ。最終更新 $(
+            date -r "$err_log" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || echo unknown
+        )。**この実行のものとは限らない**)"
         err_tail="$(tail -n 20 "$err_log" 2>/dev/null || true)"
+    else
+        err_source="なし($err_log も無い)"
     fi
     send_alert_mail "[pulse] radio FAILED (exit $rc)" <<EOF || true
 radio batch failed on the Mac.
@@ -229,8 +281,10 @@ radio batch failed on the Mac.
   time:      $(date '+%Y-%m-%dT%H:%M:%S%z')
   host:      $(hostname)
 
---- tail -n 20 $err_log ---
+--- tail -n 20 / 出典: $err_source ---
 $err_tail
+
+永続ログ(launchd 実行分): $err_log
 
 Check from the Mac:
   tailscale status                    # Pi が offline / key expired になっていないか

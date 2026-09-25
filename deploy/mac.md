@@ -132,6 +132,13 @@ radio が非ゼロ終了した朝は、DB(jobs テーブル)経由の通知に�
 アラートメールが飛ぶ(2026-08-07 障害: tailnet 断で notify_error を積めず7日間沈黙、
 の恒久対策)。SMTP 未設定・送信失敗でも radio の exit code は変わらない。
 
+**メールが引用する `tail -n 20` は「その実行の stderr」である**(D-46 (3))。radio-run.sh は
+radio の stderr を一時ファイルへ複製し、そこから tail する。以前は launchd のリダイレクト先
+`~/pulse/logs/radio.err.log` を読んでいたため、**手で `radio-run.sh` を叩いた回**では
+ヘッダ(exit code・時刻)だけが当該実行で、tail は前回の launchd 実行の古いログになっていた
+(2026-09-25 実測)。一時ファイルは実行終了時に消える。永続ログは従来どおり
+`~/pulse/logs/radio.{out,err}.log`(launchd 実行分のみ)で、メール本文にもパスが載る。
+
 `~/pulse/.env` を編集(**値はファイルに直接記入。チャット等に貼らない**)。特に注意する4キー:
 
 | キー | 意味 |
