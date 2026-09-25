@@ -67,6 +67,11 @@ var speechHostileChars = map[rune]string{
 	'－': "-", // FULLWIDTH HYPHEN-MINUS
 	// 全角括弧 → 読点。読み上げでは括弧そのものを読ませるのではなく、前後に
 	// 間を作るのが自然(実測: 「（継続的インテグレーション／デリバリー）」)。
+	// ただし閉じ括弧の直後が1文字助詞のときは読点を出さず消すだけにする
+	// (N-4、particlesAfterBracket 参照)。そのため rep.brackets が数えるのは
+	// 「読点にした数」ではなく**「括弧を処理した数」**である — ログの
+	// brackets=N から台本を逆算するときは、N 個の読点が増えたとは限らない
+	// ことに注意 (N-b)。
 	'（': "、",
 	'）': "、",
 	// 全角スラッシュ → 読点。並列の区切りとしてそのまま間に変わる。
@@ -79,7 +84,7 @@ var speechHostileChars = map[rune]string{
 // 構造体で、黙って書き換えないという要件(「効いたら見える」)を満たす。
 type sanitizeReport struct {
 	hyphens  int // 異体ハイフン・ダッシュの置換数
-	brackets int // 全角括弧の置換数
+	brackets int // 全角括弧を処理した数(読点にした数ではない — N-4/N-b)
 	slashes  int // 全角スラッシュの置換数
 	spaces   int // 全角スペースの置換数
 	// dropped は落とした文(ログ用に先頭のみ保持)。
@@ -317,6 +322,8 @@ func sanitizeSegmentScript(ctx context.Context, logger *slog.Logger, kind, text 
 		return out
 	}
 	if rep.hyphens+rep.brackets+rep.slashes+rep.spaces > 0 {
+		// brackets は「処理した全角括弧の数」であって「増えた読点の数」では
+		// ない(閉じ括弧+助詞の組では読点を出さずに消す — N-4/N-b)。
 		logger.InfoContext(ctx, "script sanitizer normalized speech-hostile characters (D-41)",
 			slog.String("kind", kind),
 			slog.Int("hyphens", rep.hyphens),
