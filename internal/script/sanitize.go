@@ -107,6 +107,14 @@ func (r sanitizeReport) changed() bool {
 // 全文が落ちる場合は削除を取りやめ、記号を正規化しただけの台本を返す
 // (§8 縮退許容: 空台本はエピソード欠番に直結するため、読み上げの不格好さより
 // 放送の継続を採る)。report.keptAll が立ち、呼び出し側が WARN を出す。
+//
+// 【既知の限界】この never-empty は**渡された文字列の単位**で効く。したがって
+// 1文しかないテキストは、羅列を含んでいても必ず原文のまま残る。セグメント台本
+// (intro / news / outro / book_review / review) は複数文なので実害は無いが、
+// クイズ項目の question / answer は1〜2文が普通で、削除は事実上効かない。
+// クイズ側は「項目のフィールドが空になるなら**その項目を当日の出題から外す**」
+// (§5.2 の既存縮退と同方向) という別の縮退が要る — 相乗りクイズの生成時点
+// (QuizDraft) でのサニタイズと併せて追い PR で対応する。
 func sanitizeScript(text string) (string, sanitizeReport) {
 	normalized, rep := normalizeSpeechChars(text)
 
@@ -139,13 +147,26 @@ func sanitizeScript(text string) (string, sanitizeReport) {
 	return out, rep
 }
 
+// particlesAfterBracket は閉じ括弧の直後に来たとき読点を出さない助詞
+// (レビュー指摘 N-4)。「（…）の設定」が「…、の設定」になると助詞の前で間が
+// 空いて不自然に聞こえる実測への対応で、閉じ括弧を単に消すだけにする。
+//
+// 1文字の助詞だけを列挙する。「から」「まで」のような複数文字の助詞は入れない
+// — 先頭1文字 (か / ま) を見るだけでは「開発が…」「まとめると…」のような語頭と
+// 区別できず誤爆するため。ここを増やすときは同じ基準で判断すること。
+var particlesAfterBracket = map[rune]bool{
+	'の': true, 'は': true, 'を': true, 'が': true, 'に': true,
+	'で': true, 'と': true, 'も': true, 'へ': true, 'や': true,
+}
+
 // normalizeSpeechChars replaces the speech-hostile characters and counts the
 // replacements per class (ログ用).
 func normalizeSpeechChars(text string) (string, sanitizeReport) {
 	var rep sanitizeReport
 	var sb strings.Builder
 	sb.Grow(len(text))
-	for _, r := range text {
+	runes := []rune(text)
+	for i, r := range runes {
 		repl, ok := speechHostileChars[r]
 		if !ok {
 			sb.WriteRune(r)
@@ -154,6 +175,10 @@ func normalizeSpeechChars(text string) (string, sanitizeReport) {
 		switch r {
 		case '（', '）':
 			rep.brackets++
+			if r == '）' && i+1 < len(runes) && particlesAfterBracket[runes[i+1]] {
+				// 「）の」「）は」… は読点を出さず括弧を消すだけにする (N-4)。
+				continue
+			}
 		case '／':
 			rep.slashes++
 		case '　':
@@ -247,7 +272,10 @@ func isASCIIAlnum(r rune) bool {
 // tidyPunctuation cleans up the artifacts of the two rewrites above: the
 // 読点 that full-width brackets leave next to other punctuation, and the
 // double spaces / dangling 読点 a dropped sentence can expose. 文字の削除と
-// 空白の畳み込みだけで、語句の挿入はしない。
+// 空白の畳み込みだけで、語句の挿入はしない。行末の空白は**削らない** —
+// 音声には影響しない一方、サニタイザが台本へ加える変更は少ないほどよく、
+// format.go の文言(末尾に空白を持つ見出しがある)を書き換えない保証にもなる
+// (N-6 の TestFixedPhrasesSurviveSanitizing が実際にこれを検知した)。
 func tidyPunctuation(s string) string {
 	for _, pair := range [][2]string{
 		{"、、", "、"},
@@ -269,7 +297,6 @@ func tidyPunctuation(s string) string {
 	}
 	var lines []string
 	for _, line := range strings.Split(s, "\n") {
-		line = strings.TrimRight(line, " \t")
 		// 行頭に残った読点(「（…」で始まる行)は読み上げに不要。
 		line = strings.TrimLeft(line, "、")
 		lines = append(lines, line)

@@ -644,7 +644,8 @@ func TestGenerator_SanitizesSegmentScripts(t *testing.T) {
 	require.Len(t, segments, 4)
 
 	assert.Equal(t, "おはようございます。", segments[0].Script, "ハッシュを含む文だけが落ちる")
-	assert.Equal(t, "CI/CD、継続的インテグレーション、デリバリー、の話題です。", segments[1].Script)
+	assert.Equal(t, "CI/CD、継続的インテグレーション、デリバリーの話題です。", segments[1].Script,
+		"N-4: 閉じ括弧の直後が助詞なら読点を出さない")
 	assert.Equal(t, "SHA-256 の話題です。", segments[2].Script, "U+2011 は正規化、SHA-256 は残す")
 	assert.Equal(t, "アウトロ本文。", segments[3].Script)
 

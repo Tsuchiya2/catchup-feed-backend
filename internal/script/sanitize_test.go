@@ -64,11 +64,10 @@ func TestSanitizeScript_MeasuredDeviations(t *testing.T) {
 			// 並んだ「、。」は句点だけに畳む。
 			name: "measured: full-width brackets and slash become 読点",
 			in:   measuredBracketSentence,
-			// 閉じ括弧由来の読点はそのまま残る(「デリバリー、の設定」)。助詞の
-			// 前で間が空くだけで読み上げは壊れないため、ここで品詞を見に行く
-			// ような推定はしない(形態素解析器を持ち込まない、設計原則1)。
+			// N-4: 閉じ括弧の直後が1文字助詞のときは読点を出さず括弧を消す
+			// だけにする(「デリバリー、の設定」→「デリバリーの設定」)。
 			want: "継続的インテグレーション、デリバリーの環境では、" +
-				"CI/CD、継続的インテグレーション、デリバリー、の設定を見直す必要があります。",
+				"CI/CD、継続的インテグレーション、デリバリーの設定を見直す必要があります。",
 			assertFn: func(t *testing.T, got string) {
 				assert.NotContains(t, got, "（")
 				assert.NotContains(t, got, "）")
@@ -148,6 +147,15 @@ func TestSanitizeScript_KeepsVersionsAndCommonWords(t *testing.T) {
 		"HTTP/2",
 		"OAuth 2.0",
 		"20260925",
+		// N-3 レビュー実測: 技術番組で普通に出る表記。ここが落ちると番組の
+		// 中身が抜けるので、閾値を動かすときは必ずこの表を先に通すこと。
+		"CVE-2026-12345",
+		"x86_64",
+		"RFC9110",
+		"OpenSSL3.0.14",
+		"gemini-2.5-flash",
+		"AES256GCM",
+		"ECMAScript2015", // 14文字/数字4 = 28.6% — 閾値 30% のすぐ下
 	}
 	for _, s := range keep {
 		t.Run(s, func(t *testing.T) {
@@ -155,6 +163,9 @@ func TestSanitizeScript_KeepsVersionsAndCommonWords(t *testing.T) {
 			got, rep := sanitizeScript(in)
 			assert.Equal(t, in, got)
 			assert.Empty(t, rep.dropped, "%q を含む文は落とさない", s)
+			// keptAll でも原文が返るので、「落とさない」と「落としたが
+			// 取りやめた」を取り違えないようここまで見る(N-3)。
+			assert.False(t, rep.keptAll, "%q は判定自体が false であること", s)
 		})
 	}
 }
@@ -177,6 +188,24 @@ func TestIsHashLikeRun(t *testing.T) {
 		{"SHA", false},
 		{"256", false},
 		{"", false},
+		// --- N-3: レビュー実測の境界。閾値 (12文字/数字30%, 20文字) を動かす
+		// 人が最初に読む表。落とす側の誤爆と、残る側の見逃しを並べて仕様として
+		// 固定する。誤爆は1文が消えるだけ、見逃しは羅列1本が読まれるだけ、と
+		// いう非対称性のうえで「狭く落とす」側に倒している。
+		//
+		// 落ちる側(誤爆しうると分かっていて許容する):
+		{"Windows11Pro22H2", true},  // 16文字/数字5 = 31.3%
+		{"ISBN9784873119045", true}, // 17文字/数字13
+		{"20260925T043014Z", true},  // ISO 8601 basic 形式のタイムスタンプ
+		// 残る側(見逃すと分かっていて許容する):
+		{"aGVsbG8gd29ybGQh", false}, // base64 16文字/数字3 = 18.8%
+		{"dQw4w9WgXcQ", false},      // YouTube の動画 ID (11文字)
+		{"a1b2c3d", false},          // 短縮 SHA
+		// 正しく残る側:
+		{"AES256GCM", false},
+		{"ECMAScript2015", false}, // 14文字/数字4 = 28.6%
+		{"RFC9110", false},
+		{"OpenSSL3", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.run, func(t *testing.T) {
@@ -281,6 +310,10 @@ func TestSanitizeSegmentScript_Logs(t *testing.T) {
 // 残っている。定型句(出題番号・解答)は削除対象にならないこと、そして TTS が
 // 読む文字列 (QuizRead) と segments に残る文字列 (Segments) が一致することを
 // 同時に固定する。
+//
+// 【注意】この設問は**2文**なので削除が効く。1文の設問では効かない(支配的な
+// 実ケースはむしろそちら) — その限界は
+// TestBuildQuizCorner_SingleSentenceLimitation が明示的に固定している。
 func TestBuildQuizCorner_Sanitizes(t *testing.T) {
 	articleID := int64(77)
 	items := []learning.Item{{
@@ -314,4 +347,128 @@ func TestBuildWeeklyReview_Sanitizes(t *testing.T) {
 	assert.NotContains(t, body, "b97027b31e111")
 	assert.Contains(t, body, weeklyReviewLead)
 	assert.Contains(t, body, weeklyReviewClosing)
+}
+
+// TestSanitizeScript_ThresholdBoundary は N-3: 閾値の境界を**文の単位**で固定
+// する。区切り文字でランが割れるかどうかまで含めた実際の挙動がここに出る
+// (UUID や IPv6 はハイフン・コロンで割れるため、全体は長くても落ちない)。
+//
+// 入力を2文にしてあるのは意図的: 1文しかないテキストは、落とすと空になるので
+// §8 の never-empty が効いて原文のまま残る(sanitizeScript のドキュメント参照)。
+// 閾値そのものを見たいこの表では、その経路に入らないようにしている。
+func TestSanitizeScript_ThresholdBoundary(t *testing.T) {
+	tests := []struct {
+		name        string
+		token       string
+		wantDropped bool
+	}{
+		// 落ちる側。誤爆しうると分かっていて許容する — 誤爆の代償は1文が
+		// 消えることで、見逃しの代償は読み上げ不能な羅列が音声に乗ること。
+		{name: "product name with version digits", token: "Windows11Pro22H2", wantDropped: true},
+		{name: "ISBN with the prefix glued on", token: "ISBN9784873119045", wantDropped: true},
+		{name: "ISO 8601 basic timestamp", token: "20260925T043014Z", wantDropped: true},
+		// 残る側。見逃すと分かっていて許容する(UUID を拾う特別扱いは入れない)。
+		{name: "UUID splits on hyphens, longest run is digits only",
+			token: "550e8400-e29b-41d4-a716-446655440000"},
+		{name: "IPv6 splits on colons", token: "2001:0db8:85a3:0000:0000:8a2e:0370:7334"},
+		{name: "short base64 (16 chars, digit-poor)", token: "aGVsbG8gd29ybGQh"},
+		{name: "YouTube video ID (11 chars)", token: "dQw4w9WgXcQ"},
+		{name: "abbreviated SHA (7 chars)", token: "a1b2c3d"},
+		// 正しく残る側。
+		{name: "CVE ID", token: "CVE-2026-12345"},
+		{name: "architecture", token: "x86_64"},
+		{name: "RFC number", token: "RFC9110"},
+		{name: "library version", token: "OpenSSL3.0.14"},
+		{name: "model name", token: "gemini-2.5-flash"},
+		{name: "cipher suite", token: "AES256GCM"},
+		{name: "spec year", token: "ECMAScript2015"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const lead = "きょうのニュースです。"
+			in := lead + "値は " + tt.token + " です。"
+			got, rep := sanitizeScript(in)
+			assert.False(t, rep.keptAll, "2文あるので never-empty 経路には入らない")
+			if tt.wantDropped {
+				assert.Equal(t, lead, got)
+				require.Len(t, rep.dropped, 1)
+				return
+			}
+			assert.Equal(t, in, got)
+			assert.Empty(t, rep.dropped)
+		})
+	}
+}
+
+// TestSanitizeScript_ClosingBracketBeforeParticle は N-4 の例外表を固定する。
+// 閉じ括弧の直後が1文字助詞のときだけ読点を出さない。「から」「まで」のような
+// 複数文字の助詞を足すと語頭 (か / ま) で誤爆するので、この表は増やさない。
+func TestSanitizeScript_ClosingBracketBeforeParticle(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"CI/CD（継続的インテグレーション／デリバリー）の設定です。", "CI/CD、継続的インテグレーション、デリバリーの設定です。"},
+		{"仕様（RFC9110）は公開されています。", "仕様、RFC9110は公開されています。"},
+		{"文書（草案）を確認します。", "文書、草案を確認します。"},
+		{"対象（本番環境）が停止しました。", "対象、本番環境が停止しました。"},
+		{"設定（既定値）に戻します。", "設定、既定値に戻します。"},
+		{"手順（付録）で説明します。", "手順、付録で説明します。"},
+		{"結果（成功）と記録されました。", "結果、成功と記録されました。"},
+		{"条件（例外）も同じです。", "条件、例外も同じです。"},
+		{"連携（外部）へ送ります。", "連携、外部へ送ります。"},
+		{"項目（追加）や変更があります。", "項目、追加や変更があります。"},
+		// 助詞以外が続く場合は読点のまま(間を作るのが自然)。
+		{"補足（詳細は番組情報欄）。次の文です。", "補足、詳細は番組情報欄。次の文です。"},
+		{"用語（略語）。", "用語、略語。"},
+		// 「から」「まで」は例外表に入れない — 読点が残る。
+		{"開始（初回）から説明します。", "開始、初回、から説明します。"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got, _ := sanitizeScript(tt.in)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestFixedPhrasesSurviveSanitizing は N-6: D-37 の境界に置く見張り。
+// format.go の承認済み文案は、サニタイズを通しても1文字も変わってはいけない。
+//
+// 現在の定型句には全角括弧も異体ハイフンも含まれないので今は無害だが、将来
+// format.go に「（…）」入りの文言を足すと承認済みの文案が黙って書き換わる。
+// TestFixedPhrases はサニタイズ**前**の文字列を見るため、それを検知できない。
+// ここが落ちたら、直すのは format.go 側の文言である(サニタイザを緩めない)。
+func TestFixedPhrasesSurviveSanitizing(t *testing.T) {
+	for _, w := range fixedWordings() {
+		t.Run(w.name, func(t *testing.T) {
+			got, rep := sanitizeScript(w.whole)
+			assert.Equal(t, w.whole, got, "format.go の文言がサニタイズで書き換わっている")
+			assert.False(t, rep.changed())
+		})
+	}
+}
+
+// TestBuildQuizCorner_SingleSentenceLimitation は**現在の限界**を明示的に固定
+// する(レビュー指摘 N-1 / N-2)。1文しかない出題文は、羅列を含んでいても
+// §8 の never-empty(文字列単位)が効いて原文のまま残る — そして D-19 の相乗り
+// クイズは1〜2文が普通なので、これが支配的なケースである。
+//
+// このテストは「正しい姿」ではなく「いま出荷している姿」を写したもの。追い PR
+// で (a) QuizDraft の生成時点でのサニタイズ、(b) 項目が空になるならその項目を
+// 当日の出題から外す縮退、を入れた時点で書き換えること。
+func TestBuildQuizCorner_SingleSentenceLimitation(t *testing.T) {
+	articleID := int64(77)
+	items := []learning.Item{{
+		ID: 101, Kind: learning.KindArticle, ArticleID: &articleID,
+		Question: "activesupport‑7.2.4.gem のハッシュ b97027b31e111 は何を示しますか?",
+		Answer:   "gem の正当性です。",
+	}}
+	corner := BuildQuizCorner(context.Background(), items, nil)
+	require.Len(t, corner.Items, 1)
+
+	assert.Contains(t, corner.Items[0].Question, "b97027b31e111",
+		"1文なので削除は効かない(既知の限界、追い PR で対応)")
+	assert.NotContains(t, corner.Items[0].Question, "\u2011",
+		"正規化は1文でも効く")
 }
