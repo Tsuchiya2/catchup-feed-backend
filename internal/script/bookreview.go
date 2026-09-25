@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+
+	"catchup-feed/internal/domain/entity"
 )
 
 // OllamaLLM is the LOCAL-only text generator behind book_review and its quiz
@@ -117,6 +119,10 @@ func (g *BookReviewGenerator) Generate(ctx context.Context, bookTitle string, ch
 	if body == "" {
 		return BookReviewResult{}, fmt.Errorf("script: book_review: empty script")
 	}
+	// D-41 改訂: 書籍コーナーもセグメント台本なのでサニタイズする。クイズ
+	// 分離(splitBookReview)の**後**に置き、マーカー検出を乱さない。ローカル
+	// モデルでも ISBN・章番号・識別子の羅列は出てくる。
+	body = sanitizeSegmentScript(ctx, g.logger, entity.SegmentKindBookReview, body)
 	g.logger.InfoContext(ctx, "book_review script generated (ollama)",
 		slog.String("book_title", bookTitle),
 		slog.Int("chunks", len(chunks)),

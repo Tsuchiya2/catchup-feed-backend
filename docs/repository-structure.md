@@ -199,7 +199,7 @@ Mac の夜間バッチ(launchd 起動)。`internal/radio.Pipeline` に必要な�
 | パッケージ | 行数 | 主なファイルと責務 |
 |---|---|---|
 | `radio/` | 1,849 | `pipeline.go`(番組生成の全工程 + 必要な依存 10 本の interface 定義)、`transfer.go`(rsync 転送。`Transferer` / `RunFunc` で差し替え可能)、`bookreview.go`(書籍コーナー)、`weeklyreview.go`(週次振り返り)、`jingle.go`、`config.go` |
-| `script/` | 1,440 | `generator.go`(台本生成)、`plan.go`(構成計画)、`quiz.go` `quizcorner.go`(クイズ)、`format.go`(番組の定型句を集約 — D-37)、`shownotes.go`、`prompts.go` + `prompts/`(テンプレート)、`bookreview.go` `weeklyreview.go` |
+| `script/` | 1,440 | `generator.go`(台本生成)、`plan.go`(構成計画)、`quiz.go` `quizcorner.go`(クイズ)、`format.go`(番組の定型句を集約 — D-37)、`sanitize.go`(読み上げ前の台本サニタイズ — D-41 改訂)、`shownotes.go`、`prompts.go` + `prompts/`(テンプレート)、`bookreview.go` `weeklyreview.go` |
 | `tts/` | 771 | `voicevox.go`(HTTP API 直叩き)、`ffmpeg.go`(結合・loudnorm)、`silence.go`(無音生成)、`wav.go`、`sentence.go`(文分割)、`jingle.go` + `assets/` |
 
 #### 複数バイナリが使うもの

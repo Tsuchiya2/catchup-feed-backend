@@ -1,6 +1,7 @@
 package script
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -107,7 +108,7 @@ func TestBuildWeeklyReview(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			body, ok := BuildWeeklyReview(tt.material)
+			body, ok := BuildWeeklyReview(context.Background(), tt.material, nil)
 			assert.Equal(t, tt.wantOK, ok)
 			if !tt.wantOK {
 				assert.Empty(t, body)

@@ -1,6 +1,7 @@
 package script
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +26,7 @@ func cornerItems() []learning.Item {
 
 func TestBuildQuizCorner(t *testing.T) {
 	t.Run("empty selection yields an empty corner", func(t *testing.T) {
-		corner := BuildQuizCorner(nil)
+		corner := BuildQuizCorner(context.Background(), nil, nil)
 		assert.Empty(t, corner.Lead)
 		assert.Empty(t, corner.Items)
 		assert.Nil(t, corner.Segments(5))
@@ -33,7 +34,7 @@ func TestBuildQuizCorner(t *testing.T) {
 	})
 
 	t.Run("lead embeds the item count, no LLM involved (§7.2)", func(t *testing.T) {
-		corner := BuildQuizCorner(cornerItems())
+		corner := BuildQuizCorner(context.Background(), cornerItems(), nil)
 		// 文言そのものは format_test.go の TestQuizCornerLead が全文で固定
 		// している。ここで見るのは配線 — 問題数が項目数から来ていること。
 		assert.Equal(t, quizCornerLead(2), corner.Lead)
@@ -41,7 +42,7 @@ func TestBuildQuizCorner(t *testing.T) {
 	})
 
 	t.Run("reads carry numbering and answer cue around the verbatim fields", func(t *testing.T) {
-		corner := BuildQuizCorner(cornerItems())
+		corner := BuildQuizCorner(context.Background(), cornerItems(), nil)
 		require.Len(t, corner.Items, 2)
 		assert.Equal(t, "第1問。問いその1?", corner.Items[0].Question)
 		assert.Equal(t, "答え。答えその1。", corner.Items[0].Answer)
@@ -52,12 +53,12 @@ func TestBuildQuizCorner(t *testing.T) {
 	})
 
 	t.Run("item ids in corner order", func(t *testing.T) {
-		assert.Equal(t, []int64{101, 102}, BuildQuizCorner(cornerItems()).ItemIDs())
+		assert.Equal(t, []int64{101, 102}, BuildQuizCorner(context.Background(), cornerItems(), nil).ItemIDs())
 	})
 }
 
 func TestQuizCorner_Segments(t *testing.T) {
-	corner := BuildQuizCorner(cornerItems())
+	corner := BuildQuizCorner(context.Background(), cornerItems(), nil)
 	segs := corner.Segments(4)
 
 	require.Len(t, segs, 3, "lead + 1項目=1行 (§7.2-4)")

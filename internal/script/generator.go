@@ -296,6 +296,9 @@ func (g *Generator) generateOutro(ctx context.Context, data outroData, scope []r
 	if body == "" {
 		return "", nil, fmt.Errorf("script: generate outro segment: empty script")
 	}
+	// D-41 改訂: サニタイズは cutQuizSection / stripQuizLeak の**後**に置く
+	// (マーカー検出と漏洩切断を乱さないため)。再試行経路もここを通る。
+	body = sanitizeSegmentScript(ctx, g.logger, entity.SegmentKindOutro, body)
 	g.logger.InfoContext(ctx, "segment script generated",
 		slog.String("kind", entity.SegmentKindOutro),
 		slog.String("provider", provider),
@@ -330,6 +333,10 @@ func (g *Generator) generate(ctx context.Context, kind, prompt string) (string, 
 	if text == "" {
 		return "", fmt.Errorf("script: generate %s segment: empty script", kind)
 	}
+	// D-41 改訂: 生成直後に1回だけサニタイズする。ここから先は TTS も
+	// segments テーブルもこの文字列しか見ないので、音声と DB が構造的に
+	// 一致する。
+	text = sanitizeSegmentScript(ctx, g.logger, kind, text)
 	g.logger.InfoContext(ctx, "segment script generated",
 		slog.String("kind", kind),
 		slog.String("provider", provider),
