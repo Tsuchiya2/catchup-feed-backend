@@ -88,6 +88,10 @@ type ollamaRequest struct {
 // ollamaResponse is the minimal /api/generate response body.
 type ollamaResponse struct {
 	Response string `json:"response"`
+	// DoneReason is Ollama's equivalent of finish_reason: "stop" when the
+	// model finished and "length" when num_predict / the context window cut
+	// it off (実測で確認、2026-09-25)。可視化のみ。
+	DoneReason string `json:"done_reason"`
 }
 
 // Summarize implements Provider using the /api/generate endpoint.
@@ -115,6 +119,7 @@ func (o *Ollama) Generate(ctx context.Context, prompt string) (string, error) {
 	}
 
 	out := strings.TrimSpace(resp.Response)
+	warnIfIncompleteFinish(ProviderOllama, resp.DoneReason, out)
 	if out == "" {
 		return "", fmt.Errorf("%s: api returned empty response", ProviderOllama)
 	}

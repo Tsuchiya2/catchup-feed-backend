@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	utiltext "catchup-feed/internal/utils/text"
@@ -202,4 +203,83 @@ func postJSON(ctx context.Context, client *http.Client, provider, url string, he
 		return fmt.Errorf("%s: decode response: %w", provider, err)
 	}
 	return nil
+}
+
+// --- 応答切り詰めの可視化(2026-09-25) -------------------------------------
+//
+// LLM が出力上限で打ち切った応答は、これまで「完全な応答」と区別が付かない
+// まま採用されていた(2026-09-25 16:00 の dry-run で news セグメントが
+// 207 文字・文の途中で終わった台本のまま採用された)。D-41 で qwen を不採用に
+// した理由も finish_reason: length による破綻だったが、実行時の検知には
+// 使われていなかった。
+//
+// ここでのスコープは**可視化のみ**。切り詰めを検知しても応答はこれまでどおり
+// そのまま採用し、エラーにもフォールバックにもしない(C-3 / §8 縮退許容)。
+// 挙動を変えるかどうかは、この WARN で発生頻度が測れてから決める。
+//
+// 各プロバイダの実応答で確認したフィールド(2026-09-25 実測):
+//   - groq   choices[].finish_reason  "stop" / "length"
+//   - gemini candidates[].finishReason "STOP" / "MAX_TOKENS" / "SAFETY" ...
+//   - ollama done_reason               "stop" / "length"
+
+// finishTailRunes is how much of the response tail the warning carries.
+// The tail is what makes the log actionable: it shows whether the text
+// really stops mid-sentence. Kept short on purpose — the Ollama stage also
+// handles private material (書籍・ジャーナル、C-12)、so the log line must
+// stay a fingerprint, not a copy of the output.
+//
+// ログは基本的にホスト内に残るが、ホスト外へ出る経路が1つある: D-46 (3) の
+// 失敗時アラートメール(deploy/scripts/radio-run.sh)は radio が非ゼロ終了した
+// 日に stderr の末尾20行を自分宛 SMTP で直送し、radio の slog は stderr に
+// 出る(cmd/radio/main.go)。つまり障害日にはこの40文字がメールに載りうる。
+// 自分宛・異常終了時のみ・40文字という条件で許容しているのであって、
+// 「ホスト外に出ない」からではない — **伸ばすならこの前提から検討すること**。
+const finishTailRunes = 40
+
+// normalFinishReasons maps a provider to the value that means "the model
+// stopped because it was done". Anything else — length / MAX_TOKENS /
+// SAFETY / RECITATION — means the text in hand may be cut off mid-sentence,
+// so the raw value is logged rather than being collapsed into a boolean.
+var normalFinishReasons = map[string]string{
+	ProviderGemini: "STOP",
+	ProviderGroq:   "stop",
+	ProviderOllama: "stop",
+}
+
+// warnIfIncompleteFinish emits a WARN when a provider reports a finish
+// reason other than normal completion. An empty reason means the field was
+// absent from the response (older/partial payloads): nothing can be judged,
+// so nothing is logged. The caller's behavior is unaffected either way.
+func warnIfIncompleteFinish(provider, finishReason, out string) {
+	if finishReason == "" {
+		return
+	}
+	if normal, ok := normalFinishReasons[provider]; ok && strings.EqualFold(finishReason, normal) {
+		return
+	}
+	attrs := []any{
+		slog.String("provider", provider),
+		slog.String("finish_reason", finishReason),
+		slog.Int("output_length", utiltext.CountRunes(out)),
+	}
+	// 空の末尾は output_length=0 と情報が重複するだけなので属性ごと省く
+	// (Gemini が MAX_TOKENS で parts ごと落とすケース)。
+	if tail := tailRunes(out, finishTailRunes); tail != "" {
+		attrs = append(attrs, slog.String("output_tail", tail))
+	}
+	slog.Warn("llm response did not finish normally, output may be truncated", attrs...)
+}
+
+// tailRunes returns the last n Unicode characters of s (the whole string
+// when it is shorter). Counting runes keeps the excerpt meaningful for
+// Japanese output, where one character is three bytes.
+func tailRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[len(runes)-n:])
 }
