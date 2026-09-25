@@ -30,12 +30,15 @@ func TestLoadConfig_OllamaTimeout(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.summarizerTimeout != "" {
-				t.Setenv("SUMMARIZER_TIMEOUT", tt.summarizerTimeout)
-			}
-			if tt.value != "" {
-				t.Setenv("RADIO_OLLAMA_TIMEOUT", tt.value)
-			}
+			// 条件分岐なしで常に設定する: 空文字 = 未設定相当
+			// (pkg/config.GetEnvDuration は os.Getenv が "" を返したら既定値)。
+			// if で囲むと、テストプロセスにこれらが残っている環境
+			// (~/pulse/.env を source した shell 等)で「未設定」のケースが
+			// その値を継承して落ちる。t.Setenv はサブテスト終了時に元の値へ
+			// 戻すので後始末も要らない。
+			t.Setenv("SUMMARIZER_TIMEOUT", tt.summarizerTimeout)
+			t.Setenv("RADIO_OLLAMA_TIMEOUT", tt.value)
+
 			cfg, err := radio.LoadConfig(nil)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, cfg.OllamaTimeout)

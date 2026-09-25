@@ -153,9 +153,14 @@ func TestLoadOutroQuizLimits(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.summaryChars != "" {
-				t.Setenv("QUIZ_PROMPT_SUMMARY_CHARS", tt.summaryChars)
-			}
+			// 条件分岐なしで常に設定する: 空文字 = 未設定相当
+			// (pkg/config.GetEnvInt は os.Getenv が "" を返したら既定値)。
+			// if で囲むと、テストプロセスに QUIZ_PROMPT_SUMMARY_CHARS が
+			// 残っている環境(~/pulse/.env を source した shell 等)で
+			// 「未設定は既定値」のケースがその値を継承して落ちる。
+			// t.Setenv はサブテスト終了時に元の値へ戻すので後始末も要らない。
+			t.Setenv("QUIZ_PROMPT_SUMMARY_CHARS", tt.summaryChars)
+
 			got := LoadOutroQuizLimits(nil)
 			assert.Equal(t, tt.wantSummaryChars, got.SummaryChars)
 		})
