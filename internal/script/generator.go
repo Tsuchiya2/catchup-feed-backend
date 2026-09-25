@@ -150,8 +150,14 @@ func (g *Generator) GenerateEpisode(ctx context.Context, date time.Time, article
 	// generateOutro の契約は「quizCount > 0 ⟺ プロンプトに相乗りセクションが
 	// ある」。予算で省いた日(quiz == nil)にそのまま quizCount を渡すと、存在
 	// しないマーカーを探して「section missing」の WARN を出し、本文が空なら
-	// 意味のない D-26 (1) 再試行(同一プロンプト)まで走ってしまう。渡すのは
-	// 実際にプロンプトへ載った件数にする。
+	// 意味のない D-26 (1) 再試行(同一プロンプト)まで走ってしまう — 再試行は
+	// data.Quiz = nil にして再レンダリングする実装なので、省いた日には1回目と
+	// バイト単位で同一のリクエストを投げ直すだけになる。渡すのは実際に
+	// プロンプトへ載った件数にする。
+	//
+	// これにより §12-1 の第2網 stripQuizLeak も外れるが、そもそも相乗り
+	// セクションを出していないので、リスク水準は QUIZ_ITEMS_PER_DAY=0 の
+	// 日常運転と同じである(quizCount をそのまま渡す形に戻さないこと)。
 	effectiveQuizCount := quizCount
 	if quiz == nil {
 		effectiveQuizCount = 0

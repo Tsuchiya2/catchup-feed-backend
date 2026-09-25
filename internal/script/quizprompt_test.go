@@ -167,6 +167,21 @@ func TestEffectiveSummaryChars(t *testing.T) {
 
 		_, fits = effectiveSummaryChars(promptArticles(fit+1), 150)
 		assert.False(t, fits, "%d 件は下限でも収まらない", fit+1)
+
+		// 下限 = min(40, configured) の**肯定側**: 既定の下限40文字では
+		// 収まらない件数でも、operator が意図的に短く設定していれば出せる
+		// (設定を勝手に上書きしないという規則の本体)。
+		// タイトル9文字 + ラベル12文字 = 21文字/件なので、50記事では
+		//   要約40文字 → 21×50 + 40×50 = 3,050 > 2,800 で収まらない
+		//   要約30文字 → 21×50 + 30×50 = 2,550 ≦ 2,800 で収まる
+		const beyondDefaultFloor = 50
+		_, fits = effectiveSummaryChars(promptArticles(beyondDefaultFloor), 150)
+		require.False(t, fits, "%d 件は既定の下限40文字では収まらない", beyondDefaultFloor)
+
+		got, fits = effectiveSummaryChars(promptArticles(beyondDefaultFloor), 30)
+		require.True(t, fits,
+			"operator が下限より短く設定した日はその値を下限として扱い、出せる")
+		assert.Equal(t, 30, got, "設定値を超えて長くはしない")
 	})
 }
 
