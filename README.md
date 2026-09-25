@@ -285,6 +285,7 @@ go build -o radio ./cmd/radio
 | `RADIO_RSYNC_DEST` / `RADIO_RSYNC_PATH` | Pi への rsync 転送先(空ならローカル配置) |
 | `RADIO_TIMEZONE` | 放送日判定のタイムゾーン(既定 `Asia/Tokyo`) |
 | `RADIO_TIMEOUT` | ラン全体のタイムアウト(既定 1h) |
+| `RADIO_OLLAMA_TIMEOUT` | radio の Ollama 呼び出しのタイムアウト(既定 `240s`)。要約連鎖の `SUMMARIZER_TIMEOUT` とは**独立**(D-46 (2)) — worker には次回クロールへの持ち越しがあるが radio には無く、最終段で諦めた日はエピソード欠番になる。`BOOK_REVIEW_OLLAMA_MODEL` の呼び出しにも効く |
 | `VOICEVOX_URL` | VOICEVOX Engine のエンドポイント(既定 `http://127.0.0.1:50021`) |
 | `VOICEVOX_SPEAKER` / `VOICEVOX_SPEAKER_NAME` | 話者 style ID(コード既定 3 = ずんだもん。**実運用は 30 = No.7 アナウンス** — D-2)/ クレジット表記用の話者名(未設定なら Engine の `/speakers` から解決。両方失敗なら当日スキップ — U-13) |
 | `VOICEVOX_SPEED_SCALE` / `VOICEVOX_TIMEOUT` | 話速 / 合成タイムアウト |
@@ -305,6 +306,7 @@ go build -o radio ./cmd/radio
 | `QUIZ_LADDER_DAYS` | spaced repetition の間隔ラダー |
 | `QUIZ_ITEMS_PER_DAY` / `QUIZ_SLOTS` | 1日の生成項目数・出題スロット数 |
 | `QUIZ_AUTO_RESOLVE_AFTER` / `QUIZ_BACKPRESSURE_THRESHOLD` / `QUIZ_WEEKLY_REVIEW_DOW` | 自動採点・キュー飽和・週次振り返り曜日 |
+| `QUIZ_PROMPT_MAX_ARTICLES` / `QUIZ_PROMPT_SUMMARY_CHARS` | アウトロに相乗りさせるクイズ生成セクション(D-19)に渡す記事数 N(既定 4、放送順の上位N件)と1件あたりの要約文字数(既定 300)。**Groq 無料枠の TPM 8,000 に1リクエストで収めるための上限**(D-46 (1))。上げると 8 記事日のアウトロが再び 413 で拒否され、Ollama 段しか残らない — 上げる前に `internal/script/outrobudget_test.go` のトークン見積りで確認する |
 
 ### 通知
 

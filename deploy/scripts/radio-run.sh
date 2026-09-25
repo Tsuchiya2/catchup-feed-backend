@@ -8,8 +8,9 @@
 #      自己修復を試みる(2 秒間隔 × 30 回まで再チェック)。復旧しても
 #      しなくても先へ進む
 #   3. VOICEVOX Engine が起動していなければ起動し、応答を待つ
-#   4. radio を実行(引数はそのまま透過: -dry-run 等)
-#   5. 自分で起動した Engine だけ後始末する
+#   4. Ollama のモデルを事前ウォーム(D-46 (2)。失敗しても先へ進む)
+#   5. radio を実行(引数はそのまま透過: -dry-run 等)
+#   6. 自分で起動した Engine だけ後始末する
 #
 # リトライはしない(§8: 失敗した日はエピソード欠番で正常。通知だけを
 # 確実にする)。
@@ -173,6 +174,40 @@ if ! voicevox_up; then
     # VOICEVOX 障害→当日スキップ)。radio に進ませて notify_error を積ませる
     log "WARN: VOICEVOX Engine not responding at $VOICEVOX_URL — radio 側の失敗通知に任せる"
 fi
+
+# --- Ollama モデルの事前ウォーム(D-46 (2)) ---------------------------
+# Ollama は要約・台本フォールバック連鎖の最終段で、クラウド2段(Gemini 無料枠
+# の 429 / Groq 無料枠の TPM)が同時に落ちた日はここだけが番組を出せる。ところが
+# モデルがメモリに載っていないと最初の呼び出しがロード時間を丸ごと被り、
+# 2026-09-25 はそれで台本1本が context deadline exceeded になって欠番した。
+# radio を起こす前に空プロンプトでモデルを常駐させ、最初の実呼び出しから
+# 推論だけにする。
+#
+# VOICEVOX の起動待ちと同じ構え: 失敗しても radio へ進む(§8。欠番よりはマシ。
+# ウォームは自己修復の仕掛けで、検知は radio の非ゼロ終了 + SMTP 直送が担う)。
+# radio 自体のリトライはしない。
+OLLAMA_WARM_URL="${OLLAMA_HOST:-http://127.0.0.1:11434}"
+# 既定値はコード側 internal/infra/summarizer/ollama.go の defaultOllamaModel と
+# 同じ値。片方だけ変えると別のモデルをウォームして効果がゼロになる
+OLLAMA_WARM_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
+# keep_alive は Ollama 既定の 5 分では足りない — アウトロが Ollama まで落ちる
+# のはニュース段を回し終えた十数分後になり得る。RADIO_TIMEOUT(既定1時間)の
+# 内側で足りる 40 分を渡す
+OLLAMA_WARM_KEEP_ALIVE="${OLLAMA_WARM_KEEP_ALIVE:-40m}"
+
+if ! curl -sf --max-time 5 "$OLLAMA_WARM_URL/api/version" >/dev/null 2>&1; then
+    log "WARN: Ollama not responding at $OLLAMA_WARM_URL — ウォームをスキップして radio へ進む(mac.md 2章)"
+elif curl -sf --max-time 300 -X POST "$OLLAMA_WARM_URL/api/generate" \
+        -H 'Content-Type: application/json' \
+        --data-binary "{\"model\":\"$OLLAMA_WARM_MODEL\",\"prompt\":\"\",\"keep_alive\":\"$OLLAMA_WARM_KEEP_ALIVE\"}" \
+        >/dev/null 2>&1; then
+    log "Ollama warmed: $OLLAMA_WARM_MODEL (keep_alive $OLLAMA_WARM_KEEP_ALIVE)"
+else
+    # モデル未 pull(mac.md 2章の ollama pull 漏れ)もここに落ちる。radio は
+    # クラウド2段で出せる日なら問題なく出るので、WARN だけ残す
+    log "WARN: Ollama warm-up failed for $OLLAMA_WARM_MODEL — radio へ進む(ollama list でモデルを確認)"
+fi
+# -----------------------------------------------------------------------
 
 log "starting radio $*"
 rc=0

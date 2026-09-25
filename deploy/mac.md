@@ -38,6 +38,23 @@ ollama pull qwen2.5:7b            # コードの既定モデル(OLLAMA_MODEL で
 curl -s http://127.0.0.1:11434/api/tags   # 応答があれば OK
 ```
 
+**このモデルは毎朝 radio-run.sh が事前ウォームする**(D-46 (2))。Ollama は要約・台本の
+フォールバック連鎖の最終段で、クラウド2段(Gemini 無料枠の 429 / Groq 無料枠の TPM 上限)が
+同時に落ちた日はここだけが番組を出せる。モデルがメモリに載っていないと最初の呼び出しが
+ロード時間を丸ごと被り、実際に 2026-09-25 はそれで台本1本が 60 秒でタイムアウトして
+欠番した。radio-run.sh は radio を起こす前に空プロンプトで `/api/generate` を叩き、
+`keep_alive`(既定 40 分、`OLLAMA_WARM_KEEP_ALIVE` で変更可)の間モデルを常駐させる。
+
+- ウォーム対象は **`~/pulse/.env` の `OLLAMA_MODEL`**(未設定ならコード既定の `qwen2.5:7b`)。
+  `OLLAMA_MODEL` を変えたら **`ollama pull` も忘れずに**行う — 未 pull だとウォームが WARN で
+  失敗し、その日 Ollama 段まで落ちたら欠番になる
+- Ollama が落ちている日・未 pull の日はウォームを WARN でスキップして radio へ進む
+  (§8: 欠番よりはマシ。radio 自体のリトライはしない)。ログは `~/pulse/logs/` の radio ログに
+  `Ollama warmed:` / `WARN: Ollama warm-up failed` として残る
+- radio 側のタイムアウトは **`RADIO_OLLAMA_TIMEOUT`(既定 240 秒)**。要約連鎖の
+  `SUMMARIZER_TIMEOUT`(既定 60 秒)とは独立で、worker と違って radio には「次回クロールへ
+  持ち越し」が無いため長めに取ってある(6章の .env で変更可)
+
 ## 3. Ollama を Pi の worker から使えるようにする(tailnet 限定公開)
 
 Pi の worker は要約フォールバックの最終段として Mac の Ollama を叩く(§8)。Ollama 自体は localhost のまま、**Tailscale の TCP フォワードで tailnet にだけ**開ける(LAN には出さない):
@@ -105,6 +122,10 @@ cp deploy/scripts/radio-run.sh deploy/scripts/backup-pulse-db.sh \
    deploy/scripts/alert-mail.sh ~/pulse/bin/
 chmod +x ~/pulse/bin/radio-run.sh ~/pulse/bin/backup-pulse-db.sh ~/pulse/bin/alert-mail.sh
 ```
+
+radio-run.sh は radio を起こす前に、(a) tailnet プリフライト、(b) VOICEVOX Engine の起動待ち、
+(c) **Ollama モデルの事前ウォーム**(2章、D-46 (2))を行う。いずれも失敗しても radio へ進む
+自己修復の仕掛けで、検知は radio の非ゼロ終了 + SMTP 直送と朝チェック(10b 章)が担う。
 
 `alert-mail.sh` は radio-run.sh / morning-check.sh が source する SMTP 直送ヘルパー。
 radio が非ゼロ終了した朝は、DB(jobs テーブル)経由の通知に加えて Mac から直接
@@ -361,6 +382,16 @@ book_review)を生成して私的フィードに載せる。公開エピソー�
 
 追加の env なしで既定値のまま動く。調整したい場合だけ env.mac.example の
 「学習ループ / 復習クイズ」「書籍レビュー」節から使うキーを `~/pulse/.env` に写す。
+
+**`QUIZ_PROMPT_MAX_ARTICLES` / `QUIZ_PROMPT_SUMMARY_CHARS`(既定 4 件 / 300 文字)は
+放送継続のための上限なので、安易に上げない**(D-46 (1))。アウトロには復習クイズの生成
+指示が相乗りしており(D-19)、ここに渡す記事の数と要約の長さがそのままアウトロ
+プロンプトのトークン数になる。全記事の要約を丸ごと渡していた旧実装では8記事日に
+約 8,900 トークンへ膨らみ、Groq 無料枠の TPM 8,000(D-41 で 12,000 から減った)を
+1リクエストで超えて `413 Request too large` で拒否された(2026-09-25 欠番)。**413 は
+429 と違って待っても通らない**ため、プロンプトを小さく保つことが唯一の対策である。
+上げる前に `internal/script/outrobudget_test.go` のトークン見積りで確認すること。
+クイズ候補が減る代わりに放送が続く、という優先順位(縮退許容)。
 **`QUIZ_LADDER_DAYS` だけは Pi 側の .env(env.pi.example の学習ループ節)と
 一致必須**(server の採点 API と radio の自動解決が同じ遷移ラダーを共有するため)。
 それ以外のキーは Mac 側だけで完結する。

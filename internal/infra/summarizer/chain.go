@@ -31,9 +31,18 @@ var ErrNoProviders = errors.New("summarizer: no providers configured")
 // before falling back. The waits are bounded per process by
 // retryWaitBudget; past the budget — and for any 429 without a usable
 // hint, or any other error — the chain falls back immediately as before.
-// The rationale: Gemini's minute quota resets in seconds, while falling
-// back lands the huge outro prompt on Groq's tighter TPM and finally on
-// Ollama, which is exactly the chain that killed the 7/13 episode.
+// The rationale: Gemini's minute quota resets in seconds, while falling back
+// lands the outro prompt on Groq's tighter TPM and finally on Ollama, which
+// is exactly the chain that killed the 7/13 episode.
+//
+// D-46 (2026-09-25) corrected two premises this retry rested on. (a) After
+// D-41 dropped the Groq free-tier TPM from 12,000 to 8,000, the un-narrowed
+// outro prompt no longer fit Groq at ALL on an 8-article day: it came back
+// 413 Request too large, which waiting cannot fix — so the prompt itself was
+// narrowed (D-46 (1), internal/script/quizprompt.go) instead of leaning on
+// this retry. (b) Exhausting retryWaitBudget and landing on Ollama is a
+// legitimate outcome, but only if Ollama can actually finish; radio therefore
+// gives that stage its own, much longer timeout (WithOllamaTimeout).
 //
 // D-3: the radio script generator reuses this same chain (and the budget is
 // shared with worker summaries by design — D-26: チェーンは radio/worker
@@ -84,6 +93,35 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// ChainEnvOption tunes NewChainFromEnv for one binary. It exists for the
+// settings that must differ between the Pi's hourly crawl and the Mac's
+// nightly radio batch even though both share this chain (D-3).
+type ChainEnvOption func(*chainEnvSettings)
+
+type chainEnvSettings struct {
+	// ollamaTimeout, when > 0, replaces Options.Timeout for the Ollama
+	// stage only.
+	ollamaTimeout time.Duration
+}
+
+// WithOllamaTimeout decouples the Ollama stage's per-request timeout from
+// SUMMARIZER_TIMEOUT (D-46 (2)). Non-positive values are ignored.
+//
+// Rationale: for the worker, a slow local summary is correctly abandoned —
+// the article is picked up again on the next cron run. For radio there is no
+// next run: the Ollama stage is the last line of defence on a day when both
+// cloud providers failed, and giving up there means the episode is missing
+// (2026-09-25 欠番は台本1本が 60.002秒 で context deadline exceeded になった
+// もの). radio therefore passes its own, much longer budget
+// (radio.Config.OllamaTimeout / RADIO_OLLAMA_TIMEOUT).
+func WithOllamaTimeout(d time.Duration) ChainEnvOption {
+	return func(s *chainEnvSettings) {
+		if d > 0 {
+			s.ollamaTimeout = d
+		}
+	}
+}
+
 // NewChainFromEnv builds the standard Gemini -> Groq -> Ollama chain from
 // environment variables. Providers without an API key are excluded
 // automatically; Ollama (keyless, local) is included unless
@@ -94,11 +132,18 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 //   - GROQ_API_KEY / GROQ_MODEL
 //   - OLLAMA_ENABLED / OLLAMA_HOST / OLLAMA_MODEL
 //   - SUMMARIZER_CHAR_LIMIT / SUMMARIZER_TIMEOUT
-func NewChainFromEnv(logger *slog.Logger) (*Chain, error) {
+//
+// Per-binary overrides are passed as ChainEnvOption (see WithOllamaTimeout).
+func NewChainFromEnv(logger *slog.Logger, options ...ChainEnvOption) (*Chain, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	opts := LoadOptions()
+
+	var settings chainEnvSettings
+	for _, apply := range options {
+		apply(&settings)
+	}
 
 	var providers []Provider
 
@@ -123,8 +168,15 @@ func NewChainFromEnv(logger *slog.Logger) (*Chain, error) {
 			slog.String("provider", ProviderGroq))
 	}
 
+	ollamaTimeout := opts.Timeout
 	if ollamaEnabled(logger) {
 		ollamaCfg := LoadOllamaConfig(opts)
+		if settings.ollamaTimeout > 0 {
+			// D-46 (2): Ollama 段だけ別予算。Options は値型なので Gemini/Groq
+			// 側の設定には影響しない。
+			ollamaCfg.Options.Timeout = settings.ollamaTimeout
+			ollamaTimeout = settings.ollamaTimeout
+		}
 		providers = append(providers, NewOllama(ollamaCfg))
 	} else {
 		logger.Info("summarizer provider excluded: OLLAMA_ENABLED=false",
@@ -140,7 +192,8 @@ func NewChainFromEnv(logger *slog.Logger) (*Chain, error) {
 	logger.Info("summarizer fallback chain configured",
 		slog.String("order", strings.Join(chain.ProviderNames(), " -> ")),
 		slog.Int("character_limit", opts.CharacterLimit),
-		slog.Duration("timeout", opts.Timeout))
+		slog.Duration("timeout", opts.Timeout),
+		slog.Duration("ollama_timeout", ollamaTimeout))
 
 	return chain, nil
 }
