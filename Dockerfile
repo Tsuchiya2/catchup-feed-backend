@@ -12,7 +12,7 @@
 # ────────────────────────────────────────────────────────────
 # Stage 1: 依存関係ダウンロード
 # ────────────────────────────────────────────────────────────
-FROM golang:1.27.1-alpine AS deps
+FROM golang:1.27.3-alpine AS deps
 
 # ビルドツールのインストール
 RUN apk add --no-cache \
@@ -31,12 +31,17 @@ WORKDIR /app
 # targeted Go version (1.27.0)` で*設定読み込みの時点で*落ちる。
 # つまり Go を上げるときは golangci-lint も「その Go でビルドされたリリース」まで
 # 同時に上げる必要がある(Go 1.27.0 ↔ golangci-lint v2.13.1 = go1.27.0 ビルド)。
+# パッチ更新でも油断しない: Go 1.27.3 のツールチェーンは標準ライブラリの
+# export data を pkgbits V5 で書き出し、golang.org/x/tools v0.49.0 を抱える
+# v2.13.x は `export data version 5 is greater than maximum supported version 4`
+# で typecheck が全滅する。V5 を読める x/tools v0.50.0 を含む最初のリリースが
+# v2.14.0(Go 1.27.3 ↔ golangci-lint v2.14.0、2026-11 の Go 1.27.3 化で実測、D-45)。
 # install.sh はインストールするバージョンのタグ付きスクリプトを使う。
 # master のスクリプトは arm64 資産のチェックサム照合が壊れており
-# (.sbom.json の行を誤マッチして verify に失敗する)、v2.13.1 の
+# (.sbom.json の行を誤マッチして verify に失敗する)、v2.14.0 の
 # タグ付きスクリプトなら正しく検証できる。
-RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.13.1/install.sh | \
-    sh -s -- -b /usr/local/bin v2.13.1
+RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.14.0/install.sh | \
+    sh -s -- -b /usr/local/bin v2.14.0
 
 # 依存関係のダウンロード（キャッシュ最適化）
 COPY go.mod go.sum ./

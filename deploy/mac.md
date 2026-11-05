@@ -104,7 +104,7 @@ kill %1
 
 ## 5. radio バイナリのビルド
 
-radio は Mac ネイティブで動かす(Docker 不要)。**必要な Go は `.go-version` / `go.mod` の `go` ディレクティブが正**(2026-08-22 時点で **1.27.0**)。
+radio は Mac ネイティブで動かす(Docker 不要)。**必要な Go は `.go-version` / `go.mod` の `go` ディレクティブが正**(2026-11-05 時点で **1.27.3**)。
 
 ```bash
 brew install go        # 既に入っているなら brew upgrade go
@@ -118,7 +118,7 @@ go build -o ~/pulse/bin/radio ./cmd/radio
 **Go を上げた PR を取り込んだときは、この Mac の Go も先に上げる**(D-45)。radio のビルドはこのマシンの Go で行われるため、古いままだと
 
 ```text
-go: go.mod requires go >= 1.27.0 (running go 1.26.x; GOTOOLCHAIN=local)
+go: go.mod requires go >= 1.27.3 (running go 1.27.0; GOTOOLCHAIN=local)
 ```
 
 でビルドが落ち、**気付かないと当夜のエピソードが欠番になる**。CI は Pi 側の server / worker しか見ておらず、この取りこぼしを検出できない。

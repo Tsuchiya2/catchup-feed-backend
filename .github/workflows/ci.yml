@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.27.0'
+  GO_VERSION: '1.27.3'
 
 # Swagger 生成について(下の5ジョブが同じ "Generate Swagger docs" を持つ)
 # 生成物 docs/docs.go は cmd/server がブランクインポートし、Dockerfile の
@@ -114,7 +114,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.1
+          version: v2.14.0
           args: --timeout=5m
 
   # ──────────────────────────────────────────────────────────
@@ -236,7 +236,7 @@ jobs:
         run: go build ./...
 
       # CI で実行する外部ツールは一律でバージョンを固定する(shellcheck
-      # v0.11.0 / golangci-lint v2.13.1 はここのリテラルで、swag は go.mod の
+      # v0.11.0 / golangci-lint v2.14.0 はここのリテラルで、swag は go.mod の
       # require ディレクティブで固定する — いずれも1箇所)。@master は
       # レビューを経ずに上流の変更でスキャナ本体が入れ替わりうるため使わない。
       #

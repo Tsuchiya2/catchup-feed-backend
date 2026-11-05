@@ -1,6 +1,6 @@
 # リポジトリ構成
 
-**対象**: catchup-feed-backend(Go 1.27.0 単一モジュール、module name: `catchup-feed`)
+**対象**: catchup-feed-backend(Go 1.27.3 単一モジュール、module name: `catchup-feed`)
 **最終更新**: 2026-08-15
 
 ディレクトリとパッケージの責務を記述します。層の設計思想・依存ルール・技術選定の理由は [architecture.md](architecture.md) を参照してください。
@@ -284,7 +284,7 @@ Pi 実機側の残骸(systemd unit・logrotate・旧 cron・旧バックアッ�
 
 | ファイル | 内容 |
 |---|---|
-| `ci.yml` | 6 ジョブ。**Test**(pgvector サービスコンテナ → `go mod verify` → Swagger 生成 → `go test -race` → Codecov)/ **Lint**(Swagger 生成 → golangci-lint v2.13.1)/ **Shell Script Lint**(shellcheck v0.11.0 で `deploy/scripts/*.sh` を `-x` 付き検査)/ **Build**(server / worker のビルドとバイナリサイズ表示)/ **Security Scan**(Swagger 生成 → 型検査(`go build ./...`)→ gosec → SARIF)/ **Dependency Vulnerability Scan**(Swagger 生成 → govulncheck。終了コード 0/3 は緑、それ以外はスキャン不成立として赤 → SARIF)。Swagger 生成は Go を使う全ジョブに必要(未生成だと `cmd/server` が型検査を通らず、gosec は SSA 解析を、govulncheck は解析自体をスキップする) |
+| `ci.yml` | 6 ジョブ。**Test**(pgvector サービスコンテナ → `go mod verify` → Swagger 生成 → `go test -race` → Codecov)/ **Lint**(Swagger 生成 → golangci-lint v2.14.0)/ **Shell Script Lint**(shellcheck v0.11.0 で `deploy/scripts/*.sh` を `-x` 付き検査)/ **Build**(server / worker のビルドとバイナリサイズ表示)/ **Security Scan**(Swagger 生成 → 型検査(`go build ./...`)→ gosec → SARIF)/ **Dependency Vulnerability Scan**(Swagger 生成 → govulncheck。終了コード 0/3 は緑、それ以外はスキャン不成立として赤 → SARIF)。Swagger 生成は Go を使う全ジョブに必要(未生成だと `cmd/server` が型検査を通らず、gosec は SSA 解析を、govulncheck は解析自体をスキップする) |
 | `docker.yml` | QEMU + buildx によるマルチアーキイメージのビルド(Pi の arm64 向け) |
 
 gosec のステップだけは**タグではなくコミット SHA**(`securego/gosec@2eb4727`)を参照し、`GOTOOLCHAIN: auto` を渡しています(**C-23**)。理由は2つあります。(1) v2.28.0 タグの `action.yml` は**ひとつ前の 2.27.1 イメージ**を digest 固定しており、タグ参照では 2.28.0 と書きながら 2.27.1 のスキャナが走ります。(2) 2.28.0 イメージ同梱の Go は 1.26.5 かつ `GOTOOLCHAIN=local` のため、そのままでは go.mod の `go 1.27.0` を読めず全パッケージのロードに失敗し、`-no-fail` と相まって「Files: 0 / Issues: 0 のまま緑」になります(2026-08-22 の Go 1.27 化で顕在化)。前段の型検査(`go build ./...`)はランナー側の Go で走るためこの失敗を検知できません。
