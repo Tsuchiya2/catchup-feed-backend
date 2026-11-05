@@ -1,6 +1,6 @@
 # catchup-feed-backend(pulse バックエンド)
 
-Go 1.27.0 単一モジュール(module name: `catchup-feed`)。バージョンは `.go-version` / `go.mod` / `Dockerfile` / CI の `GO_VERSION` の**機械可読4箇所**で揃え、散文6箇所(README 3・`docs/architecture.md`・`docs/repository-structure.md`・この CLAUDE.md)も追随させる。**さらに M3 Mac の実 Go ツールチェーンも上げる** — radio はそのマシンの Go でビルドされ、CI では取りこぼしを検出できない(D-45、手順は `deploy/mac.md` §5)。Phase 1〜3 のコード実装は全件完了し、Pi + Mac で運用中。全体像と規約は親ディレクトリの `CLAUDE.md`、Phase 別設計は `docs/pulse-phase1〜3-design.md` と `docs/decisions.md` が正。ここにはリポジトリ固有の事項のみ書く。
+Go 1.27.3 単一モジュール(module name: `catchup-feed`)。バージョンは `.go-version` / `go.mod` / `Dockerfile` / CI の `GO_VERSION` の**機械可読4箇所**で揃え、散文6箇所(README 3・`docs/architecture.md`・`docs/repository-structure.md`・この CLAUDE.md)も追随させる。**さらに M3 Mac の実 Go ツールチェーンも上げる** — radio はそのマシンの Go でビルドされ、CI では取りこぼしを検出できない(D-45、手順は `deploy/mac.md` §5)。**最後に CI ログでリンタ・スキャナの追随を確認する**(C-23、2026-11 の Go 1.27.3 化で golangci-lint / gosec とも x/tools の追随が要った)。golangci-lint が追随できていないときは `could not import ... export data version N` の typecheck 指摘で Lint ジョブが**赤になるので気付ける**。**黙って緑になるのは Security Scan(gosec)だけ**なので、そのログを目視で確認する — `has type errors` が0件であること、`Checking file` の件数が swag 生成後のツリーにあるテスト以外の .go ファイル数(`docs/docs.go` を含み、ビルドタグで除外される `swagdep.go` は含まない。`git ls-files` で数えると `docs/docs.go` の分だけ少なくなる)と一致すること。Phase 1〜3 のコード実装は全件完了し、Pi + Mac で運用中。全体像と規約は親ディレクトリの `CLAUDE.md`、Phase 別設計は `docs/pulse-phase1〜3-design.md` と `docs/decisions.md` が正。ここにはリポジトリ固有の事項のみ書く。
 
 ## バイナリ構成
 

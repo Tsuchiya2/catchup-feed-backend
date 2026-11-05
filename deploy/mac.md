@@ -104,24 +104,31 @@ kill %1
 
 ## 5. radio バイナリのビルド
 
-radio は Mac ネイティブで動かす(Docker 不要)。**必要な Go は `.go-version` / `go.mod` の `go` ディレクティブが正**(2026-08-22 時点で **1.27.0**)。
+radio は Mac ネイティブで動かす(Docker 不要)。**必要な Go は `.go-version` / `go.mod` の `go` ディレクティブが正**(2026-11-05 時点で **1.27.3**)。
+
+この Mac の Go は **goenv** で管理する(PATH の先頭が goenv の shim)。goenv はリポジトリ直下の `.go-version` を読んで使う Go を決める。
 
 ```bash
-brew install go        # 既に入っているなら brew upgrade go
-go version             # go.mod の go ディレクティブ以上であること
 cd <このリポジトリの checkout>
+goenv install "$(cat .go-version)"   # 未導入のときだけ実行する(導入済みは `goenv versions` で確認)
+goenv rehash                         # shim を張り直す(新しい版を入れた直後)
+go version                           # .go-version と同じ版が出ること
 go build -o ~/pulse/bin/radio ./cmd/radio
 ```
 
-リポジトリ更新時は同じコマンドでビルドし直すだけ。
+リポジトリ更新時は `go build` だけでビルドし直せばよい(`.go-version` が変わったときだけ上の `goenv install` が要る)。
 
-**Go を上げた PR を取り込んだときは、この Mac の Go も先に上げる**(D-45)。radio のビルドはこのマシンの Go で行われるため、古いままだと
+**Go を上げた PR を取り込んだときは、ビルドの前にこの Mac の Go も上げる**(D-45)。radio のビルドはこのマシンの Go で行われるため、`.go-version` の版が goenv に未導入だと go コマンド自体が
 
 ```text
-go: go.mod requires go >= 1.27.0 (running go 1.26.x; GOTOOLCHAIN=local)
+goenv: version '1.27.3' is not installed (set by <checkout>/.go-version)
 ```
 
-でビルドが落ち、**気付かないと当夜のエピソードが欠番になる**。CI は Pi 側の server / worker しか見ておらず、この取りこぼしを検出できない。
+で失敗する(go.mod の検査より手前、goenv の shim の段階で止まる)。
+
+補足(goenv を使わず Homebrew の Go だけの環境): `brew upgrade go` で go.mod の `go` ディレクティブ以上にする。古いままだと `GOTOOLCHAIN` が `local` なら `go: go.mod requires go >= 1.27.3 (running go 1.27.0; GOTOOLCHAIN=local)` で落ち、既定の `auto` なら要求版のツールチェーンを自動取得してビルドが通る。
+
+いずれの経路でも、ビルドが落ちたまま**気付かないと当夜のエピソードが欠番になる**。CI は Pi 側の server / worker しか見ておらず、この取りこぼしを検出できない。
 
 ## 6. .env とラッパースクリプトの配置
 

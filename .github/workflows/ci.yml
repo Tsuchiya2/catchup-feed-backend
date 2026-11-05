@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.27.0'
+  GO_VERSION: '1.27.3'
 
 # Swagger 生成について(下の5ジョブが同じ "Generate Swagger docs" を持つ)
 # 生成物 docs/docs.go は cmd/server がブランクインポートし、Dockerfile の
@@ -114,7 +114,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.1
+          version: v2.14.0
           args: --timeout=5m
 
   # ──────────────────────────────────────────────────────────
@@ -236,33 +236,48 @@ jobs:
         run: go build ./...
 
       # CI で実行する外部ツールは一律でバージョンを固定する(shellcheck
-      # v0.11.0 / golangci-lint v2.13.1 はここのリテラルで、swag は go.mod の
-      # require ディレクティブで固定する — いずれも1箇所)。@master は
+      # v0.11.0 はここのリテラル1箇所、golangci-lint v2.14.0 はここと
+      # Dockerfile の2箇所(揃えて上げる)、swag は go.mod の require
+      # ディレクティブ1箇所で固定する)。@master は
       # レビューを経ずに上流の変更でスキャナ本体が入れ替わりうるため使わない。
       #
-      # ここだけタグではなくコミット SHA を参照している(C-23)。gosec の
-      # v2.28.0 タグは action.yml が**ひとつ前の 2.27.1 イメージ**を digest 固定
-      # しており、`uses: securego/gosec@v2.28.0` は 2.27.1 のスキャナを走らせる。
-      # 2.28.0 イメージを指すよう action.yml が直ったのはタグ作成後の
-      # 2eb4727(2026-08-10)で、それを含むタグはまだ切られていない。
-      # 更新方法: https://github.com/securego/gosec/releases に新しいタグが出たら
-      # そのタグの action.yml が指すイメージの digest を確認したうえでタグ参照へ
-      # 戻し、このジョブが緑になることを確認する意図的な変更として単独で行う。
+      # ここだけタグではなくコミット SHA を参照している(C-23)。gosec は
+      # リリースのたびに「タグを切ってから action.yml のイメージ digest を
+      # 更新する」順序で、タグの action.yml は**ひとつ前のイメージ**を指す
+      # (v2.28.0 タグ → 2.27.1 イメージ、v2.30.0 タグ → 2.29.0 イメージ)。
+      # 現在の参照 4504603(2026-10-23、v2.30.0 タグ作成後)は 2.30.0 イメージを
+      # digest 固定している。
+      # 更新方法: タグ参照に戻す場合も SHA を進める場合も、参照先の action.yml が
+      # 指すイメージの digest とバージョンを確認し、このジョブのログで
+      # `has type errors` が出ていないことを確かめる意図的な変更として行う。
+      # dependabot の bump はこの確認をしない(#131 は 2.29.0 イメージへ進めたが
+      # 下のコメントは 2.28.0 のまま残っていた)。
       # コミット SHA 参照でもイメージは digest 固定なので、同じスキャナバイナリが
       # 走る再現性はタグ参照と変わらない。
       #
-      # GOTOOLCHAIN=auto も必須(C-23)。gosec はコンテナアクションで、2.28.0
-      # イメージ同梱の Go は 1.26.5 かつ GOTOOLCHAIN=local のため、go.mod の
-      # `go 1.27.0` を読めず全パッケージが
+      # Go を上げるときはスキャナ本体の golang.org/x/tools も追随が要る(D-45)。
+      # Go 1.27.3 は標準ライブラリの export data を pkgbits V5 で書き出し、
+      # x/tools v0.49.0 の gosec 2.29.0 では全パッケージが
+      # `package X has type errors, skipping SSA analysis` になる(AST ルールは
+      # 走るため Files 数は減らず、-no-fail で緑のまま SSA 系の検出だけが消える)。
+      # V5 を読める x/tools v0.52.0 の 2.30.0 で解消(2026-11 の Go 1.27.3 化)。
+      #
+      # GOTOOLCHAIN=auto も必須(C-23)。gosec はコンテナアクションで、
+      # イメージ同梱の Go が go.mod の go ディレクティブより古いと
+      # GOTOOLCHAIN=local のままでは
       # `go.mod requires go >= 1.27.0 (running go 1.26.5; GOTOOLCHAIN=local)` で
-      # ロードに失敗する。-no-fail のため終了コードは 0、SARIF も空で上がるので
-      # 「Files: 0 / Issues: 0 のまま緑」になる(2026-08-15 の swag 未生成と同じ
-      # 失敗の仕方)。auto にすればコンテナ内で go1.27.0 を取得して 204 ファイルを
-      # 走査する。前段の `go build ./...` はランナー側の Go(setup-go)で走るため
-      # この失敗を検知できない。イメージ同梱の Go が 1.27 以上になったら外してよい。
+      # 全パッケージのロードに失敗し、-no-fail のため終了コードは 0、SARIF も空で
+      # 「Files: 0 / Issues: 0 のまま緑」になる(2026-08-22 の Go 1.27 化で顕在化、
+      # 2026-08-15 の swag 未生成と同じ失敗の仕方)。auto にすればコンテナ内で
+      # go.mod が要求するツールチェーンを取得して走査する。前段の `go build ./...`
+      # はランナー側の Go(setup-go)で走るためこの失敗を検知できない。
+      # 2.30.0 イメージ同梱の Go は go1.27.3 で現時点では不要だが、**外さない**。
+      # Go を上げるたびにイメージ同梱の Go は遅れて追随するため、次の更新で
+      # 再び必要になる。付け直し忘れは緑のまま空振って気付きにくい
+      # ので、保険として常に残す。
       - name: Run Gosec Security Scanner
-        # securego/gosec 2eb4727 = action.yml が gosec 2.28.0 イメージを digest 固定
-        uses: securego/gosec@681347199262bc33b9b5119ae2b448dec5718240
+        # securego/gosec 4504603 = action.yml が gosec 2.30.0 イメージを digest 固定
+        uses: securego/gosec@4504603eddc5a91a7b7713932d6d1d3792126103
         env:
           GOTOOLCHAIN: auto
         with:
