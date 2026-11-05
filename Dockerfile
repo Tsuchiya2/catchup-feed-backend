@@ -30,7 +30,7 @@ WORKDIR /app
 # `the Go language version (go1.26) used to build golangci-lint is lower than the
 # targeted Go version (1.27.0)` で*設定読み込みの時点で*落ちる。
 # つまり Go を上げるときは golangci-lint も「その Go でビルドされたリリース」まで
-# 同時に上げる必要がある(Go 1.27.0 ↔ golangci-lint v2.13.1 = go1.27.0 ビルド)。
+# 同時に上げる必要がある(過去の例: Go 1.27.0 ↔ golangci-lint v2.13.1 = go1.27.0 ビルド)。
 # パッチ更新でも油断しない: Go 1.27.3 のツールチェーンは標準ライブラリの
 # export data を pkgbits V5 で書き出し、golang.org/x/tools v0.49.0 を抱える
 # v2.13.x は `export data version 5 is greater than maximum supported version 4`

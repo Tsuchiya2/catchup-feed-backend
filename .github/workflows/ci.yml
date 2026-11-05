@@ -236,8 +236,9 @@ jobs:
         run: go build ./...
 
       # CI で実行する外部ツールは一律でバージョンを固定する(shellcheck
-      # v0.11.0 / golangci-lint v2.14.0 はここのリテラルで、swag は go.mod の
-      # require ディレクティブで固定する — いずれも1箇所)。@master は
+      # v0.11.0 はここのリテラル1箇所、golangci-lint v2.14.0 はここと
+      # Dockerfile の2箇所(揃えて上げる)、swag は go.mod の require
+      # ディレクティブ1箇所で固定する)。@master は
       # レビューを経ずに上流の変更でスキャナ本体が入れ替わりうるため使わない。
       #
       # ここだけタグではなくコミット SHA を参照している(C-23)。gosec は
